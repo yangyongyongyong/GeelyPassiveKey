@@ -75,6 +75,12 @@ public class KeyNotificationBridgeService extends NotificationListenerService {
     private static volatile Boolean textConnectionHint = null;
     private static volatile String lastControlDiagnostic = "transport=NONE result=NONE";
     private static volatile String lastParseDiagnostic = "NO_NOTIFICATION";
+    private static final long REBIND_REQUEST_INTERVAL_MS = 2000L;
+    private static final long MISSING_NOTIFICATION_RESCAN_MS = 1500L;
+    private static long listenerDownSinceMs = 0L;
+    private static long lastRebindRequestAtMs = 0L;
+    private static long lastMissingRescanAtMs = 0L;
+    private static volatile String lastRecoveryDiagnostic = "listener_recovery=waiting";
 
     // 官方通知从未连接切换到已连接时通知主服务；待发动作统一由主服务管理，避免两套队列重复点击。
     private static volatile Runnable stateListener;
@@ -120,6 +126,11 @@ public class KeyNotificationBridgeService extends NotificationListenerService {
         return lastControlDiagnostic;
     }
 
+    /** 返回监听恢复状态，便于界面与导出日志区分“未授权”和“系统掉绑”。 */
+    public static String getLastRecoveryDiagnostic() {
+        return lastRecoveryDiagnostic;
+    }
+
     /** 分离通知到达、解析和就绪时间，listener活着不代表官方持续更新。 */
     public static String diagnosticSnapshot(long nowMs) {
         KeyNotificationBridgeService service = instance;
@@ -133,6 +144,7 @@ public class KeyNotificationBridgeService extends NotificationListenerService {
                 + " lock_button=" + (cachedLockPi != null ? "PI" : cachedLockView != null ? "VIEW" : "NONE")
                 + " park=" + lastObservedParkStatus
                 + " park_age_ms=" + (lastObservedParkStatusAtMs == 0L ? -1L : nowMs - lastObservedParkStatusAtMs)
+                + " " + lastRecoveryDiagnostic
                 + (service == null ? " epoch=unavailable" : " " + service.notificationEpoch.diagnosticSnapshot()
                 + " " + service.diagnosticCounters.snapshot(false));
     }
@@ -161,22 +173,74 @@ public class KeyNotificationBridgeService extends NotificationListenerService {
             if (!isNotificationListenerEnabled(context)) {
                 return;
             }
-            ComponentName cn = new ComponentName(context, KeyNotificationBridgeService.class);
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-                DiagnosticLog.event("Notification", "LISTENER_REBIND_REQUEST", "");
-                NotificationListenerService.requestRebind(cn);
-            }
-            // Also toggle component enabled state if needed to force NMS re-registration after APK update
-            PackageManager pm = context.getPackageManager();
-            if (pm != null) {
-                pm.setComponentEnabledSetting(cn,
-                        PackageManager.COMPONENT_ENABLED_STATE_ENABLED,
-                        PackageManager.DONT_KILL_APP);
-            }
+            requestRebindThrottled(new ComponentName(context, KeyNotificationBridgeService.class),
+                    "ensure_rebound");
         } catch (Throwable t) {
             DiagnosticLog.bridgeError("Notification", "LISTENER_REBIND_ERROR", t);
             Log.w(TAG, "ensureRebound warning: " + t.getMessage());
         }
+    }
+
+    /**
+     * 周期性自愈：持续请求系统重绑；部分 ROM 会拒绝无图形界面的重绑，
+     * 此时明确标记需要用户到系统通知使用权页重新开关，已连接时补扫现有通知。
+     */
+    public static void recoverIfNeeded(Context context) {
+        if (context == null) return;
+        if (!isNotificationListenerEnabled(context)) {
+            listenerDownSinceMs = 0L;
+            lastRecoveryDiagnostic = "listener_recovery=access_disabled";
+            return;
+        }
+        long now = SystemClock.elapsedRealtime();
+        if (isListenerConnected()) {
+            listenerDownSinceMs = 0L;
+            lastRecoveryDiagnostic = "listener_recovery=connected";
+            rescanIfMissing(now);
+            return;
+        }
+        if (listenerDownSinceMs == 0L) {
+            listenerDownSinceMs = now;
+            DiagnosticLog.event("Notification", "LISTENER_DOWN", "recovery_started=true");
+        }
+        long downMs = Math.max(0L, now - listenerDownSinceMs);
+        if (downMs >= 10000L) {
+            lastRecoveryDiagnostic = "listener_recovery=needs_user_access_toggle";
+        }
+        ComponentName cn = new ComponentName(context, KeyNotificationBridgeService.class);
+        requestRebindThrottled(cn, "down_ms=" + downMs);
+    }
+
+    /** 手动测试发现监听掉绑时立即再请求一次重绑，随后由界面引导系统授权页修复。 */
+    public static void requestImmediateRecovery(Context context) {
+        if (context == null || !isNotificationListenerEnabled(context)) return;
+        lastRebindRequestAtMs = 0L;
+        requestRebindThrottled(new ComponentName(context, KeyNotificationBridgeService.class),
+                "manual_request");
+    }
+
+    /** 普通重绑请求按两秒节流，避免每五百毫秒向系统重复请求。 */
+    private static void requestRebindThrottled(ComponentName componentName, String reason) {
+        long now = SystemClock.elapsedRealtime();
+        if ((now - lastRebindRequestAtMs) < REBIND_REQUEST_INTERVAL_MS) return;
+        lastRebindRequestAtMs = now;
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                DiagnosticLog.event("Notification", "LISTENER_REBIND_REQUEST", "reason=" + reason);
+                NotificationListenerService.requestRebind(componentName);
+            }
+        } catch (Throwable t) {
+            DiagnosticLog.bridgeError("Notification", "LISTENER_REBIND_REQUEST_ERROR", t);
+        }
+    }
+
+    /** 监听已连接但尚未读到银河通知时周期重扫，覆盖系统刚绑定时的空列表竞态。 */
+    private static void rescanIfMissing(long nowMs) {
+        KeyNotificationBridgeService service = instance;
+        if (service == null || !service.listenerConnected || geelyNotificationPresent) return;
+        if ((nowMs - lastMissingRescanAtMs) < MISSING_NOTIFICATION_RESCAN_MS) return;
+        lastMissingRescanAtMs = nowMs;
+        service.scanExistingNotifications();
     }
 
     public static boolean isGeelyBleConnected() {
@@ -228,16 +292,16 @@ public class KeyNotificationBridgeService extends NotificationListenerService {
     }
 
     /**
-     * 检查当前是否因插着 USB/AC 有线充电线（或关闭了服务总开关）而禁止操作车锁。
+     * 检查总开关、插线与行驶保护；手动测试只跳过对应自动动作分开关。
      */
-    private static boolean isControlBlocked(boolean unlock) {
+    private static boolean isControlBlocked(boolean unlock, boolean manual) {
         KeyNotificationBridgeService svc = instance;
         if (svc == null || !svc.listenerConnected || Looper.myLooper() != Looper.getMainLooper()
                 || !geelyBleConnected || !geelyNotificationPresent) return true;
         try {
             VehicleIdentityStore store = new VehicleIdentityStore(svc);
             if (!store.isServiceEnabled()
-                    || (unlock ? !store.isAutoUnlockEnabled() : !store.isAutoLockEnabled())) {
+                    || (!manual && (unlock ? !store.isAutoUnlockEnabled() : !store.isAutoLockEnabled()))) {
                 return true;
             }
             if ("行驶中".equals(lastObservedParkStatus)
@@ -259,7 +323,7 @@ public class KeyNotificationBridgeService extends NotificationListenerService {
      * 旧版在这里挂起并在连接后自动发送；现在只返回本次发送结果，等待与取消由主服务统一处理。
      */
     public static ControlResult triggerUnlockViaNotification() {
-        if (isControlBlocked(true)) return controlResult(ControlResult.NOT_SENT, "NONE", "BLOCKED", null);
+        if (isControlBlocked(true, false)) return controlResult(ControlResult.NOT_SENT, "NONE", "BLOCKED", null);
         return fireNotificationButton(cachedUnlockPi, cachedUnlockView, "解锁");
     }
 
@@ -267,8 +331,21 @@ public class KeyNotificationBridgeService extends NotificationListenerService {
      * 点击银河通知的“上锁”按钮（id=5, notif_tv_lock=0x7f0a10c7），不创建第二套待发队列。
      */
     public static ControlResult triggerLockViaNotification() {
-        if (isControlBlocked(false)) return controlResult(ControlResult.NOT_SENT, "NONE", "BLOCKED", null);
+        if (isControlBlocked(false, false)) return controlResult(ControlResult.NOT_SENT, "NONE", "BLOCKED", null);
         return fireNotificationButton(cachedLockPi, cachedLockView, "上锁");
+    }
+
+    /** 手动测试复用同一个通知按钮发送通道，保留禁控检查且不创建延迟或重发任务。 */
+    static ControlResult triggerManualControlViaNotification(PassiveKeyLogic.Action action) {
+        if (action != PassiveKeyLogic.Action.UNLOCK && action != PassiveKeyLogic.Action.LOCK) {
+            return controlResult(ControlResult.NOT_SENT, "NONE", "INVALID_MANUAL_ACTION", null);
+        }
+        boolean unlock = action == PassiveKeyLogic.Action.UNLOCK;
+        if (isControlBlocked(unlock, true)) {
+            return controlResult(ControlResult.NOT_SENT, "NONE", "MANUAL_BLOCKED", null);
+        }
+        return unlock ? fireNotificationButton(cachedUnlockPi, cachedUnlockView, "手动解锁")
+                : fireNotificationButton(cachedLockPi, cachedLockView, "手动上锁");
     }
 
     /** 一次尝试只选 PI 或 View；出现不确定异常时停止，不冒险重复执行车控。 */
@@ -366,11 +443,14 @@ public class KeyNotificationBridgeService extends NotificationListenerService {
         super.onListenerConnected();
         if (instance != this) return;
         listenerConnected = true;
+        listenerDownSinceMs = 0L;
+        lastRecoveryDiagnostic = "listener_recovery=connected";
         DiagnosticLog.event("Notification", "LISTENER_CONNECTED", diagnosticSnapshot(SystemClock.elapsedRealtime()));
         notificationEpoch.invalidate();
         Log.i(TAG, "KeyNotificationBridgeService onListenerConnected -> scanning active notifications");
         ensureRadarServiceRunning();
         scanExistingNotifications();
+        mainHandler.postDelayed(this::scanExistingNotifications, 800L);
     }
 
     /** 监听失联时立即清理就绪状态，并请求系统重新绑定。 */
@@ -379,6 +459,8 @@ public class KeyNotificationBridgeService extends NotificationListenerService {
         super.onListenerDisconnected();
         if (instance != this) return;
         listenerConnected = false;
+        listenerDownSinceMs = SystemClock.elapsedRealtime();
+        lastRecoveryDiagnostic = "listener_recovery=disconnected";
         DiagnosticLog.event("Notification", "LISTENER_DISCONNECTED", diagnosticSnapshot(SystemClock.elapsedRealtime()));
         notificationEpoch.invalidate();
         Log.w(TAG, "KeyNotificationBridgeService onListenerDisconnected -> requesting rebind");

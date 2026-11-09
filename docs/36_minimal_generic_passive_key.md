@@ -4,13 +4,13 @@
 
 把原「银河钥匙雷达 v3.20.6」裁剪成一个功能极简、可通用分发的 App：
 
-- 只保留：**息屏靠近解锁、离开上锁**；
+- 核心只保留：**息屏靠近解锁、离开上锁**，另提供两个用户主动点击的车控链路测试按钮；
 - 不要求用户填写 VIN、MAC、车型或任何逆向参数；
 - 不依赖电脑 adb、REA、私有数据或 root；
 - 用户安装 App、用银河官方 App 连接一次车辆后，本 App 自动识别本车蓝牙身份；
-- 保留原包名 `com.luca.geelykeyradar`，升级安装后通知监听授权可以继续沿用。
+- 保留原包名 `com.luca.geelykeyradar`，升级安装后通知监听授权通常可以继续沿用；若系统只保留授权但不再绑定监听，使用 App 内“修复通知监听”重新开关一次。
 
-当前版本：`v4.0.3-min / versionCode 103`。靠近阶段误锁修复见 [40_v4_0_3_approach_relock_guard.md](40_v4_0_3_approach_relock_guard.md)，日志与导出见 [39_v4_0_2_diagnostic_logs.md](39_v4_0_2_diagnostic_logs.md)，响应与防重复优化见 [38_v4_0_1_response_and_control_safety.md](38_v4_0_1_response_and_control_safety.md)，故障取证保留在 [37_20261107_slow_unlock_missed_lock_diagnosis.md](37_20261107_slow_unlock_missed_lock_diagnosis.md)。
+当前版本：`v4.0.9-min / versionCode 109`。后台锁定说明见 [46_v4_0_9_background_lock_guide.md](46_v4_0_9_background_lock_guide.md)，电池白名单反馈见 [45_v4_0_8_battery_whitelist_feedback.md](45_v4_0_8_battery_whitelist_feedback.md)，后台扫描与权限拆分见 [44_v4_0_7_background_scan_and_permissions.md](44_v4_0_7_background_scan_and_permissions.md)。
 
 ---
 
@@ -18,7 +18,7 @@
 
 以下 v3.x 功能已从新源码移除：
 
-- 手动解锁/上锁按钮；
+- 旧版手动解锁/上锁实现（v4.0.5仅重新增加两个复用当前通知链路的测试按钮）；
 - 摇一摇解闭锁；
 - 电源键三连、音量键、无障碍按键；
 - 快捷设置磁贴；
@@ -55,9 +55,10 @@ GeelyKeyRadarApp/src/com/luca/geelykeyradar/
 ├── GeelyAdvertisement.java         # 解析 0x01FE / 0xFDFD / GeelyVehicle 名称 / 15FF
 ├── VehicleIdentity.java            # 本车蓝牙身份与匹配规则
 ├── VehicleIdentityStore.java       # 身份持久化 + 两个自动开关
+├── VehicleLearningState.java       # 地址学习完成资格、来源和权限/重连提示
 ├── GeelyBridge.java                # 最小化调用银河官方导出组件
 ├── KeyNotificationBridgeService.java # 读取官方通知状态 + 点击官方解锁/上锁按钮
-├── MainActivity.java               # 极简配置页：状态、学习、权限、开关、日志
+├── MainActivity.java               # 极简配置页：状态、学习、手动测试、权限、开关、日志
 └── BootReceiver.java               # 开机/更新自动拉起
 ```
 
@@ -99,6 +100,10 @@ GeelyKeyRadarApp/src/com/luca/geelykeyradar/
 3. **近场单一吉利广播自动锁定**：未学习状态下若扫到唯一 `GeelyVehicle*` / `0x01FE` 广播（`>= -88 dBm`），直接自动学习并唤醒银河；
 4. **本机旧版配置无感迁移**：若检测到本机旧版 SharedPreferences 已有车辆尾号/MAC，首次启动自动迁移；
 5. **可选手动输入车架号后 3 位**：UI 提供可选按钮，输入 3 位尾号（如 `123`）即可直接生成 `GeelyVehicle123` + 尾号 `23` 过滤。
+
+v4.0.4区分“匹配提示”与“真实地址已获得”。手动尾号和旧版迁移标明来源；更换尾号不能继承另一辆车的旧MAC。缺蓝牙权限时无法扫描或读取连接设备，缺通知使用权时本应用也无法确认银河状态。清空数据后需要重新授权。
+
+重学先读取系统及本应用当前可验证的已连接设备，再清除旧状态并重建扫描。等待断连的标志不再挡住真实当前连接的识别。若系统没有提供地址、设备名称不可识别且没有近期广播，本应用明确等待银河断开再连接，不会仅凭“银河已连接”绑定匿名地址。
 
 学习后优先按以下顺序匹配：
 
@@ -166,13 +171,14 @@ KeyNotificationBridgeService
 
 | 规则 | 说明 |
 | :--- | :--- |
-| 服务总开关 | 支持在 App 内一键关闭「无感进出服务总开关」，关闭后立即停止扫描、断开 GATT、取消所有待发重发任务 |
-| 插充电线禁控 | 默认开启「插数据线/充电线后禁止解闭锁」：检测到 USB/AC 有线充电时（无线充电不拦截），禁止一切自动解锁与上锁 |
+| 服务总开关 | 支持在 App 内一键关闭「无感进出服务总开关」，关闭后立即停止扫描、断开 GATT、取消所有待发重发任务，也禁止手动测试 |
+| 插充电线禁控 | 默认开启「插数据线/充电线后禁止解闭锁」：检测到 USB/AC 有线充电时（无线充电不拦截），禁止一切自动与手动解锁、上锁 |
 | 解锁（支持自定义） | 默认接近 RSSI ≥ `-75 dBm`，支持口袋补偿，一次接近成功交付后不再重复。RSSI 与实际距离受遮挡和车型影响 |
 | 上锁（支持自定义） | 默认未补偿滤波 RSSI ≤ `-82 dBm`，连续 `4.5s` 且至少 3 个新样本；近场保护与驻留并行。发送前重新核验距离和禁控条件 |
 | 无信号过期清零 | 超过 6 秒无新 RSSI 样本立即回退显示 `-- · 不在车辆附近 (无信号)`，不再残留断连前的最后一条弱信号（如 `-93 dBm`） |
 | 固定日志容量 | UI 最近10条；关键事件4份×256KiB、诊断6份×512KiB，合计上限4MiB；有界异步队列，支持清空全部日志分段 |
 | 日志导出 | 底部“导出排查日志（ZIP）”，通过系统文件选择器保存；含版本、状态、关键事件与诊断，身份脱敏，不自动上传 |
+| 学习未完成 | 只有尾号/名称但无实际蓝牙地址时，不视为学习完成，也不执行自动车控 |
 | 近场保护 | 默认最近6秒出现 `-78 dBm` 以上信号则禁止发送上锁，但连续远场可以同时计时，避免额外串行等待 |
 | 靠近与离开阶段 | 提前解锁不自动获得上锁资格；未补偿RSSI真正进入现有近场保护区后才启用正常远离判定。若提前解锁后直接转身离开，须同源信号比本阶段峰值下降至少6dB并满足原远场驻留 |
 | 冷启动 | 从未接近过车辆时，一直在远处不会补发上锁 |
@@ -182,6 +188,9 @@ KeyNotificationBridgeService
 | 重新武装 | 正常会话按持续远场加断连/静默规则；上锁后要求确认真实返回。失败预算耗尽时允许“远场8秒→真实近场1秒”恢复，不依赖官方必须先断连 |
 | 采样断档 | 超过3秒无新样本，驻留失效；重复时间戳、乱序或过期扫描不累计为新鲜样本 |
 | 发送状态 | 仅通知发送成功累加“指令已交付”次数；这不是车辆执行回执。失败/取消/超时/结果未知均明确更新最近动作 |
+| 通知监听恢复 | 监听未授权时提示开启；已授权但系统未绑定则每2秒请求重绑，10秒仍失败在常驻通知和权限卡提示“系统未绑定”，用户点“修复通知监听”在系统页关闭再开启；连接后每1.5秒补扫缺失的现有银河通知。不做会杀进程的组件禁用 |
+| 手动链路测试 | 仅在官方已连接且按钮可用时单次发送；不要求RSSI或身份学习，不受自动动作分开关限制，仍复核总开关、插线与行驶保护。无连接不排队、失败不自动重试，2秒防连点 |
+| 手动上锁锁存 | 同一接近会话不再自动解锁或重复上锁；真实离开并断连后恢复下一次自动靠近，手动解锁可立即解除锁存 |
 
 滤波：三点中值抑制单帧尖峰，按真实样本时间间隔计算 EMA（接近时间常数350ms、远离750ms），消除原低增益 Kalman 与 EMA 串联滞后。遮挡状态连续稳定800ms才改变，`+8dBm` 仅用于接近；上锁和近场保护使用未加补偿的信号。
 
@@ -190,7 +199,8 @@ KeyNotificationBridgeService
 - `connectedDevice` 前台服务；
 - 屏幕关闭且最近 5 分钟见过车辆/已连接时持有 `PARTIAL_WAKE_LOCK`；
 - 屏幕关闭后 45 秒无广播、银河未连接时重建一次 BLE 扫描器（90 秒节流）；
-- 通知监听服务掉线时每 60 秒请求系统重绑；
+- 通知监听服务掉线时每2秒请求系统重绑；系统长期拒绝无界面重绑时由“修复通知监听”引导用户重新授权；
+- 扫描器未注册时服务会自动重试；覆盖安装/开机由接收器和2分钟看门狗尝试拉起服务，用户关闭总开关时取消看门狗；
 - 开机、应用更新自动拉起。
 
 ---
@@ -209,6 +219,8 @@ KeyNotificationBridgeService
 - i管家 → 自启动 → 允许本应用。
 
 没有通知使用权时，App 仍能扫描和显示信号，但无法点击官方通知栏的解锁/上锁按钮。
+
+“已授权 · 系统未绑定”表示系统仍保留授权记录，但本应用的监听实例没有恢复；点“修复通知监听”进入系统详情页，关闭再开启一次即可。部分vivo/OriginOS在低内存回收或覆盖安装后会进入该状态，属于系统监听绑定行为，不是银河App未连接。
 
 ---
 
@@ -244,7 +256,7 @@ bash /path/to/car_key_re/GeelyKeyRadarApp/build.sh
 /path/to/car_key_re/GeelyKeyRadarApp/GeelyPassiveKey.apk
 ```
 
-脚本先运行 `PassiveKeyLogicTest`、`RssiPipelineTest`、`PendingControlTest`、`NotificationEpochTest`、`RotatingFileLogTest`、`DiagnosticsTest`，再编译资源、Java、DEX、签名，并在检测到真机时尝试安装。仅构建可使用 `SKIP_INSTALL=1 bash GeelyKeyRadarApp/build.sh`。
+脚本先运行 `PassiveKeyLogicTest`、`RssiPipelineTest`、`PendingControlTest`、`NotificationEpochTest`、`RotatingFileLogTest`、`DiagnosticsTest`、`VehicleLearningStateTest`，再编译资源、Java、DEX、签名，并在检测到真机时尝试安装。仅构建可使用 `SKIP_INSTALL=1 bash GeelyKeyRadarApp/build.sh`。
 
 实车调试：
 
@@ -269,6 +281,9 @@ adb shell run-as com.luca.geelykeyradar cat files/passive_key_diagnostic.log
 - 锁后边界抖动不解锁、发送失败有限恢复、旧通知与迟到移除隔离；
 - 重试期限/次数上限、单次发送完成、日志容量与诊断隔离。
 - 官方提前解锁后仍在接近/停留不误锁、未完成接近便转身可锁、广播/GATT切换不累计旧驻留。
+- 手动解锁不重复或立即反向锁车、手动上锁不被近场自动撤销、真实离开后恢复、手动操作使旧自动待发失效。
+- 通知监听掉绑状态、2秒重绑节流、监听连接后补扫已存在银河通知。
+- 蓝牙权限与系统通知权限拆分、锁屏扫描心跳、服务看门狗恢复。
 - 原因字段与实际返回分支一致、只读快照不改变动作、服务未正常结束标记、旧日志脱敏和ZIP白名单。
 
 日常排查优先在 App 中导出 ZIP；固定分段容量、事件字段和原因释义见文档39。

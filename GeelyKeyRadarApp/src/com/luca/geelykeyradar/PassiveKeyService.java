@@ -40,6 +40,7 @@ import android.util.Log;
 import java.io.File;
 import java.util.ArrayList;
 import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -53,9 +54,9 @@ import java.util.concurrent.Future;
  * - 息屏 BLE 扫描 / 连接态 RSSI 读取；
  * - 自动学习本车蓝牙身份；
  * - 靠近一次解锁、持续远离上锁；
- * - 通过银河官方通知栏按钮完成车控。
+ * - 通过银河官方通知栏按钮完成车控及用户主动发起的手动链路测试。
  *
- * 不包含摇一摇、电源键、快捷磁贴、桌面组件、里程、哨兵、语音、手动解闭锁等功能。
+ * 不包含摇一摇、电源键、快捷磁贴、桌面组件、里程、哨兵、语音等功能。
  */
 public class PassiveKeyService extends Service implements SensorEventListener {
 
@@ -78,6 +79,7 @@ public class PassiveKeyService extends Service implements SensorEventListener {
     private static final long WAKE_LOCK_TIMEOUT_MS = 15 * 60 * 1000L;
     private static final long DIAGNOSTIC_INTERVAL_MS = 5000L;
     private static final long HEARTBEAT_INTERVAL_MS = 30000L;
+    private static final long MANUAL_CLICK_GAP_MS = 2000L;
 
     private static volatile boolean running = false;
 
@@ -120,6 +122,7 @@ public class PassiveKeyService extends Service implements SensorEventListener {
     private long lastScreenOffAtMs = 0L;
     private long lastScanStartAtMs = 0L;
     private long lastScanRestartAtMs = 0L;
+    private long lastScanRecoveryAtMs = 0L;
     private volatile long lastSampleAtMs = 0L;
     private long lastAcceptedScanNanos = 0L;
     private String lastAcceptedScanAddress = "";
@@ -155,6 +158,9 @@ public class PassiveKeyService extends Service implements SensorEventListener {
     private volatile int wakeAttempts = 0;
     private volatile int unlockCount = 0;
     private volatile int lockCount = 0;
+    private int manualRequestSequence = 0;
+    private long nextManualControlAtMs = 0L;
+    private volatile String lastManualControlMessage = "请先在银河 App 连接蓝牙钥匙，再点击测试。";
     private volatile int lastRawRssi = -127;
     private float lastSmoothRssi = Float.NaN;
     private float lastApproachRssi = Float.NaN;
@@ -196,6 +202,7 @@ public class PassiveKeyService extends Service implements SensorEventListener {
         public boolean autoLock;
         public boolean blockWhenCharging;
         public boolean wiredCharging;
+        public boolean manualControlEnabled;
         public float unlockDbm;
         public float lockDbm;
         public long lockDwellMs;
@@ -209,6 +216,9 @@ public class PassiveKeyService extends Service implements SensorEventListener {
         public String lastAction = "";
         public String source = "";
         public String buttonDiag = "";
+        public String learningMessage = "";
+        public String learningSource = "";
+        public String manualControlMessage = "";
     }
 
     /** 返回前台服务实例是否仍处于运行状态。 */
@@ -259,6 +269,7 @@ public class PassiveKeyService extends Service implements SensorEventListener {
         registerSystemReceiver();
         KeyNotificationBridgeService.setStateListener(notificationStateListener);
         if (serviceEnabled) {
+            ServiceWatchdogReceiver.schedule(this);
             GeelyBridge.bindKeepAlive(this);
             KeyNotificationBridgeService.ensureRebound(this);
             startBleScan();
@@ -285,7 +296,7 @@ public class PassiveKeyService extends Service implements SensorEventListener {
         DiagnosticLog.event("Lifecycle", "SERVICE_START_COMMAND", "run=" + serviceRun + " start_id=" + startId
                 + " flags=" + flags + " null_intent=" + (intent == null)
                 + " start_action=" + (intent == null ? "system_restart" : intent.getAction()));
-        if (serviceEnabled && intent != null && ACTION_START.equals(intent.getAction()) && !isScanning) {
+        if (serviceEnabled && !isScanning) {
             startBleScan();
         }
         return START_STICKY;
@@ -357,12 +368,20 @@ public class PassiveKeyService extends Service implements SensorEventListener {
         status.notificationAccess = KeyNotificationBridgeService.isNotificationListenerEnabled(this);
         status.geelyInstalled = GeelyBridge.isGeelyInstalled(this);
         status.geelyConnected = geelyConnected;
-        status.identityLearned = identity != null;
+        status.identityLearned = hasCompleteIdentity();
         status.gattConnected = gattConnected;
         status.autoUnlock = autoUnlock;
         status.autoLock = autoLock;
         status.blockWhenCharging = blockWhenCharging;
         status.wiredCharging = wiredCharging;
+        status.manualControlEnabled = running && serviceEnabled && !isChargingBlocked()
+                && !isDriving(now) && now >= nextManualControlAtMs;
+        status.manualControlMessage = !serviceEnabled ? "服务总开关已关闭，手动与自动操作均已停止"
+                : isChargingBlocked() ? "已插数据线/充电线，禁控保护中；拔线后再测试"
+                : isDriving(now) ? "车辆行驶中，禁止手动测试"
+                : (!KeyNotificationBridgeService.isListenerConnected()
+                ? "系统已解绑通知监听，请点下方“修复通知监听”"
+                : lastManualControlMessage);
         status.unlockDbm = unlockDbm;
         status.lockDbm = lockDbm;
         status.lockDwellMs = lockDwellMs;
@@ -374,11 +393,13 @@ public class PassiveKeyService extends Service implements SensorEventListener {
         status.vehicleName = identity != null ? identity.displayName() : "";
         status.vehicleAddress = identity != null ? identity.address : "";
         status.zone = !serviceEnabled ? "无感进出服务已关闭"
-                : (isChargingBlocked() ? "已插充电线 · 禁止自动解闭锁"
+                : (isChargingBlocked() ? "已插充电线 · 禁止解闭锁"
                 : (signalFresh ? lastZone : "不在车辆附近 (无信号)"));
         status.lastAction = lastAction;
         status.source = signalFresh ? lastSource : "";
         status.buttonDiag = KeyNotificationBridgeService.getLastButtonCaptureDiag();
+        status.learningSource = identityStore.getLearningSource();
+        status.learningMessage = learningMessage();
         return status;
     }
 
@@ -408,7 +429,78 @@ public class PassiveKeyService extends Service implements SensorEventListener {
                 + "\n" + pendingControl.diagnosticSnapshot(now) + " wait_reason=" + lastPendingWaitReason
                 + "\n" + scanDiagnostic(now, false) + "\n" + gattDiagnostic(now)
                 + "\n" + KeyNotificationBridgeService.diagnosticSnapshot(now)
+                + "\nlearning=" + learningMessage() + " learning_source=" + identityStore.getLearningSource()
+                + " waiting_reconnect=" + waitForDisconnectToLearn
+                + "\nmanual_req_id=" + manualRequestSequence + " manual_cooldown_left_ms="
+                + Math.max(0L, nextManualControlAtMs - now) + " manual_result=" + lastManualControlMessage
                 + "\n" + DiagnosticLog.health();
+    }
+
+    /** 用户主动测试当前官方连接，绕过距离条件但不绕过安全保护，只尝试发送一次。 */
+    public String requestManualControl(PassiveKeyLogic.Action action) {
+        long now = SystemClock.elapsedRealtime();
+        int sequence = ++manualRequestSequence;
+        String label = action == PassiveKeyLogic.Action.UNLOCK ? "手动解锁" : "手动上锁";
+        DiagnosticLog.event("Control", "MANUAL_REQUEST", "manual_req_id=" + sequence + " action=" + action);
+        refreshWiredChargingState(null);
+        String blockedReason = manualControlBlockReason(action, now);
+        if (!blockedReason.isEmpty()) {
+            lastManualControlMessage = label + "未发送：" + blockedReason;
+            lastAction = lastManualControlMessage;
+            DiagnosticLog.event("Control", "MANUAL_BLOCKED", "manual_req_id=" + sequence
+                    + " action=" + action + " reason=" + blockedReason + " " + signalDiagnostic(now));
+            appendLog(lastManualControlMessage);
+            updateNotificationIfNeeded(true);
+            return lastManualControlMessage;
+        }
+        cancelPendingControl("用户发起" + label + "，取消自动待发请求");
+        nextManualControlAtMs = now + MANUAL_CLICK_GAP_MS;
+        KeyNotificationBridgeService.ControlResult result =
+                KeyNotificationBridgeService.triggerManualControlViaNotification(action);
+        if (result != KeyNotificationBridgeService.ControlResult.NOT_SENT) {
+            logic.onManualControlSent(action, now);
+        }
+        if (result == KeyNotificationBridgeService.ControlResult.SENT) {
+            if (action == PassiveKeyLogic.Action.UNLOCK) unlockCount++;
+            else lockCount++;
+            lastManualControlMessage = label + "指令已交给银河（未获取车锁回执），请观察车辆";
+        } else if (result == KeyNotificationBridgeService.ControlResult.UNKNOWN) {
+            lastManualControlMessage = label + "发送结果不确定，不会重发，请核实车锁";
+        } else {
+            lastManualControlMessage = label + "未发送：官方通知按钮不可用或已失效，请检查银河连接后重试";
+        }
+        lastAction = lastManualControlMessage;
+        DiagnosticLog.event("Control", "MANUAL_RESULT", "manual_req_id=" + sequence + " action=" + action
+                + " result=" + result + " " + KeyNotificationBridgeService.getLastControlDiagnostic());
+        appendLog(lastManualControlMessage + " #" + sequence);
+        updateNotificationIfNeeded(true);
+        return lastManualControlMessage;
+    }
+
+    /** 返回手动测试被拒绝的具体原因；身份学习与RSSI不作为官方按钮测试的前置条件。 */
+    private String manualControlBlockReason(PassiveKeyLogic.Action action, long now) {
+        if (action != PassiveKeyLogic.Action.UNLOCK && action != PassiveKeyLogic.Action.LOCK) return "无效动作";
+        if (Looper.myLooper() != Looper.getMainLooper()) return "只能由界面主线程发起";
+        if (!running || !serviceEnabled) return "服务总开关已关闭";
+        if (isChargingBlocked()) return "已插数据线/充电线，请拔线后测试";
+        if (isDriving(now)) return "车辆行驶中，禁止操作车锁";
+        if (!hasBluetoothPermission()) return "请先授予蓝牙权限";
+        if (bluetoothAdapter == null || !bluetoothAdapter.isEnabled()) return "请先开启手机蓝牙";
+        if (!GeelyBridge.isGeelyInstalled(this)) return "请先安装银河 App";
+        if (KeyNotificationBridgeService.isNotificationListenerEnabled(this)
+                && !KeyNotificationBridgeService.isListenerConnected()) {
+            KeyNotificationBridgeService.requestImmediateRecovery(this);
+            return "通知监听被系统解绑，请点下方“修复通知监听”，在系统页关闭再开启";
+        }
+        if (!KeyNotificationBridgeService.isNotificationListenerEnabled(this)) return "请先开启本应用的通知使用权";
+        if (!KeyNotificationBridgeService.isGeelyNotificationPresent()) {
+            return "通知监听已连接，但尚未读到银河钥匙通知；请保持银河连接并稍后重试";
+        }
+        if (!KeyNotificationBridgeService.isListenerConnected()) return "通知监听尚未就绪，请稍后重试";
+        if (!isOfficialConnected()) return "银河蓝牙钥匙未连接，请先在银河 App 连接车辆";
+        if (!KeyNotificationBridgeService.hasControlIntent(action)) return "未找到对应的银河通知按钮";
+        if (now < nextManualControlAtMs) return "操作过于频繁，请等待两秒后重试";
+        return "";
     }
 
     /** 更新解锁开关并立即撤销对应待发请求。 */
@@ -493,9 +585,11 @@ public class PassiveKeyService extends Service implements SensorEventListener {
             lastZone = "不在车辆附近 (无信号)";
             appendLog("✓ 已开启无感进出总开关，恢复 BLE 扫描与自动解闭锁");
             GeelyBridge.bindKeepAlive(this);
+            ServiceWatchdogReceiver.schedule(this);
             KeyNotificationBridgeService.ensureRebound(this);
             startBleScan();
         } else {
+            ServiceWatchdogReceiver.cancel(this);
             stopBleScan();
             closeGatt("用户关闭无感进出总开关");
             releaseWakeLock();
@@ -545,12 +639,24 @@ public class PassiveKeyService extends Service implements SensorEventListener {
         String tail3 = digits.length() == 3 ? digits : "";
         String tail2 = digits.substring(digits.length() - 2);
         String name = !tail3.isEmpty() ? ("GeelyVehicle" + tail3) : "";
-        String addr = (identity != null && !identity.address.isEmpty())
-                ? identity.address : lastObservedBleMac;
+        boolean sameHint = identity != null && (!tail3.isEmpty()
+                ? tail3.equalsIgnoreCase(identity.vinTail3) : tail2.equalsIgnoreCase(identity.vinTail2));
+        String addr = sameHint ? identity.address : "";
+        if (!sameHint) {
+            closeGatt("更新本车尾号匹配特征");
+            currentAd = null;
+            lastWakeAd = null;
+            lastObservedCarDevice = null;
+            lastObservedBleMac = "";
+            candidates.clear();
+            logic.reset();
+            rssiFilter = new RssiFilter();
+            lastSampleAtMs = 0L;
+        }
         identity = new VehicleIdentity(addr, name, tail2, tail3, "", System.currentTimeMillis());
-        identityStore.save(identity);
+        identityStore.save(identity, VehicleLearningState.MANUAL);
         waitForDisconnectToLearn = false;
-        appendLog("✓ 已绑定本车特征: " + identityDiagnostic());
+        appendLog("已设置本车匹配特征（不代表已获取地址）: " + identityDiagnostic());
         stopBleScan();
         startBleScan();
         updateNotificationIfNeeded(true);
@@ -558,6 +664,8 @@ public class PassiveKeyService extends Service implements SensorEventListener {
 
     /** 更换车辆前取消旧请求和测距状态。 */
     public void resetLearnedVehicle() {
+        boolean connectedNow = isOfficialConnected();
+        VehicleIdentity connectedEvidence = findIdentityFromConnectedGatt();
         cancelPendingControl("重新学习本车");
         identityStore.clear();
         identity = null;
@@ -573,10 +681,35 @@ public class PassiveKeyService extends Service implements SensorEventListener {
         wakeAttempts = 0;
         lastGeelyConnectedAtMs = 0L;
         lastLearnAttemptAtMs = 0L;
-        waitForDisconnectToLearn = geelyConnected;
-        lastAction = "已清除本车身份，等待重新学习";
-        appendLog("已清除本车蓝牙身份；请靠近车辆并用银河 App 连接一次");
+        waitForDisconnectToLearn = connectedNow && connectedEvidence == null;
+        if (VehicleLearningState.canLearnConnected(hasBluetoothPermission(), connectedNow,
+                waitForDisconnectToLearn, connectedEvidence != null)) {
+            identity = connectedEvidence;
+            identityStore.save(identity, VehicleLearningState.CONNECTED);
+            waitForDisconnectToLearn = false;
+            lastAction = "已从当前真实蓝牙连接重新学习本车";
+        } else {
+            lastAction = learningMessage();
+        }
+        DiagnosticLog.event("Learning", "RESET_REQUEST", "complete=" + hasCompleteIdentity()
+                + " waiting_reconnect=" + waitForDisconnectToLearn + " reason=" + lastAction);
+        appendLog(lastAction);
+        stopBleScan();
         startBleScan();
+        maybeLearnVehicle(SystemClock.elapsedRealtime());
+        updateNotificationIfNeeded(true);
+    }
+
+    /** 手填尾号或旧名称不是完整本车地址，学习完成前不执行自动车控。 */
+    private boolean hasCompleteIdentity() {
+        return identity != null && VehicleLearningState.hasAddress(identity.address);
+    }
+
+    /** 反馈缺权限、等待地址及等待重新连接的具体状态。 */
+    private String learningMessage() {
+        return VehicleLearningState.message(serviceEnabled, hasBluetoothPermission(),
+                KeyNotificationBridgeService.isNotificationListenerEnabled(this), hasCompleteIdentity(),
+                identity != null, geelyConnected, waitForDisconnectToLearn);
     }
 
     // ==================== BLE 扫描 ====================
@@ -731,7 +864,7 @@ public class PassiveKeyService extends Service implements SensorEventListener {
                     VehicleIdentity merged = identity.mergeWith(ad);
                     if (merged != identity) {
                         identity = merged;
-                        identityStore.save(identity);
+                        identityStore.save(identity, VehicleLearningState.SCAN);
                         appendLog("已更新本车蓝牙特征: " + identityDiagnostic());
                     }
                     if (result.getDevice() != null) {
@@ -753,7 +886,7 @@ public class PassiveKeyService extends Service implements SensorEventListener {
                     && candidates.size() == 1
                     && ad.rssi >= -88) {
                 identity = VehicleIdentity.from(ad);
-                identityStore.save(identity);
+                identityStore.save(identity, VehicleLearningState.SCAN);
                 if (result.getDevice() != null) {
                     lastObservedCarDevice = result.getDevice();
                 }
@@ -924,8 +1057,7 @@ public class PassiveKeyService extends Service implements SensorEventListener {
     }
 
     private void maybeLearnVehicle(long now) {
-        if (identity != null) return;
-        if (waitForDisconnectToLearn && geelyConnected) return;
+        if (hasCompleteIdentity() || !serviceEnabled || !hasBluetoothPermission()) return;
         if ((now - lastLearnAttemptAtMs) < 10000L) return;
         lastLearnAttemptAtMs = now;
 
@@ -933,20 +1065,26 @@ public class PassiveKeyService extends Service implements SensorEventListener {
         VehicleIdentity gattIdentity = findIdentityFromConnectedGatt();
         if (gattIdentity != null) {
             identity = gattIdentity;
-            identityStore.save(identity);
+            identityStore.save(identity, VehicleLearningState.CONNECTED);
+            waitForDisconnectToLearn = false;
             primaryCandidateKey = "";
             appendLog("✓ 已从系统 GATT 连接识别本车蓝牙: " + identityDiagnostic());
             updateNotificationIfNeeded(true);
             return;
         }
+        if (waitForDisconnectToLearn && geelyConnected) {
+            DiagnosticLog.detail("Learning", "WAIT_RECONNECT", "reason=" + learningMessage());
+            return;
+        }
 
         GeelyAdvertisement ad = null;
-        if (lastWakeAd != null && (now - lastWakeAd.seenAtMs) <= 15000L) {
+        if (lastWakeAd != null && (now - lastWakeAd.seenAtMs) <= 15000L
+                && (identity == null || identity.matches(lastWakeAd))) {
             ad = lastWakeAd;
         }
         if (ad != null) {
             identity = VehicleIdentity.from(ad);
-            identityStore.save(identity);
+            identityStore.save(identity, VehicleLearningState.SCAN);
             primaryCandidateKey = "";
             appendLog("✓ 已自动识别本车蓝牙: " + identityDiagnostic());
             updateNotificationIfNeeded(true);
@@ -960,27 +1098,19 @@ public class PassiveKeyService extends Service implements SensorEventListener {
             return;
         }
         ad = strongestCandidate(now);
-        if (ad != null) {
+        if (ad != null && (identity == null || identity.matches(ad))) {
             identity = VehicleIdentity.from(ad);
-            identityStore.save(identity);
+            identityStore.save(identity, VehicleLearningState.SCAN);
             primaryCandidateKey = "";
             appendLog("✓ 已自动识别本车蓝牙: " + identityDiagnostic());
             updateNotificationIfNeeded(true);
             return;
         }
 
-        if (!lastObservedBleMac.isEmpty()) {
-            String devName = "";
-            try {
-                if (lastObservedCarDevice != null && lastObservedCarDevice.getName() != null) {
-                    devName = lastObservedCarDevice.getName();
-                }
-            } catch (Throwable ignored) {
-            }
-            String tail3 = GeelyAdvertisement.vinTailFromName(devName);
-            String tail2 = tail3.length() >= 2 ? tail3.substring(tail3.length() - 2) : "";
-            identity = new VehicleIdentity(lastObservedBleMac, devName, tail2, tail3, "", System.currentTimeMillis());
-            identityStore.save(identity);
+        VehicleIdentity observed = observedIdentityForDevice(lastObservedCarDevice, now);
+        if (observed != null && lastAclConnectedAtMs > 0L && now - lastAclConnectedAtMs <= CANDIDATE_TTL_MS) {
+            identity = observed;
+            identityStore.save(identity, VehicleLearningState.ACL);
             primaryCandidateKey = "";
             appendLog("✓ 已从系统 BLE 连接事件自动识别本车: " + identityDiagnostic());
             updateNotificationIfNeeded(true);
@@ -992,33 +1122,39 @@ public class PassiveKeyService extends Service implements SensorEventListener {
 
     /** 从可见系统连接识别车辆，匿名设备缺少名称时继续查候选广播，不中断就绪处理。 */
     private VehicleIdentity findIdentityFromConnectedGatt() {
-        List<BluetoothDevice> devices = GeelyBridge.getConnectedGattDevices(this);
+        if (!hasBluetoothPermission() || !isOfficialConnected()) return null;
+        List<BluetoothDevice> devices = new ArrayList<>(GeelyBridge.getConnectedGattDevices(this));
+        if (activeGatt != null && gattConnected) devices.add(activeGatt.getDevice());
+        Map<String, VehicleIdentity> verified = new LinkedHashMap<>();
         for (BluetoothDevice device : devices) {
-            if (device == null) continue;
-            String address = device.getAddress();
-            String name = "";
-            try {
-                String observedName = device.getName();
-                name = observedName == null ? "" : observedName;
-            } catch (Throwable ignored) {
-            }
-            if (!name.isEmpty() && GeelyAdvertisement.isGeelyVehicleName(name)) {
-                return new VehicleIdentity(
-                        address,
-                        name,
-                        "",
-                        GeelyAdvertisement.vinTailFromName(name),
-                        "",
-                        System.currentTimeMillis()
-                );
-            }
-            for (GeelyAdvertisement ad : candidates.values()) {
-                if (ad != null && ad.address.equalsIgnoreCase(address)) {
-                    return VehicleIdentity.from(ad);
-                }
-            }
+            VehicleIdentity candidate = observedIdentityForDevice(device, SystemClock.elapsedRealtime());
+            if (candidate != null) verified.put(candidate.address.toUpperCase(Locale.ROOT), candidate);
         }
-        return null;
+        String address = VehicleLearningState.uniqueAddress(verified.keySet());
+        return verified.get(address);
+    }
+
+    /** 只用当前设备名称或近期广播验证，匿名地址及与手填尾号冲突的车辆不得自动绑定。 */
+    private VehicleIdentity observedIdentityForDevice(BluetoothDevice device, long now) {
+        if (device == null) return null;
+        try {
+            String address = device.getAddress();
+            for (GeelyAdvertisement advertisement : candidates.values()) {
+                if (advertisement != null && now - advertisement.seenAtMs <= CANDIDATE_TTL_MS
+                        && address.equalsIgnoreCase(advertisement.address)
+                        && (identity == null || identity.matches(advertisement))) return VehicleIdentity.from(advertisement);
+            }
+            String name = device.getName();
+            if (!GeelyAdvertisement.isGeelyVehicleName(name)) return null;
+            String tail3 = GeelyAdvertisement.vinTailFromName(name);
+            String tail2 = tail3.length() >= 2 ? tail3.substring(tail3.length() - 2) : "";
+            if (identity != null && ((!identity.name.isEmpty() && !identity.name.equalsIgnoreCase(name))
+                    || (!identity.vinTail3.isEmpty() && !identity.vinTail3.equalsIgnoreCase(tail3))
+                    || (!identity.vinTail2.isEmpty() && !identity.vinTail2.equalsIgnoreCase(tail2)))) return null;
+            return new VehicleIdentity(address, name, tail2, tail3, "", System.currentTimeMillis());
+        } catch (SecurityException denied) {
+            return null;
+        }
     }
 
     // ==================== RSSI 与状态机 ====================
@@ -1055,8 +1191,8 @@ public class PassiveKeyService extends Service implements SensorEventListener {
                 now,
                 geelyConnected,
                 driving,
-                autoUnlock && !chargingBlocked,
-                autoLock && !chargingBlocked,
+                autoUnlock && !chargingBlocked && hasCompleteIdentity(),
+                autoLock && !chargingBlocked && hasCompleteIdentity(),
                 source.startsWith("GATT") ? "GATT" : "SCAN"
         );
         recordDecision(action, now);
@@ -1181,7 +1317,7 @@ public class PassiveKeyService extends Service implements SensorEventListener {
             cancelPendingControl("等待银河就绪超时，未发送");
             return;
         }
-        if (!running || !serviceEnabled || isChargingBlocked()
+        if (!running || !serviceEnabled || isChargingBlocked() || !hasCompleteIdentity()
                 || !logic.isPendingActionValid(action, now, isDriving(now), autoUnlock, autoLock)) {
             cancelPendingControl("距离证据已失效或已进入禁控状态");
             return;
@@ -1277,7 +1413,8 @@ public class PassiveKeyService extends Service implements SensorEventListener {
             appendLog("✓ 银河蓝牙钥匙已连接");
             maybeLearnVehicle(now);
             boolean blocked = isDriving(now) || isChargingBlocked();
-            PassiveKeyLogic.Action action = logic.onOfficialConnected(now, blocked, autoUnlock && !blocked);
+            PassiveKeyLogic.Action action = logic.onOfficialConnected(now, blocked,
+                    autoUnlock && !blocked && hasCompleteIdentity());
             DiagnosticLog.event("Decision", "OFFICIAL_READY_RESULT", "action=" + action
                     + " " + logic.diagnosticSnapshot(now));
             if (action == PassiveKeyLogic.Action.UNLOCK) {
@@ -1391,10 +1528,10 @@ public class PassiveKeyService extends Service implements SensorEventListener {
                     String t3 = GeelyAdvertisement.vinTailFromName(name);
                     String t2 = t3.length() >= 2 ? t3.substring(t3.length() - 2) : "";
                     identity = new VehicleIdentity(address, name, t2, t3, "", System.currentTimeMillis());
-                    identityStore.save(identity);
+                    identityStore.save(identity, VehicleLearningState.CONNECTED);
                 } else if (identity.name.isEmpty() || name.equalsIgnoreCase(identity.name)) {
                     identity = identity.withAddress(address);
-                    identityStore.save(identity);
+                    identityStore.save(identity, VehicleLearningState.CONNECTED);
                 }
                 lastObservedCarDevice = device;
                 lastObservedBleMac = address;
@@ -1405,7 +1542,7 @@ public class PassiveKeyService extends Service implements SensorEventListener {
                         && (identity == null || identity.matches(ad))) {
                     if (identity != null) {
                         identity = identity.withAddress(address);
-                        identityStore.save(identity);
+                        identityStore.save(identity, VehicleLearningState.CONNECTED);
                     }
                     lastObservedCarDevice = device;
                     lastObservedBleMac = address;
@@ -1682,6 +1819,9 @@ public class PassiveKeyService extends Service implements SensorEventListener {
                 screenOn = false;
                 lastScreenOffAtMs = now;
                 refreshWakeLock(now);
+                if (!isScanning && bluetoothAdapter != null && bluetoothAdapter.isEnabled()) {
+                    startBleScan();
+                }
             } else if (Intent.ACTION_SCREEN_ON.equals(action)) {
                 DiagnosticLog.event("Power", "SCREEN_ON", "run=" + serviceRun + " " + signalDiagnostic(now));
                 screenOn = true;
@@ -1739,16 +1879,17 @@ public class PassiveKeyService extends Service implements SensorEventListener {
             if (dev != null) lastObservedCarDevice = dev;
             lastAclConnectedAtMs = now;
 
-            if (identity == null && !waitForDisconnectToLearn) {
+            if (!hasCompleteIdentity()) {
                 String t3 = GeelyAdvertisement.vinTailFromName(devName);
                 String t2 = t3.length() >= 2 ? t3.substring(t3.length() - 2) : "";
                 identity = new VehicleIdentity(bdAddr, devName, t2, t3, "", System.currentTimeMillis());
-                identityStore.save(identity);
+                identityStore.save(identity, VehicleLearningState.GATT_EVENT);
+                waitForDisconnectToLearn = false;
                 appendLog("✓ 捕获系统 BLE GATT 车机地址: " + identityDiagnostic());
             } else if (identity != null && !bdAddr.equalsIgnoreCase(identity.address)) {
                 if (devName.isEmpty() || identity.name.isEmpty() || devName.equalsIgnoreCase(identity.name)) {
                     identity = identity.withAddress(bdAddr);
-                    identityStore.save(identity);
+                    identityStore.save(identity, VehicleLearningState.GATT_EVENT);
                     appendLog("✓ 捕获车机 BLE 新地址: " + identityDiagnostic());
                 }
             }
@@ -1788,15 +1929,16 @@ public class PassiveKeyService extends Service implements SensorEventListener {
         lastObservedBleMac = addr;
         if (connected) {
             lastAclConnectedAtMs = now;
-            if (identity == null && !waitForDisconnectToLearn) {
+            if (!hasCompleteIdentity()) {
                 String t3 = GeelyAdvertisement.vinTailFromName(name);
                 String t2 = t3.length() >= 2 ? t3.substring(t3.length() - 2) : "";
                 identity = new VehicleIdentity(addr, name, t2, t3, "", System.currentTimeMillis());
-                identityStore.save(identity);
+                identityStore.save(identity, VehicleLearningState.ACL);
+                waitForDisconnectToLearn = false;
                 appendLog("✓ 从 ACL 连接自动锁定本车: " + identityDiagnostic());
             } else if (identity != null && !addr.equalsIgnoreCase(identity.address)) {
                 identity = identity.withAddress(addr);
-                identityStore.save(identity);
+                identityStore.save(identity, VehicleLearningState.ACL);
             }
             appendLog("✓ 车机底层 ACL 已连接: addr_id=" + DiagnosticLog.fingerprint(addr)
                     + " name_id=" + DiagnosticLog.fingerprint(name));
@@ -1871,13 +2013,15 @@ public class PassiveKeyService extends Service implements SensorEventListener {
                 lastZoneCategory = "";
                 lastSource = "";
             }
-            if ((now - lastListenerRebindAtMs) > 60000L) {
+            if ((now - lastListenerRebindAtMs) >= 2000L) {
                 lastListenerRebindAtMs = now;
-                if (KeyNotificationBridgeService.isNotificationListenerEnabled(PassiveKeyService.this)
-                        && !KeyNotificationBridgeService.isListenerConnected()) {
-                    appendLog("通知监听服务未绑定，主动请求系统重绑");
-                    KeyNotificationBridgeService.ensureRebound(PassiveKeyService.this);
-                }
+                KeyNotificationBridgeService.recoverIfNeeded(PassiveKeyService.this);
+            }
+            if (serviceEnabled && !isScanning && hasBluetoothPermission()
+                    && bluetoothAdapter != null && bluetoothAdapter.isEnabled()
+                    && (now - lastScanRecoveryAtMs) >= 2000L) {
+                lastScanRecoveryAtMs = now;
+                startBleScan();
             }
             boolean notifConnected = isOfficialConnected();
             if (notifConnected != geelyConnected) {
@@ -1888,7 +2032,7 @@ public class PassiveKeyService extends Service implements SensorEventListener {
                 appendLog("🔄 已离开车辆且蓝牙断开满 12s，已重新武装下一次靠近自动解锁");
             }
             ensureGattAttached(now);
-            if (notifConnected && identity == null) {
+            if (notifConnected && !hasCompleteIdentity()) {
                 maybeLearnVehicle(now);
             }
             if (notifConnected && (lastSampleAtMs == 0L || (now - lastSampleAtMs) > SIGNAL_EXPIRE_UI_MS)
@@ -1953,6 +2097,10 @@ public class PassiveKeyService extends Service implements SensorEventListener {
         String text;
         if (!serviceEnabled) {
             text = "无感进出服务已手动关闭";
+        } else if (!KeyNotificationBridgeService.isNotificationListenerEnabled(this)) {
+            text = "通知使用权未开启 · 打开App授权";
+        } else if (!KeyNotificationBridgeService.isListenerConnected()) {
+            text = "通知监听被系统解绑 · 点此打开App修复";
         } else if (!geelyConnected) {
             text = identity == null ? "正在学习本车蓝牙身份" : "等待银河蓝牙连接 · " + lastZone;
         } else {
@@ -2028,7 +2176,10 @@ public class PassiveKeyService extends Service implements SensorEventListener {
                     + " power_save=" + (powerManager != null && powerManager.isPowerSaveMode())
                     + " battery_exempt=" + (powerManager != null && powerManager.isIgnoringBatteryOptimizations(getPackageName()))
                     + " heap_used_kb=" + (runtime.totalMemory() - runtime.freeMemory()) / 1024L
-                    + " identity_id=" + DiagnosticLog.fingerprint(identity == null ? "" : identity.stableKey());
+                    + " identity_id=" + DiagnosticLog.fingerprint(identity == null ? "" : identity.stableKey())
+                    + " learning_complete=" + hasCompleteIdentity()
+                    + " learning_source=" + identityStore.getLearningSource()
+                    + " learning_waiting_reconnect=" + waitForDisconnectToLearn;
         } catch (RuntimeException unavailable) {
             return "environment_error=" + unavailable.getClass().getSimpleName();
         }
@@ -2058,7 +2209,8 @@ public class PassiveKeyService extends Service implements SensorEventListener {
         if (known == null) return "identity=none";
         return "addr_id=" + DiagnosticLog.fingerprint(known.address)
                 + " name_id=" + DiagnosticLog.fingerprint(known.name)
-                + " identity_id=" + DiagnosticLog.fingerprint(known.stableKey());
+                + " identity_id=" + DiagnosticLog.fingerprint(known.stableKey())
+                + " learning_source=" + identityStore.getLearningSource();
     }
 
     /** 未出现的事件用负一表示，零表示刚刚发生。 */

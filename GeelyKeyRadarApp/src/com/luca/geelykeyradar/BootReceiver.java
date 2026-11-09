@@ -15,6 +15,7 @@ public class BootReceiver extends BroadcastReceiver {
         if (!new VehicleIdentityStore(context).isServiceEnabled()) {
             return;
         }
+        ServiceWatchdogReceiver.schedule(context);
         try {
             Intent service = new Intent(context, PassiveKeyService.class);
             service.setAction(PassiveKeyService.ACTION_START);

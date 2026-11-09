@@ -45,6 +45,7 @@ final class PassiveKeyLogic {
     private long lockDwellMs = LOCK_DWELL_MS;
 
     private boolean approachLatched = false;
+    private boolean manualLockLatched = false;
     private boolean hasBeenNear = false;
     private long lastUnlockAtMs = 0L;
     private long lockDwellStartMs = 0L;
@@ -170,6 +171,18 @@ final class PassiveKeyLogic {
         if (distanceDbm >= nearGuard) {
             lastNearAtMs = nowMs;
             departureArmed = true;
+        }
+        if (manualLockLatched) {
+            if (!officialConnected && !driving && distanceDbm <= lockDbm) {
+                if (farSinceMs == 0L) farSinceMs = nowMs;
+                if ((nowMs - farSinceMs) >= REARM_FAR_MS) {
+                    rearm();
+                    return sampleDecision(Action.NONE, "REARMED_AFTER_MANUAL_LOCK_DEPARTURE", nowMs);
+                }
+            } else {
+                farSinceMs = 0L;
+            }
+            return sampleDecision(Action.NONE, "MANUAL_LOCK_LATCHED", nowMs);
         }
         if (hasBeenNear && earlyUnlockSentAtMs > 0L && !departureArmed) {
             earlyApproachPeakDbm = Float.isNaN(earlyApproachPeakDbm)
@@ -324,6 +337,9 @@ final class PassiveKeyLogic {
      */
     synchronized Action onOfficialConnected(long nowMs, boolean driving, boolean autoUnlock) {
         officialDisconnectedAtMs = 0L;
+        if (manualLockLatched) {
+            return officialDecision(Action.NONE, "MANUAL_LOCK_LATCHED", nowMs);
+        }
         if (pendingAction != Action.NONE || returnConfirmationRequired) {
             return officialDecision(Action.NONE, pendingAction != Action.NONE
                     ? "CONTROL_PENDING" : "RETURN_CONFIRMATION", nowMs);
@@ -417,6 +433,7 @@ final class PassiveKeyLogic {
      */
     synchronized void reset() {
         approachLatched = false;
+        manualLockLatched = false;
         hasBeenNear = false;
         lastUnlockAtMs = 0L;
         lastSampleAtMs = 0L;
@@ -481,6 +498,28 @@ final class PassiveKeyLogic {
         }
     }
 
+    /** 同步手动交付结果；手动上锁后保持本次会话锁存，避免人在车旁又被自动解锁。 */
+    synchronized void onManualControlSent(Action action, long nowMs) {
+        if (action != Action.UNLOCK && action != Action.LOCK) return;
+        pendingAction = Action.NONE;
+        approachLatched = true;
+        manualLockLatched = action == Action.LOCK;
+        hasBeenNear = action == Action.UNLOCK;
+        lastUnlockAtMs = nowMs;
+        lastNearAtMs = 0L;
+        lastApproachAtMs = nowMs;
+        farSinceMs = 0L;
+        unlockRequests = 0;
+        lockRequests = 0;
+        controlRetryAfterMs = 0L;
+        returnConfirmationRequired = false;
+        resetDepartureEvidence();
+        resetReturnConfirmation();
+        resetLockDwell();
+        if (action == Action.UNLOCK) earlyUnlockSentAtMs = nowMs;
+        lastControlFeedback = "MANUAL_FINISHED_" + action;
+    }
+
     /** 发送失败或条件失效时撤销待发标记，保留近车证据，并限制同一会话的补发次数。 */
     synchronized void onControlFailed(Action action, long nowMs) {
         if (pendingAction != action || action == Action.NONE) return;
@@ -498,6 +537,7 @@ final class PassiveKeyLogic {
     /** 真正离开并断连后结束旧会话，下一次官方连接仍可快速解锁；回程确认只约束未结束的连接会话。 */
     private void rearm() {
         approachLatched = false;
+        manualLockLatched = false;
         hasBeenNear = false;
         farSinceMs = 0L;
         pendingAction = Action.NONE;
@@ -604,7 +644,7 @@ final class PassiveKeyLogic {
                         + "dwell_ms=%d/%d dwell_samples=%d near_guard_left_ms=%d inhibit_left_ms=%d "
                         + "unlock_cooldown_left_ms=%d retry_left_ms=%d unlock_requests=%d/%d lock_requests=%d/%d "
                         + "return_required=%s return_ms=%d return_samples=%d near_age_ms=%d approach_age_ms=%d "
-                        + "far_ms=%d disconnected_ms=%d has_near=%s latched=%s logic_pending=%s "
+                        + "far_ms=%d disconnected_ms=%d has_near=%s latched=%s manual_lock_latched=%s logic_pending=%s "
                         + "departure_armed=%s early_unlock_age_ms=%d early_peak_dbm=%.1f departure_drop_dbm=%.1f rssi_source=%s",
                 lastSampleDecision, age(nowMs, lastSampleDecisionAtMs),
                 lastOfficialDecision, age(nowMs, lastOfficialDecisionAtMs), lastMaintenanceDecision,
@@ -618,7 +658,7 @@ final class PassiveKeyLogic {
                 returnNearStartMs == 0L ? 0L : Math.max(0L, nowMs - returnNearStartMs), returnNearSamples,
                 age(nowMs, lastNearAtMs), age(nowMs, lastApproachAtMs),
                 farSinceMs == 0L ? 0L : Math.max(0L, nowMs - farSinceMs),
-                age(nowMs, officialDisconnectedAtMs), hasBeenNear, approachLatched, pendingAction,
+                age(nowMs, officialDisconnectedAtMs), hasBeenNear, approachLatched, manualLockLatched, pendingAction,
                 departureArmed, age(nowMs, earlyUnlockSentAtMs), earlyApproachPeakDbm,
                 earlyApproachPeakDbm - lastDistanceDbm, measurementSource);
     }

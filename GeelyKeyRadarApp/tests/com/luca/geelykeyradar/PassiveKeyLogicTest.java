@@ -36,6 +36,14 @@ public final class PassiveKeyLogicTest {
         abortedEarlyApproachStillLocksAfterRealWeakening();
         switchingRssiSourceDoesNotPretendDeparture();
         sourceSwitchRestartsContinuousFarDwell();
+        manualUnlockIsNotAutomaticallyRepeated();
+        manualEarlyUnlockDoesNotImmediatelyLock();
+        manualLockRemainsLockedWhileNearby();
+        manualLockRearmsAfterRealDeparture();
+        manualLockSilenceRearmsNextApproach();
+        manualUnlockOverridesManualLock();
+        manualActionsInvalidateQueuedAutomaticAction();
+        manualLockResetRestoresAutomaticControl();
         System.out.println("PassiveKeyLogicTest passed");
     }
 
@@ -522,6 +530,117 @@ public final class PassiveKeyLogicTest {
         }
         check(logic.onSample(-86f, -86f, 19_000L, true, false, true, true, "SCAN")
                 == PassiveKeyLogic.Action.LOCK, "新通道满足原四点五秒后正常上锁");
+    }
+
+    /** 手动解锁计入本次靠近会话，重复通知与近场样本不能再自动解锁。 */
+    private static void manualUnlockIsNotAutomaticallyRepeated() {
+        PassiveKeyLogic logic = new PassiveKeyLogic();
+        logic.onManualControlSent(PassiveKeyLogic.Action.UNLOCK, 1_000L);
+        check(logic.onOfficialConnected(1_500L, false, true) == PassiveKeyLogic.Action.NONE,
+                "手动解锁后官方连接通知不得重复解锁");
+        for (long time = 2_000L; time <= 20_000L; time += 500L) {
+            check(logic.onSample(-60f, time, true, false, true, true) == PassiveKeyLogic.Action.NONE,
+                    "手动解锁后持续近场不得重复解锁");
+        }
+        check(logic.diagnosticSnapshot(20_000L).contains("feedback=MANUAL_FINISHED_UNLOCK"),
+                "日志应区分手动交付与自动交付");
+        feedUntilLock(logic, 21_000L);
+    }
+
+    /** 距离阈值之外手动解锁后，停留或继续靠近不应立刻反向自动上锁。 */
+    private static void manualEarlyUnlockDoesNotImmediatelyLock() {
+        PassiveKeyLogic logic = new PassiveKeyLogic();
+        logic.onManualControlSent(PassiveKeyLogic.Action.UNLOCK, 1_000L);
+        for (long time = 1_500L; time <= 20_000L; time += 500L) {
+            check(logic.onSample(-84f, time, true, false, true, true) == PassiveKeyLogic.Action.NONE,
+                    "没有真实离开证据时，不得反向撤销用户手动解锁");
+        }
+    }
+
+    /** 手动上锁后，即使人在车旁或官方仍连接，也不得自动重开或重复上锁。 */
+    private static void manualLockRemainsLockedWhileNearby() {
+        PassiveKeyLogic logic = new PassiveKeyLogic();
+        logic.onManualControlSent(PassiveKeyLogic.Action.LOCK, 1_000L);
+        check(logic.onOfficialConnected(1_500L, false, true) == PassiveKeyLogic.Action.NONE,
+                "手动上锁后的连接事件不能重新解锁");
+        for (long time = 2_000L; time <= 30_000L; time += 500L) {
+            check(logic.onSample(-60f, time, true, false, true, true) == PassiveKeyLogic.Action.NONE,
+                    "人在车旁时保持手动上锁结果");
+        }
+        for (long time = 30_500L; time <= 45_000L; time += 500L) {
+            check(logic.onSample(-90f, time, true, false, true, true) == PassiveKeyLogic.Action.NONE,
+                    "官方仍连接时，不能将手动上锁再重复发送");
+        }
+        check(logic.onSample(-60f, 45_500L, true, false, true, true) == PassiveKeyLogic.Action.NONE,
+                "同一连接会话返回车旁也不能撤销手动上锁");
+        check(logic.diagnosticSnapshot(45_500L).contains("manual_lock_latched=true"),
+                "导出日志应能解释手动上锁锁存");
+    }
+
+    /** 手动上锁后，真实远场连续八秒且官方断开，才恢复下一次自动靠近。 */
+    private static void manualLockRearmsAfterRealDeparture() {
+        PassiveKeyLogic logic = new PassiveKeyLogic();
+        logic.onManualControlSent(PassiveKeyLogic.Action.LOCK, 1_000L);
+        logic.onSample(-60f, 2_000L, true, false, true, true);
+        logic.onOfficialDisconnected(3_000L);
+        for (long time = 4_000L; time <= 12_000L; time += 500L) {
+            check(logic.onSample(-90f, time, false, false, true, true) == PassiveKeyLogic.Action.NONE,
+                    "远离重新武装时不能补发手动上锁");
+        }
+        check(logic.diagnosticSnapshot(12_000L).contains("manual_lock_latched=false"),
+                "真实离开后应清除手动锁存");
+        check(logic.onOfficialConnected(20_000L, false, true) == PassiveKeyLogic.Action.UNLOCK,
+                "下一次实际接近仍应正常自动解锁");
+    }
+
+    /** 手动上锁后自然离开至无信号，沿用原静默重新武装规则。 */
+    private static void manualLockSilenceRearmsNextApproach() {
+        PassiveKeyLogic logic = new PassiveKeyLogic();
+        logic.onManualControlSent(PassiveKeyLogic.Action.LOCK, 1_000L);
+        logic.onSample(-60f, 2_000L, true, false, true, true);
+        logic.onOfficialDisconnected(3_000L);
+        check(!logic.onTick(13_500L, false, false), "静默不足十二秒不得恢复自动解锁");
+        check(logic.onTick(14_000L, false, false), "实际离开并断连静默后应恢复");
+        check(logic.onOfficialConnected(15_000L, false, true) == PassiveKeyLogic.Action.UNLOCK,
+                "离开后的新官方连接应恢复原自动解锁");
+    }
+
+    /** 用户再点手动解锁可立即解除手动上锁锁存，随后正常监测远离。 */
+    private static void manualUnlockOverridesManualLock() {
+        PassiveKeyLogic logic = new PassiveKeyLogic();
+        logic.onManualControlSent(PassiveKeyLogic.Action.LOCK, 1_000L);
+        logic.onSample(-60f, 2_000L, true, false, true, true);
+        logic.onManualControlSent(PassiveKeyLogic.Action.UNLOCK, 3_000L);
+        check(logic.onSample(-60f, 4_000L, true, false, true, true) == PassiveKeyLogic.Action.NONE,
+                "手动解锁后不能重复自动解锁");
+        check(logic.diagnosticSnapshot(4_000L).contains("manual_lock_latched=false"),
+                "手动解锁应立即清除手动上锁锁存");
+        feedUntilLock(logic, 10_000L);
+    }
+
+    /** 手动操作完成后，旧自动请求不再有效，不能延迟覆盖用户选择。 */
+    private static void manualActionsInvalidateQueuedAutomaticAction() {
+        PassiveKeyLogic logic = new PassiveKeyLogic();
+        check(logic.onSample(-60f, 1_000L, true, false, true, true) == PassiveKeyLogic.Action.UNLOCK,
+                "先建立自动待发解锁");
+        logic.onManualControlSent(PassiveKeyLogic.Action.LOCK, 1_500L);
+        check(!logic.isPendingActionValid(PassiveKeyLogic.Action.UNLOCK, 1_600L, false, true, true),
+                "旧自动解锁不能覆盖用户手动上锁");
+        logic.onManualControlSent(PassiveKeyLogic.Action.UNLOCK, 2_000L);
+        logic.onSample(-60f, 3_000L, true, false, true, true);
+        long lockTime = feedUntilLock(logic, 9_000L);
+        logic.onManualControlSent(PassiveKeyLogic.Action.UNLOCK, lockTime + 100L);
+        check(!logic.isPendingActionValid(PassiveKeyLogic.Action.LOCK, lockTime + 200L, false, true, true),
+                "旧自动上锁不能覆盖用户手动解锁");
+    }
+
+    /** 重学或重新启用服务时清除手动会话锁存，不永久影响自动功能。 */
+    private static void manualLockResetRestoresAutomaticControl() {
+        PassiveKeyLogic logic = new PassiveKeyLogic();
+        logic.onManualControlSent(PassiveKeyLogic.Action.LOCK, 1_000L);
+        logic.reset();
+        check(logic.onSample(-60f, 2_000L, true, false, true, true) == PassiveKeyLogic.Action.UNLOCK,
+                "重置后应恢复自动解锁");
     }
 
     /** 创建已完成一次解锁的近车会话，供远离场景复用。 */

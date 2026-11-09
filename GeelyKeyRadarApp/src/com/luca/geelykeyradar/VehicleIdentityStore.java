@@ -18,6 +18,7 @@ final class VehicleIdentityStore {
     private static final String KEY_SIG = "vehicle_mfg_signature";
     private static final String KEY_LEARNED_AT = "vehicle_learned_at";
     private static final String KEY_MANUAL_CLEARED = "vehicle_manual_cleared";
+    private static final String KEY_LEARNING_SOURCE = "vehicle_learning_source";
     private static final String KEY_SERVICE_ENABLED = "service_enabled";
     private static final String KEY_BLOCK_WHEN_CHARGING = "block_control_when_charging";
     private static final String KEY_UNLOCK_DBM = "unlock_dbm";
@@ -51,7 +52,7 @@ final class VehicleIdentityStore {
             if (!prefs.getBoolean(KEY_MANUAL_CLEARED, false)) {
                 VehicleIdentity migrated = migrateFromLegacyPrefs();
                 if (migrated != null) {
-                    save(migrated);
+                    save(migrated, VehicleLearningState.LEGACY);
                     return migrated;
                 }
             }
@@ -86,7 +87,13 @@ final class VehicleIdentityStore {
         }
     }
 
+    /** 补全或轮换地址时保留原来源，真实观测入口应显式传入来源。 */
     void save(VehicleIdentity identity) {
+        save(identity, getLearningSource());
+    }
+
+    /** 将学习来源与身份同时持久化，界面可区分手填、旧配置和实际观测。 */
+    void save(VehicleIdentity identity, String source) {
         if (identity == null) return;
         prefs.edit()
                 .putString(KEY_ADDRESS, identity.address)
@@ -95,10 +102,12 @@ final class VehicleIdentityStore {
                 .putString(KEY_TAIL3, identity.vinTail3)
                 .putString(KEY_SIG, identity.mfgSignature)
                 .putLong(KEY_LEARNED_AT, identity.learnedAtMs)
+                .putString(KEY_LEARNING_SOURCE, source)
                 .putBoolean(KEY_MANUAL_CLEARED, false)
                 .apply();
     }
 
+    /** 只清除车辆及学习来源，保留服务开关和距离参数。 */
     void clear() {
         prefs.edit()
                 .remove(KEY_ADDRESS)
@@ -107,8 +116,14 @@ final class VehicleIdentityStore {
                 .remove(KEY_TAIL3)
                 .remove(KEY_SIG)
                 .remove(KEY_LEARNED_AT)
+                .remove(KEY_LEARNING_SOURCE)
                 .putBoolean(KEY_MANUAL_CLEARED, true)
                 .apply();
+    }
+
+    /** 兼容旧存储，未知来源不宣称为自动识别。 */
+    String getLearningSource() {
+        return prefs.getString(KEY_LEARNING_SOURCE, VehicleLearningState.UNKNOWN);
     }
 
     boolean isAutoUnlockEnabled() {
