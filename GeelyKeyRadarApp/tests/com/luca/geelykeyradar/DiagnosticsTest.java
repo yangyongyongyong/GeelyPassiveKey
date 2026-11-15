@@ -20,6 +20,8 @@ public final class DiagnosticsTest {
         diagnosticSnapshotDoesNotMutateLogic();
         reasonsMatchActualBranches();
         exportIsConsistentAndRedacted();
+        actionSnapshotUsesThreeMinuteWindowAndKeepsConfiguration();
+        actionSnapshotPrunesOldestAtOneHundred();
         processMarkerDistinguishesUncleanStop();
         System.out.println("DiagnosticsTest passed");
     }
@@ -133,6 +135,63 @@ public final class DiagnosticsTest {
             check(Files.readString(directory.resolve("passive_key.log")).contains("LOGS_CLEARED"), "清空后保留清空标记");
             check(!Files.exists(directory.resolve("passive_key.log.3"))
                     && !Files.exists(directory.resolve("passive_key_diagnostic.log")), "清空应移除所有日志历史分段");
+        } finally {
+            store.close();
+            deleteTemporary(directory);
+        }
+    }
+
+    /** 动作快照只含截止前3分钟且 summary 必须明确写出用户四项配置。 */
+    private static void actionSnapshotUsesThreeMinuteWindowAndKeepsConfiguration() throws Exception {
+        Path directory = Files.createTempDirectory("action-snapshot-test-");
+        DiagnosticLogStore store = new DiagnosticLogStore(directory.toFile(), "snap", 7, "salt");
+        try {
+            long now = 1_794_735_600_000L;
+            store.log(true, "Test", "OLD", "value=old", now - 181_000L, 1L);
+            store.log(true, "Test", "RECENT", "value=recent", now - 60_000L, 2L);
+            store.log(false, "Test", "DETAIL_RECENT", "value=detail", now - 30_000L, 3L);
+            store.flush().get(10L, TimeUnit.SECONDS);
+            String snapshot = "connect_dbm=-82.0 unlock_dbm=-75.0 lock_dbm=-85.0 dwell_ms=2000";
+            File archive = store.captureActionSnapshot("UNLOCK", snapshot, now, 100L)
+                    .get(10L, TimeUnit.SECONDS);
+            try (ZipFile zip = new ZipFile(archive)) {
+                Set<String> names = new HashSet<>();
+                zip.stream().forEach(entry -> names.add(entry.getName()));
+                check(names.equals(Set.of("summary.txt", "README.txt", "events.log", "diagnostic.log")),
+                        "动作快照必须保持固定白名单");
+                String summary = new String(zip.getInputStream(zip.getEntry("summary.txt"))
+                        .readAllBytes(), StandardCharsets.UTF_8);
+                check(summary.contains("window_ms=180000")
+                                && summary.contains("connect_dbm=-82.0")
+                                && summary.contains("unlock_dbm=-75.0")
+                                && summary.contains("lock_dbm=-85.0")
+                                && summary.contains("lock_dwell_ms=2000"),
+                        "动作快照必须写明窗口和四项当时配置");
+                String events = new String(zip.getInputStream(zip.getEntry("events.log"))
+                        .readAllBytes(), StandardCharsets.UTF_8);
+                check(events.contains("RECENT") && !events.contains("value=old"),
+                        "动作事件日志不能导出三分钟以前的事件");
+            }
+        } finally {
+            store.close();
+            deleteTemporary(directory);
+        }
+    }
+
+    /** 动作快照数量不得超过100，超过后删除最老文件。 */
+    private static void actionSnapshotPrunesOldestAtOneHundred() throws Exception {
+        Path directory = Files.createTempDirectory("action-snapshot-prune-test-");
+        DiagnosticLogStore store = new DiagnosticLogStore(directory.toFile(), "prune", 8, "salt");
+        try {
+            long base = 1_794_735_600_000L;
+            for (int index = 0; index < DiagnosticSnapshotWindow.MAX_FILES + 5; index++) {
+                store.captureActionSnapshot("UNLOCK", "connect_dbm=-82 unlock_dbm=-75 lock_dbm=-85 dwell_ms=2000",
+                        base + index, index).get(10L, TimeUnit.SECONDS);
+            }
+            File[] files = new File(directory.toFile(), DiagnosticLogStore.ACTION_SNAPSHOT_DIR)
+                    .listFiles((dir, name) -> name.endsWith(".zip"));
+            check(files != null && files.length == DiagnosticSnapshotWindow.MAX_FILES,
+                    "动作快照必须限制为100个");
         } finally {
             store.close();
             deleteTemporary(directory);

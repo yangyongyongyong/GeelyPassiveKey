@@ -99,6 +99,7 @@ public class PassiveKeyService extends Service implements SensorEventListener {
     private final DiagnosticCounters diagnostics = new DiagnosticCounters();
     private final PendingControl pendingControl = new PendingControl();
     private final OfficialReadyGate officialReadyGate = new OfficialReadyGate();
+    private final LiveActivityTrace liveTrace = new LiveActivityTrace();
     private final Runnable notificationStateListener = this::handleOfficialNotificationUpdate;
 
     private VehicleIdentityStore identityStore;
@@ -261,6 +262,8 @@ public class PassiveKeyService extends Service implements SensorEventListener {
         public PassiveKeyLogic.Action lastSentAction = PassiveKeyLogic.Action.NONE;
         public PassiveKeyLogic.Action dispatchAction = PassiveKeyLogic.Action.NONE;
         public String lastControlResult = "NONE";
+        public java.util.List<LiveActivityTrace.Entry> liveTrace = java.util.Collections.emptyList();
+        public long liveTraceNowMs;
         public String pendingWaitReason = "";
         public String sampleDecision = "";
         public String vehicleName = "";
@@ -468,6 +471,8 @@ public class PassiveKeyService extends Service implements SensorEventListener {
         status.lastSentAction = logic.getLastSentAction();
         status.dispatchAction = lastDispatchAction;
         status.lastControlResult = lastControlResult;
+        status.liveTrace = liveTrace.snapshot();
+        status.liveTraceNowMs = now;
         status.lastSentAgeMs = age(now, logic.getLastSentActionAtMs());
         status.dispatchAgeMs = age(now, lastDispatchStartedAtMs);
         status.sampleDecision = logic.getLastSampleDecision();
@@ -503,6 +508,16 @@ public class PassiveKeyService extends Service implements SensorEventListener {
         appendLog("日志已清空");
     }
 
+    /** 手动导出动作快照合集；不修改留存文件。 */
+    public Future<File> exportActionSnapshots(File destination) {
+        return DiagnosticLog.exportActionSnapshots(destination, getDiagnosticSnapshot());
+    }
+
+    /** 返回自动快照数量与占用。 */
+    public String getActionSnapshotHealth() {
+        return DiagnosticLog.actionSnapshotHealth();
+    }
+
     /** 手动导出时只读取当前快照，ZIP在日志线程生成，不触发扫描、连接或车控。 */
     public Future<File> exportLogs(File destination) {
         return DiagnosticLog.export(destination, getDiagnosticSnapshot());
@@ -512,6 +527,8 @@ public class PassiveKeyService extends Service implements SensorEventListener {
     public String getDiagnosticSnapshot() {
         long now = SystemClock.elapsedRealtime();
         return "run=" + serviceRun + "\n" + environmentDiagnostic()
+                + "\n" + triggerConfigDiagnostic()
+                + "\nlive_trace=" + liveTraceText(now)
                 + "\n" + signalDiagnostic(now) + "\n" + logic.diagnosticSnapshot(now)
                 + "\n" + pendingControl.diagnosticSnapshot(now) + " wait_reason=" + lastPendingWaitReason
                 + "\n" + scanDiagnostic(now, false) + "\n" + gattDiagnostic(now)
@@ -676,6 +693,7 @@ public class PassiveKeyService extends Service implements SensorEventListener {
         targetSelector.clear();
         if (enabled) {
             logic.reset();
+            liveTrace.clear();
             rssiFilter = new RssiFilter();
             lastSampleAtMs = 0L;
             activeTargetAddress = "";
@@ -1024,6 +1042,10 @@ public class PassiveKeyService extends Service implements SensorEventListener {
                 return;
             }
             recordFirstCandidate(ad, match, now);
+            if (liveTrace.lastAt(LiveActivityTrace.Step.SCAN_FOUND) == 0L
+                    || now - liveTrace.lastAt(LiveActivityTrace.Step.SCAN_FOUND) > 12000L) {
+                liveTrace.add(LiveActivityTrace.Step.SCAN_FOUND, now, "RSSI " + ad.rssi + " dBm");
+            }
             GeelyAdvertisement primary = choosePrimaryCandidate(now);
             if (primary == null || !primary.address.equalsIgnoreCase(ad.address)) {
                 // 名称确认只控制普通发现；强本车线索首包可先交官方，不保存地址、不送RSSI。
@@ -1240,6 +1262,7 @@ public class PassiveKeyService extends Service implements SensorEventListener {
                 || !ad.address.equalsIgnoreCase(wakeSessionAddress);
         noteWakeSession(ad);
         if (newWakeSession) {
+            liveTrace.clear();
             clearGattAuthObservation("new_wake_session", true);
             gattAuthSuccessObserved = false;
         }
@@ -1257,6 +1280,7 @@ public class PassiveKeyService extends Service implements SensorEventListener {
                 + " long_absence_ms=" + age(now, longAbsenceSessionStartedAtMs)
                 + " since_first_wake_ms=" + age(now, firstWakeInSessionAtMs)
                 + " " + targetSelector.observationDiagnostic(ad, now));
+        liveTrace.add(LiveActivityTrace.Step.WAKE_REQUEST, now, "RSSI " + ad.rssi + " dBm");
         GeelyBridge.wakeAndConnect(this, ad.scanResult, ad.carId());
         KeyNotificationBridgeService.requestFastRescan(this, KeyNotificationBridgeService.FAST_RESCAN_WINDOW_MS);
         scheduleWakeFallback(ad, now);
@@ -1291,6 +1315,7 @@ public class PassiveKeyService extends Service implements SensorEventListener {
     /** 手动停用/重学或蓝牙重置统一清理唤醒和分段日志，不清除身份或已交付车控。 */
     private void clearWakeState() {
         wakeGate.clear();
+        liveTrace.clear();
         wakeSessionAddress = "";
         lastVehicleSignalAtMs = 0L;
         longAbsenceSessionStartedAtMs = 0L;
@@ -1562,6 +1587,9 @@ public class PassiveKeyService extends Service implements SensorEventListener {
         lastPendingLogAtMs = 0L;
         String label = action == PassiveKeyLogic.Action.UNLOCK ? "解锁" : "上锁";
         lastAction = label + "等待银河钥匙就绪";
+        liveTrace.add(action == PassiveKeyLogic.Action.UNLOCK
+                        ? LiveActivityTrace.Step.UNLOCK_REQUESTED : LiveActivityTrace.Step.LOCK_REQUESTED,
+                now, String.format(Locale.US, "%.1f dBm · %s", effectiveDbm, source));
         appendLog(String.format(Locale.US,
                 "★ %s请求 #%d · %.1f dBm · %s | %s", label, pendingControl.getSequence(),
                 effectiveDbm, source, signalDiagnostic(now)));
@@ -1635,6 +1663,12 @@ public class PassiveKeyService extends Service implements SensorEventListener {
         if (!pendingControl.complete(sequence)) return;
         logic.onControlSent(action, now);
         lastControlResult = result.name();
+        captureActionSnapshot(action, sequence);
+        liveTrace.add(result == KeyNotificationBridgeService.ControlResult.UNKNOWN
+                        ? LiveActivityTrace.Step.RESULT_UNKNOWN
+                        : action == PassiveKeyLogic.Action.UNLOCK
+                        ? LiveActivityTrace.Step.UNLOCK_SENT : LiveActivityTrace.Step.LOCK_SENT,
+                now, "req_id=" + sequence + " transport=PI");
         String label = action == PassiveKeyLogic.Action.UNLOCK ? "解锁" : "上锁";
         if (result == KeyNotificationBridgeService.ControlResult.UNKNOWN) {
             lastAction = label + "发送结果不确定，已停止重发，请核实车锁";
@@ -1648,6 +1682,21 @@ public class PassiveKeyService extends Service implements SensorEventListener {
         appendLog("✓ " + label + "发送完成 #" + sequence + " 等待="
                 + pendingControl.getAgeMs(now) + "ms | " + signalDiagnostic(now));
         updateNotificationIfNeeded(true);
+    }
+
+    /** 每次成功交付解锁或上锁后异步保存最近三分钟，失败只记诊断，不影响车控。 */
+    private void captureActionSnapshot(PassiveKeyLogic.Action action, int sequence) {
+        try {
+            String name = action == PassiveKeyLogic.Action.UNLOCK ? "UNLOCK" : "LOCK";
+            DiagnosticLog.captureActionSnapshot(name,
+                    "action=" + action + " req_id=" + sequence + "\n" + getDiagnosticSnapshot());
+            DiagnosticLog.event("DiagnosticSnapshot", "ACTION_SNAPSHOT_REQUESTED",
+                    "action=" + action + " req_id=" + sequence + " window_ms="
+                            + DiagnosticSnapshotWindow.WINDOW_MS + " max_files="
+                            + DiagnosticSnapshotWindow.MAX_FILES);
+        } catch (Throwable error) {
+            DiagnosticLog.bridgeError("DiagnosticSnapshot", "ACTION_SNAPSHOT_REQUEST_ERROR", error);
+        }
     }
 
     /** 统一撤销待发请求并反馈状态机；已经发送成功的动作不自动再发。 */
@@ -1713,6 +1762,7 @@ public class PassiveKeyService extends Service implements SensorEventListener {
             lastGattAttemptAtMs = 0L;
             wakeGate.onOfficialConnected(now);
             promoteAuthObserverToRssi();
+            liveTrace.add(LiveActivityTrace.Step.OFFICIAL_CONNECTED, now, "官方通知就绪");
             appendLog("✓ 银河蓝牙钥匙已连接");
             lastLearnAttemptAtMs = 0L;
             maybeLearnVehicle(now);
@@ -2399,6 +2449,7 @@ public class PassiveKeyService extends Service implements SensorEventListener {
                     adoptConnectedIdentity(verified, VehicleLearningState.ACL, now);
                 }
             }
+            liveTrace.add(LiveActivityTrace.Step.ACL_CONNECTED, now, "addr_id=" + DiagnosticLog.fingerprint(addr));
             appendLog("✓ 车机底层 ACL 已连接: addr_id=" + DiagnosticLog.fingerprint(addr)
                     + " name_id=" + DiagnosticLog.fingerprint(name));
             ensureGattAttached(now);
@@ -2458,6 +2509,9 @@ public class PassiveKeyService extends Service implements SensorEventListener {
                     DiagnosticLog.event("Signal", "SIGNAL_EXPIRED", signalDiagnostic(now)
                             + " " + scanDiagnostic(now, false) + " " + gattDiagnostic(now));
                     signalMissingLogged = true;
+                }
+                if (liveTrace.lastAt(LiveActivityTrace.Step.SCAN_FOUND) > 0L) {
+                    liveTrace.add(LiveActivityTrace.Step.SCAN_LOST, now, "SIGNAL_EXPIRED");
                 }
                 lastRawRssi = -127;
                 lastZone = "不在车辆附近 (无信号)";
@@ -2630,6 +2684,23 @@ public class PassiveKeyService extends Service implements SensorEventListener {
                 + " " + scanDiagnostic(now, true) + " " + gattDiagnostic(now)
                 + " " + KeyNotificationBridgeService.diagnosticSnapshot(now)
                 + " " + logic.diagnosticSnapshot(now) + " " + DiagnosticLog.health());
+    }
+
+    /** 导出时保留最近实时阶段，便于确认页面短暂显示是否与日志一致。 */
+    private String liveTraceText(long now) {
+        StringBuilder result = new StringBuilder();
+        for (LiveActivityTrace.Entry entry : liveTrace.snapshot()) {
+            if (result.length() > 0) result.append(" -> ");
+            result.append(entry.step.name()).append('@').append(Math.max(0L, now - entry.atMs)).append("ms");
+        }
+        return result.length() == 0 ? "none" : result.toString();
+    }
+
+    /** 四项触发配置单独成行，动作快照和手动导出都能直接解析到当时的用户设置。 */
+    private String triggerConfigDiagnostic() {
+        return String.format(Locale.US,
+                "connect_dbm=%.1f unlock_dbm=%.1f lock_dbm=%.1f dwell_ms=%d",
+                connectDbm, unlockDbm, lockDbm, lockDwellMs);
     }
 
     /** 观测权限、屏幕、省电与内存状态；读取失败只写未知，不改变开关或权限。 */

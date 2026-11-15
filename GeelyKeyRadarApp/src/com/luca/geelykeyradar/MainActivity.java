@@ -59,6 +59,7 @@ public class MainActivity extends Activity {
 
     private static final int REQUEST_BT_PERMISSIONS = 1001;
     private static final int REQUEST_LOG_EXPORT = 1002;
+    private static final int REQUEST_ACTION_SNAPSHOT_EXPORT = 1004;
     private static final int REQUEST_NOTIFICATION_PERMISSION = 1003;
     private static final ExecutorService LOG_EXPORT_EXECUTOR = Executors.newSingleThreadExecutor();
     private static final AtomicBoolean LOG_EXPORT_BUSY = new AtomicBoolean();
@@ -133,6 +134,8 @@ public class MainActivity extends Activity {
     private Button manualLockButton;
     private TextView manualControlView;
     private Button exportLogButton;
+    private Button exportActionSnapshotsButton;
+    private TextView actionSnapshotStatusView;
     private Button permissionGuideButton;
     private Button updateActionButton;
     private Switch autoUpdateSwitch;
@@ -159,6 +162,8 @@ public class MainActivity extends Activity {
     private boolean settingUpdateSwitch;
     private boolean pendingInstallAfterPermission;
     private String exportSnapshot = "service_snapshot=unavailable";
+    private String actionSnapshotExportSnapshot = "service_snapshot=unavailable";
+    private java.util.List<LiveActivityTrace.Entry> currentLiveTrace = java.util.Collections.emptyList();
     private Dialog thresholdSettingsDialog;
     private VehicleParameterProbe parameterProbe;
 
@@ -190,6 +195,7 @@ public class MainActivity extends Activity {
         parameterProbe = new VehicleParameterProbe(this);
         if (savedInstanceState != null) {
             exportSnapshot = savedInstanceState.getString("diagnostic_snapshot", exportSnapshot);
+            actionSnapshotExportSnapshot = savedInstanceState.getString("action_snapshot_export", actionSnapshotExportSnapshot);
         }
         buildUi();
         configureEdgeToEdge();
@@ -730,8 +736,15 @@ public class MainActivity extends Activity {
         logView.setMaxLines(12);
         logCard.addView(logView, supportLp());
         exportLogButton = tonalButton("导出排查日志（ZIP）");
+        exportLogButton.setContentDescription("手动导出当前完整日志；解锁和上锁还会自动保存最近三分钟快照");
         exportLogButton.setOnClickListener(view -> chooseLogExportDestination());
         logCard.addView(exportLogButton, buttonLp());
+        actionSnapshotStatusView = text("自动动作快照：读取中", 12, COLOR_MUTED, Typeface.NORMAL);
+        logCard.addView(actionSnapshotStatusView, supportLp());
+        exportActionSnapshotsButton = outlinedButton("导出全部动作快照（ZIP）");
+        exportActionSnapshotsButton.setOnClickListener(view -> chooseActionSnapshotExportDestination());
+        exportActionSnapshotsButton.setContentDescription("导出最多100个自动保存的解锁或上锁前三分钟快照");
+        logCard.addView(exportActionSnapshotsButton, buttonLp());
         Button clearLogBtn = outlinedButton("清空日志");
         clearLogBtn.setOnClickListener(v -> {
             if (service != null) {
@@ -893,6 +906,7 @@ public class MainActivity extends Activity {
         boolean geelyInstalled = GeelyBridge.isGeelyInstalled(this);
         boolean btPermission = hasBluetoothPermissions();
         refreshLiveActivity(status, notificationAccess, listenerConnected);
+        refreshActionSnapshotUi();
         PermissionAudit.Result audit = PermissionAudit.evaluate(PermissionStatus.read(this, status));
         UpdateManager.Snapshot update = UpdateManager.snapshot(this);
         permissionView.setText(permissionCardText(audit));
@@ -1006,6 +1020,7 @@ public class MainActivity extends Activity {
         input.notificationAccess = notificationAccess;
         input.listenerConnected = listenerConnected;
         if (status == null) {
+            currentLiveTrace = java.util.Collections.emptyList();
             renderLiveActivity(LiveActivity.resolve(input));
             return;
         }
@@ -1035,6 +1050,9 @@ public class MainActivity extends Activity {
         input.lockDwellElapsedMs = status.lockDwellElapsedMs;
         input.lockDwellMs = status.lockDwellMs;
         input.lockDwellSamples = status.lockDwellSamples;
+        input.trace = status.liveTrace;
+        currentLiveTrace = status.liveTrace;
+        input.traceNowMs = status.liveTraceNowMs;
         renderLiveActivity(LiveActivity.resolve(input));
     }
 
@@ -1075,8 +1093,10 @@ public class MainActivity extends Activity {
         if (!activity.title.contentEquals(liveActivityTitleView.getText())) {
             liveActivityTitleView.setText(activity.title);
         }
-        if (!activity.detail.contentEquals(liveActivityDetailView.getText())) {
-            liveActivityDetailView.setText(activity.detail);
+        String trace = LiveActivity.traceText(currentLiveTrace);
+        String detail = trace.isEmpty() ? activity.detail : activity.detail + "\n最近：" + trace;
+        if (!detail.contentEquals(liveActivityDetailView.getText())) {
+            liveActivityDetailView.setText(detail);
         }
         if (!activity.badge.contentEquals(liveActivityBadgeView.getText())) {
             liveActivityBadgeView.setText(activity.badge);
@@ -1086,6 +1106,7 @@ public class MainActivity extends Activity {
         liveActivityCard.setBackground(rippleBackground(COLOR_SURFACE_VARIANT, accent, 16,
                 Color.argb(28, 255, 255, 255)));
         String description = "现在正在：" + activity.title + "。" + activity.detail;
+        if (!trace.isEmpty()) description += "。最近：" + trace;
         if (!description.contentEquals(liveActivityCard.getContentDescription())) {
             liveActivityCard.setContentDescription(description);
         }
@@ -1377,6 +1398,96 @@ public class MainActivity extends Activity {
                 ? "已授权 · 正在重连" : "已授权 · 监听未绑定";
     }
 
+    /** 展示最多100个自动动作快照的当前数量与占用，不读取ZIP正文。 */
+    private void refreshActionSnapshotUi() {
+        if (actionSnapshotStatusView == null) return;
+        if (service == null) {
+            actionSnapshotStatusView.setText("自动动作快照：等待服务绑定");
+            if (exportActionSnapshotsButton != null) exportActionSnapshotsButton.setEnabled(false);
+            return;
+        }
+        String health = service.getActionSnapshotHealth();
+        actionSnapshotStatusView.setText("自动动作快照：" + formatActionSnapshotHealth(health));
+        if (exportActionSnapshotsButton != null) {
+            exportActionSnapshotsButton.setEnabled(!LOG_EXPORT_BUSY.get());
+        }
+    }
+
+    /** 将内部健康字段转成用户可读的数量和约占用大小。 */
+    private static String formatActionSnapshotHealth(String health) {
+        String count = "0/100";
+        long bytes = 0L;
+        for (String field : health == null ? new String[0] : health.split("\\s+")) {
+            if (field.startsWith("action_snapshots=")) {
+                count = field.substring("action_snapshots=".length());
+            } else if (field.startsWith("action_snapshot_bytes=")) {
+                try {
+                    bytes = Long.parseLong(field.substring("action_snapshot_bytes=".length()));
+                } catch (NumberFormatException ignored) {
+                }
+            }
+        }
+        String size = bytes >= 1024L * 1024L
+                ? String.format(Locale.ROOT, "%.1f MiB", bytes / (1024.0 * 1024.0))
+                : String.format(Locale.ROOT, "%.0f KiB", bytes / 1024.0);
+        return count.replace("/", " / 最多 ") + " 个 · " + size;
+    }
+
+    /** 选择动作快照合集导出目标；每个内层ZIP对应一次解锁或上锁。 */
+    private void chooseActionSnapshotExportDestination() {
+        if (LOG_EXPORT_BUSY.get()) return;
+        actionSnapshotExportSnapshot = "snapshot_captured_mono_ms="
+                + android.os.SystemClock.elapsedRealtime() + "\n"
+                + (service == null ? "service_snapshot=unavailable" : service.getDiagnosticSnapshot());
+        Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("application/zip");
+        intent.putExtra(Intent.EXTRA_LOCAL_ONLY, true);
+        intent.putExtra(Intent.EXTRA_TITLE, "GeelyPassiveKey-action-snapshots-"
+                + new SimpleDateFormat("yyyyMMdd-HHmmss", Locale.ROOT).format(new Date()) + ".zip");
+        try {
+            startActivityForResult(intent, REQUEST_ACTION_SNAPSHOT_EXPORT);
+        } catch (RuntimeException unavailable) {
+            DiagnosticLog.bridgeError("Export", "ACTION_SNAPSHOT_FILE_PICKER_ERROR", unavailable);
+            Toast.makeText(this, "无法打开系统文件保存器", Toast.LENGTH_LONG).show();
+        }
+    }
+
+    /** 把动作快照合集写入用户选择位置，不删除或修改原有100个快照。 */
+    private void exportActionSnapshots(Uri destination, String snapshot) {
+        if (!LOG_EXPORT_BUSY.compareAndSet(false, true)) return;
+        Context appContext = getApplicationContext();
+        LOG_EXPORT_EXECUTOR.execute(() -> {
+            File temporary = null;
+            String message;
+            try {
+                temporary = File.createTempFile("passive-key-actions-", ".zip", appContext.getCacheDir());
+                File ready = DiagnosticLog.exportActionSnapshots(temporary, snapshot).get();
+                try (FileInputStream input = new FileInputStream(ready);
+                     OutputStream output = appContext.getContentResolver().openOutputStream(destination, "wt")) {
+                    if (output == null) throw new java.io.IOException("输出文件不可用");
+                    byte[] buffer = new byte[16384];
+                    int count;
+                    while ((count = input.read(buffer)) != -1) output.write(buffer, 0, count);
+                }
+                DiagnosticLog.event("Export", "ACTION_SNAPSHOTS_SAVED", "archive_bytes=" + ready.length());
+                message = "动作快照合集已保存";
+            } catch (Exception error) {
+                DiagnosticLog.bridgeError("Export", "ACTION_SNAPSHOTS_EXPORT_FAILED", error);
+                message = "动作快照导出失败，请重试";
+            } finally {
+                if (temporary != null && temporary.exists() && !temporary.delete()) {
+                    DiagnosticLog.detail("Export", "CACHE_CLEANUP_FAILED", "temporary_archive=true");
+                }
+                LOG_EXPORT_BUSY.set(false);
+            }
+            String finalMessage = message;
+            new Handler(Looper.getMainLooper()).post(() ->
+                    Toast.makeText(appContext, finalMessage, Toast.LENGTH_LONG).show());
+        });
+        refreshUi();
+    }
+
     /** 用户点击后通过系统文件选择器选择本地保存位置，无需存储权限，也不自动发送给他人。 */
     private void chooseLogExportDestination() {
         if (LOG_EXPORT_BUSY.get()) return;
@@ -1400,6 +1511,7 @@ public class MainActivity extends Activity {
     @Override
     protected void onSaveInstanceState(Bundle outState) {
         outState.putString("diagnostic_snapshot", exportSnapshot);
+        outState.putString("action_snapshot_export", actionSnapshotExportSnapshot);
         outState.putInt("active_tab", activeTab);
         super.onSaveInstanceState(outState);
     }
@@ -1408,9 +1520,17 @@ public class MainActivity extends Activity {
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
-        if (requestCode != REQUEST_LOG_EXPORT) return;
+        if (requestCode != REQUEST_LOG_EXPORT && requestCode != REQUEST_ACTION_SNAPSHOT_EXPORT) return;
         if (resultCode != RESULT_OK || data == null || data.getData() == null) {
-            DiagnosticLog.detail("Export", "EXPORT_CANCELLED", "");
+            DiagnosticLog.detail("Export", requestCode == REQUEST_ACTION_SNAPSHOT_EXPORT
+                    ? "ACTION_SNAPSHOT_EXPORT_CANCELLED" : "EXPORT_CANCELLED", "");
+            return;
+        }
+        if (requestCode == REQUEST_ACTION_SNAPSHOT_EXPORT) {
+            String snapshot = service == null ? actionSnapshotExportSnapshot
+                    : "snapshot_captured_mono_ms=" + android.os.SystemClock.elapsedRealtime()
+                    + "\n" + service.getDiagnosticSnapshot();
+            exportActionSnapshots(data.getData(), snapshot);
             return;
         }
         if (!LOG_EXPORT_BUSY.compareAndSet(false, true)) return;

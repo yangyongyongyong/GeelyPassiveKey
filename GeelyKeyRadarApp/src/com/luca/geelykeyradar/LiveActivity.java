@@ -1,5 +1,6 @@
 package com.luca.geelykeyradar;
 
+import java.util.List;
 import java.util.Locale;
 
 /** 把服务内部阶段映射成用户能直接看懂的“现在正在做什么”。 */
@@ -76,6 +77,8 @@ final class LiveActivity {
         String pendingWaitReason = "";
         String sampleDecision = "";
         String zone = "";
+        List<LiveActivityTrace.Entry> trace = java.util.Collections.emptyList();
+        long traceNowMs;
     }
 
     static final class Result {
@@ -96,6 +99,8 @@ final class LiveActivity {
 
     static Result resolve(Input in) {
         Input value = in == null ? new Input() : in;
+        Result traced = resolveTrace(value);
+        if (traced != null) return traced;
         if (!value.running) {
             return result(Stage.STARTING, "启动", "正在启动无感服务",
                     "正在初始化蓝牙、通知桥接与前台服务", Tone.PROGRESS);
@@ -219,6 +224,77 @@ final class LiveActivity {
         }
         return result(Stage.RECOVERING_SCAN, "恢复", "正在恢复蓝牙扫描",
                 "扫描器暂时停止，服务会自动重建", Tone.WARNING);
+    }
+
+    /** 最近30秒内，按已发生阶段优先显示短生命周期动作，避免页面轮询漏掉。 */
+    private static Result resolveTrace(Input value) {
+        if (value.trace == null || value.trace.isEmpty()) return null;
+        long now = value.traceNowMs > 0L ? value.traceNowMs : Long.MAX_VALUE;
+        if (hasRecent(value.trace, now, LiveActivityTrace.Step.RESULT_UNKNOWN)) {
+            return result(Stage.RESULT_UNKNOWN, "待核实", "车控发送结果不确定",
+                    "已交给银河但未收到车锁回执，请观察车辆确认", Tone.WARNING);
+        }
+        if (hasRecent(value.trace, now, LiveActivityTrace.Step.UNLOCK_SENT)) {
+            return result(Stage.UNLOCK_SENT, "已发送", "解锁指令已交给银河",
+                    "等待车辆执行；这里不是车锁执行回执", Tone.SUCCESS);
+        }
+        if (hasRecent(value.trace, now, LiveActivityTrace.Step.LOCK_SENT)) {
+            return result(Stage.LOCK_SENT, "已发送", "上锁指令已交给银河",
+                    "等待车辆执行；这里不是车锁执行回执", Tone.SUCCESS);
+        }
+        if (hasRecent(value.trace, now, LiveActivityTrace.Step.UNLOCK_REQUESTED)) {
+            return result(Stage.PREPARING_UNLOCK, "解锁", "已确认靠近，准备解锁",
+                    "解锁请求已建立，正在等待官方按钮或发送", Tone.PROGRESS);
+        }
+        if (hasRecent(value.trace, now, LiveActivityTrace.Step.LOCK_REQUESTED)) {
+            return result(Stage.PREPARING_LOCK, "上锁", "已确认离开，准备上锁",
+                    "上锁请求已建立，正在等待官方按钮或发送", Tone.PROGRESS);
+        }
+        if (hasRecent(value.trace, now, LiveActivityTrace.Step.OFFICIAL_CONNECTED)) {
+            return result(Stage.WAITING_UNLOCK_BUTTON, "就绪", "银河钥匙已连接",
+                    "已收到官方连接，正在等待解锁按钮或处理本次接近", Tone.PROGRESS);
+        }
+        if (hasRecent(value.trace, now, LiveActivityTrace.Step.ACL_CONNECTED)) {
+            return result(Stage.WAITING_AUTH, "连接", "车机链路已建立，等待银河鉴权",
+                    "银河正在完成 V2 鉴权，完成后才允许解锁", Tone.PROGRESS);
+        }
+        if (hasRecent(value.trace, now, LiveActivityTrace.Step.WAKE_REQUEST)) {
+            return result(Stage.WAKING_OFFICIAL, "发现", "发现车辆，正在唤醒银河",
+                    "已把真实 ScanResult 交给官方 MiuiService", Tone.PROGRESS);
+        }
+        if (hasRecent(value.trace, now, LiveActivityTrace.Step.SCAN_LOST)) {
+            return result(Stage.WAITING_SIGNAL, "等待", "等待车辆蓝牙信号",
+                    "本车广播暂时消失，扫描仍在继续", Tone.IDLE);
+        }
+        if (hasRecent(value.trace, now, LiveActivityTrace.Step.SCAN_FOUND)) {
+            return result(Stage.WAITING_STRONGER_SIGNAL, "发现", "发现本车蓝牙广播",
+                    "正在确认连接触发条件与 RSSI", Tone.IDLE);
+        }
+        return null;
+    }
+
+    /** 查找最近一条指定阶段的轨迹，时间来自服务单调时钟。 */
+    private static boolean hasRecent(List<LiveActivityTrace.Entry> trace, long now,
+                                     LiveActivityTrace.Step step) {
+        for (int index = trace.size() - 1; index >= 0; index--) {
+            LiveActivityTrace.Entry entry = trace.get(index);
+            if (entry.step == step) {
+                return now >= entry.atMs && now - entry.atMs <= LiveActivityTrace.SUMMARY_VISIBLE_MS;
+            }
+        }
+        return false;
+    }
+
+    /** 把轨迹压缩成便于阅读的最近四步。 */
+    static String traceText(List<LiveActivityTrace.Entry> trace) {
+        if (trace == null || trace.isEmpty()) return "";
+        int start = Math.max(0, trace.size() - 4);
+        StringBuilder result = new StringBuilder();
+        for (int index = start; index < trace.size(); index++) {
+            if (result.length() > 0) result.append(" → ");
+            result.append(trace.get(index).step.badge);
+        }
+        return result.toString();
     }
 
     private static String signal(int rssi) {

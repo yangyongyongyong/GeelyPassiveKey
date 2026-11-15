@@ -125,6 +125,29 @@ final class DiagnosticLog {
                 System.currentTimeMillis(), SystemClock.elapsedRealtime());
     }
 
+    /** 动作交付后截取最近三分钟，写入私有动作快照目录并异步限数。 */
+    static Future<File> captureActionSnapshot(String action, String snapshot) {
+        DiagnosticLogStore current = store;
+        if (current == null) throw new IllegalStateException("日志尚未初始化");
+        return current.captureActionSnapshot(action, "trace_run=" + traceRun + " " + environment
+                + "\n" + snapshot, System.currentTimeMillis(), SystemClock.elapsedRealtime());
+    }
+
+    /** 返回自动动作快照数量和占用。 */
+    static String actionSnapshotHealth() {
+        DiagnosticLogStore current = store;
+        return current == null ? "action_snapshots=unavailable" : current.actionSnapshotHealth();
+    }
+
+    /** 手动打包现有动作快照，不改变留存数量。 */
+    static Future<File> exportActionSnapshots(File destination, String snapshot) {
+        DiagnosticLogStore current = store;
+        if (current == null) throw new IllegalStateException("日志尚未初始化");
+        return current.exportActionSnapshots(destination,
+                "trace_run=" + traceRun + " " + environment + "\n" + snapshot,
+                System.currentTimeMillis(), SystemClock.elapsedRealtime());
+    }
+
     /** 清空两组日志分段，保持本地脱敏盐和生命周期标记。 */
     static void clear() {
         DiagnosticLogStore current = store;

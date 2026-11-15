@@ -112,12 +112,14 @@ javac -source 11 -target 11 -d "$TEST_DIR" \
     "$APP_DIR/src/com/luca/geelykeyradar/RssiFilter.java" \
     "$APP_DIR/src/com/luca/geelykeyradar/RssiChartSeries.java" \
     "$APP_DIR/src/com/luca/geelykeyradar/GattAuthFrameParser.java" \
+    "$APP_DIR/src/com/luca/geelykeyradar/LiveActivityTrace.java" \
     "$APP_DIR/src/com/luca/geelykeyradar/LiveActivity.java" \
     "$APP_DIR/src/com/luca/geelykeyradar/PendingControl.java" \
     "$APP_DIR/src/com/luca/geelykeyradar/NotificationEpoch.java" \
     "$APP_DIR/src/com/luca/geelykeyradar/RotatingFileLog.java" \
     "$APP_DIR/src/com/luca/geelykeyradar/DiagnosticText.java" \
     "$APP_DIR/src/com/luca/geelykeyradar/DiagnosticCounters.java" \
+    "$APP_DIR/src/com/luca/geelykeyradar/DiagnosticSnapshotWindow.java" \
     "$APP_DIR/src/com/luca/geelykeyradar/DiagnosticLogStore.java" \
     "$APP_DIR/src/com/luca/geelykeyradar/VehicleLearningState.java" \
     "$APP_DIR/src/com/luca/geelykeyradar/VehicleBeacon.java" \

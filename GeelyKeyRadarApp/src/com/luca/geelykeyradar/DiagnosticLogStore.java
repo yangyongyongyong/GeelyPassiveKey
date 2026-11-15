@@ -11,6 +11,8 @@ import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
 import java.util.ArrayDeque;
 import java.util.Date;
+import java.util.Arrays;
+import java.util.Comparator;
 import java.util.Iterator;
 import java.util.Locale;
 import java.util.Properties;
@@ -30,8 +32,10 @@ final class DiagnosticLogStore {
     static final int DETAIL_BYTES = 512 * 1024;
     static final int DETAIL_FILES = 6;
     static final int MAX_UI_LINES = 10;
+    static final String ACTION_SNAPSHOT_DIR = "action-snapshots";
 
     private final File directory;
+    private final File actionSnapshotDirectory;
     private final String session;
     private final int pid;
     private final DiagnosticText redactor;
@@ -48,6 +52,7 @@ final class DiagnosticLogStore {
     /** 创建两组固定容量日志，沿用旧文件名以保留升级前的现场。 */
     DiagnosticLogStore(File directory, String session, int pid, String salt) {
         this.directory = directory;
+        this.actionSnapshotDirectory = new File(directory, ACTION_SNAPSHOT_DIR);
         this.session = session;
         this.pid = pid;
         redactor = new DiagnosticText(salt);
@@ -152,8 +157,9 @@ final class DiagnosticLogStore {
                 try {
                     try (OutputStream output = new FileOutputStream(destination);
                          ZipOutputStream zip = new ZipOutputStream(output)) {
-                        addText(zip, "summary.txt", "schema=1 exported_wall_ms=" + wallMs + " exported_mono_ms=" + monoMs
-                                + "\nsid=" + session + " pid=" + pid + "\n" + health() + "\n" + sanitizeLines(snapshot));
+                        addText(zip, "summary.txt", "schema=2 exported_wall_ms=" + wallMs + " exported_mono_ms=" + monoMs
+                                + "\n" + triggerConfigSummary(snapshot, wallMs)
+                                + "sid=" + session + " pid=" + pid + "\n" + health() + "\n" + sanitizeLines(snapshot));
                         addText(zip, "README.txt", "银河无感钥匙诊断包\n"
                                 + "events.log 是关键事件，diagnostic.log 是计数、采样和等待细节；每组按旧分段到新分段合并。\n"
                                 + "sid/pid 区分进程；mono_ms 比较同一次开机的耗时；墙钟可能因时间校准改变。\n"
@@ -177,6 +183,149 @@ final class DiagnosticLogStore {
             dropped.incrementAndGet();
             throw rejected;
         }
+    }
+
+    /**
+     * 动作交付给银河后异步截取最近三分钟。ZIP只写到应用私有的 action-snapshots，
+     * 并在同一写入队列中完成，确保快照前缀一致；不阻塞车控线程。
+     */
+    Future<File> captureActionSnapshot(String action, String snapshot, long wallMs, long monoMs) {
+        File[] initial = actionSnapshotDirectory.listFiles((dir, name) ->
+                name.startsWith("GeelyPassiveKey-action-") && name.endsWith(".zip"));
+        if (initial == null) initial = new File[0];
+        return writer.submit(() -> {
+            if (!actionSnapshotDirectory.exists() && !actionSnapshotDirectory.mkdirs()) {
+                throw new IOException("无法创建动作快照目录");
+            }
+            File destination = new File(actionSnapshotDirectory,
+                    DiagnosticSnapshotWindow.fileName(action, wallMs));
+            try (OutputStream output = new FileOutputStream(destination);
+                 ZipOutputStream zip = new ZipOutputStream(output)) {
+                String triggerConfig = triggerConfigSummary(snapshot, wallMs);
+                addText(zip, "summary.txt", DiagnosticSnapshotWindow.summary(wallMs, monoMs, action)
+                        + triggerConfig
+                        + "sid=" + session + " pid=" + pid + "\n" + health() + "\n" + sanitizeLines(snapshot));
+                addText(zip, "README.txt", "银河无感钥匙动作诊断快照\n"
+                        + "本快照仅覆盖动作交付时刻之前的最近三分钟；不是完整历史导出。\n"
+                        + "触发配置（连接/解锁/上锁/确认）已写入 summary.txt，四个参数均可在 App 内自定义。\n"
+                        + "SENT 是交给银河，不是车锁执行回执；UNKNOWN 不能算成功或失败。\n"
+                        + "地址和车辆名称已脱敏；最多保留最近100个动作快照。\n");
+                addLogsWithin(zip, "events.log", "passive_key.log", EVENT_FILES,
+                        wallMs, wallMs - DiagnosticSnapshotWindow.WINDOW_MS);
+                addLogsWithin(zip, "diagnostic.log", "passive_key_diagnostic.log", DETAIL_FILES,
+                        wallMs, wallMs - DiagnosticSnapshotWindow.WINDOW_MS);
+            } catch (Exception error) {
+                destination.delete();
+                throw error;
+            } finally {
+                pruneActionSnapshots();
+            }
+            return destination;
+        });
+    }
+
+    /** 从实时服务快照抽取四项当前配置，保证动作ZIP自身即可解释触发参数。 */
+    private static String triggerConfigSummary(String snapshot, long wallMs) {
+        String source = snapshot == null ? "" : snapshot;
+        String captured = "\nsnapshot_config_captured_wall_ms=" + wallMs + "\n";
+        java.util.regex.Matcher match = java.util.regex.Pattern
+                .compile("(?m)^connect_dbm=([^\\s]+) unlock_dbm=([^\\s]+) "
+                        + "lock_dbm=([^\\s]+) dwell_ms=([^\\s]+)$")
+                .matcher(source);
+        if (match.find()) return captured + "connect_dbm=" + match.group(1)
+                + " unlock_dbm=" + match.group(2) + " lock_dbm=" + match.group(3)
+                + " lock_dwell_ms=" + match.group(4) + "\n";
+        return captured + "connect_dbm=" + configValue(source, "connect_dbm")
+                + " unlock_dbm=" + configValue(source, "unlock_dbm")
+                + " lock_dbm=" + configValue(source, "lock_dbm")
+                + " lock_dwell_ms=" + configValue(source, "dwell_ms") + "\n";
+    }
+
+    /** 优先取单行字段，缺失时明确写 unavailable，不猜测配置。 */
+    private static String configValue(String snapshot, String... keys) {
+        for (String key : keys) {
+            java.util.regex.Matcher match = java.util.regex.Pattern
+                    .compile("(?:^|\\s)" + java.util.regex.Pattern.quote(key) + "=([^\\s]+)")
+                    .matcher(snapshot);
+            if (match.find()) return match.group(1);
+        }
+        return "unavailable";
+    }
+
+    /** 只保留最近100个动作ZIP；按最后修改时间排序，删除最老文件。 */
+    private void pruneActionSnapshots() {
+        File[] files = actionSnapshotDirectory.listFiles((dir, name) ->
+                name.startsWith("GeelyPassiveKey-action-") && name.endsWith(".zip"));
+        if (files == null || files.length <= DiagnosticSnapshotWindow.MAX_FILES) return;
+        Arrays.sort(files, Comparator.comparingLong(File::lastModified)
+                .thenComparing(File::getName));
+        int removeCount = files.length - DiagnosticSnapshotWindow.MAX_FILES;
+        for (int index = 0; index < removeCount; index++) {
+            if (!files[index].delete()) ioErrors.incrementAndGet();
+        }
+    }
+
+    /** 返回动作快照数量和总字节，供界面区分“自动快照”和手动完整导出。 */
+    String actionSnapshotHealth() {
+        File[] files = actionSnapshotDirectory.listFiles((dir, name) ->
+                name.startsWith("GeelyPassiveKey-action-") && name.endsWith(".zip"));
+        int count = files == null ? 0 : files.length;
+        long bytes = 0L;
+        if (files != null) for (File file : files) bytes += file.length();
+        return "action_snapshots=" + count + "/" + DiagnosticSnapshotWindow.MAX_FILES
+                + " action_snapshot_bytes=" + bytes;
+    }
+
+    /** 导出全部动作快照为一个ZIP，仅用于手动排查；不改变100个快照留存。 */
+    Future<File> exportActionSnapshots(File destination, String snapshot, long wallMs, long monoMs) {
+        return writer.submit(() -> {
+            File[] files = actionSnapshotDirectory.listFiles((dir, name) ->
+                    name.startsWith("GeelyPassiveKey-action-") && name.endsWith(".zip"));
+            if (files == null) files = new File[0];
+            Arrays.sort(files, Comparator.comparingLong(File::lastModified)
+                    .thenComparing(File::getName));
+            try (OutputStream output = new FileOutputStream(destination);
+                 ZipOutputStream zip = new ZipOutputStream(output)) {
+                addText(zip, "summary.txt", "schema=2 snapshot_type=ACTION_HISTORY"
+                        + " exported_wall_ms=" + wallMs + " exported_mono_ms=" + monoMs
+                        + " count=" + files.length + " max_files=" + DiagnosticSnapshotWindow.MAX_FILES
+                        + "\n" + health() + "\n" + sanitizeLines(snapshot));
+                addText(zip, "README.txt", "银河无感钥匙动作快照合集\n"
+                        + "每个内层 ZIP 对应一次解锁或上锁动作前最近三分钟。\n"
+                        + "最多保留100个；本导出只读取现存快照，不创建或删除快照。\n");
+                for (File file : files) addFile(zip, "action-snapshots/" + file.getName(), file);
+            } catch (Exception error) {
+                if (destination.exists()) destination.delete();
+                throw error;
+            }
+            return destination;
+        });
+    }
+
+    /** 仅合并窗口内的时间戳行；续行跟随上一条已接纳日志。 */
+    private void addLogsWithin(ZipOutputStream zip, String entry, String base, int count,
+                               long exportedWallMs, long cutoffWallMs) throws IOException {
+        zip.putNextEntry(new ZipEntry(entry));
+        for (int index = count - 1; index >= 0; index--) {
+            File file = new File(directory, index == 0 ? base : base + "." + index);
+            if (!file.isFile()) continue;
+            byte[] header = ("--- " + file.getName() + " bytes=" + file.length() + " ---\n")
+                    .getBytes(StandardCharsets.UTF_8);
+            zip.write(header);
+            try (BufferedReader input = new BufferedReader(new InputStreamReader(
+                    new FileInputStream(file), StandardCharsets.UTF_8))) {
+                String line;
+                boolean accepted = false;
+                while ((line = input.readLine()) != null) {
+                    if (line.matches("^\\d{4}-.*")) {
+                        accepted = DiagnosticSnapshotWindow.lineIsWithin(line, cutoffWallMs, exportedWallMs);
+                    }
+                    if (!accepted) continue;
+                    zip.write((redactor.sanitize(line) + "\n").getBytes(StandardCharsets.UTF_8));
+                }
+            }
+        }
+        zip.closeEntry();
     }
 
     /** 测试或显式关闭时等待所有已接纳日志写完，运行中服务停止不关闭进程共享仓库。 */
@@ -237,6 +386,15 @@ final class DiagnosticLogStore {
         StringBuilder result = new StringBuilder();
         for (String line : value.split("\\R")) result.append(redactor.sanitize(line)).append('\n');
         return result.toString();
+    }
+
+    /** 以流方式加入一个已有ZIP，避免把单个动作快照整体读入内存。 */
+    private void addFile(ZipOutputStream zip, String entry, File file) throws IOException {
+        zip.putNextEntry(new ZipEntry(entry));
+        try (FileInputStream input = new FileInputStream(file)) {
+            input.transferTo(zip);
+        }
+        zip.closeEntry();
     }
 
     /** 将纯文本加入ZIP。 */

@@ -9,6 +9,7 @@ public final class LiveActivityTest {
         pendingAndSending();
         connectedMonitoringAndDeparture();
         safetyBlocksTakePriority();
+        tracePreservesShortStages();
         System.out.println("LiveActivityTest passed");
     }
 
@@ -107,6 +108,35 @@ public final class LiveActivityTest {
         input.driving = true;
         check(LiveActivity.resolve(input).stage == LiveActivity.Stage.DRIVING_BLOCKED,
                 "行驶保护显示在实时状态顶部");
+    }
+
+    private static void tracePreservesShortStages() {
+        LiveActivityTrace trace = new LiveActivityTrace();
+        trace.add(LiveActivityTrace.Step.SCAN_FOUND, 1_000L, "rssi=-84");
+        trace.add(LiveActivityTrace.Step.WAKE_REQUEST, 1_100L, "rssi=-84");
+        trace.add(LiveActivityTrace.Step.ACL_CONNECTED, 2_500L, "acl");
+        trace.add(LiveActivityTrace.Step.OFFICIAL_CONNECTED, 4_000L, "ready");
+        trace.add(LiveActivityTrace.Step.UNLOCK_REQUESTED, 4_050L, "prepare");
+        trace.add(LiveActivityTrace.Step.UNLOCK_SENT, 4_100L, "sent");
+        LiveActivity.Input input = new LiveActivity.Input();
+        input.trace = trace.snapshot();
+        input.traceNowMs = 4_200L;
+        LiveActivity.Result result = LiveActivity.resolve(input);
+        check(result.stage == LiveActivity.Stage.UNLOCK_SENT, "短阶段轨迹应优先显示已发送");
+        String recentTrace = LiveActivity.traceText(input.trace);
+        check(recentTrace.contains("鉴权") && recentTrace.contains("解锁")
+                && recentTrace.contains("已发送"), "轨迹文本应保留最近四步");
+        input.traceNowMs = 40_000L;
+        LiveActivity.Result stale = LiveActivity.resolve(input);
+        check(stale.stage != LiveActivity.Stage.UNLOCK_SENT
+                && stale.stage != LiveActivity.Stage.PREPARING_UNLOCK,
+                "超过30秒的旧轨迹不能冒充当前动作");
+        trace.add(LiveActivityTrace.Step.SCAN_FOUND, 40_001L, "新发现");
+        trace.add(LiveActivityTrace.Step.WAKE_REQUEST, 40_100L, "新唤醒");
+        input.trace = trace.snapshot();
+        input.traceNowMs = 40_200L;
+        check(LiveActivity.resolve(input).stage == LiveActivity.Stage.WAKING_OFFICIAL,
+                "短阶段轨迹可显示发现后的唤醒步骤");
     }
 
     private static void check(boolean condition, String message) {
