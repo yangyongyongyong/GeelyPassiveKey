@@ -1,0 +1,134 @@
+digraph CurrentArchitecture {
+    graph [
+        rankdir=TB,
+        newrank=true,
+        splines=polyline,
+        nodesep=0.38,
+        ranksep=0.55,
+        fontname="Hiragino Sans GB",
+        fontsize=22,
+        bgcolor="#FFFFFF",
+        pad=0.35,
+        label="银河无感钥匙 · 系统架构（v4.5.5）",
+        labelloc=t
+    ];
+    node [
+        shape=box,
+        style="rounded,filled",
+        fontname="Hiragino Sans GB",
+        fontsize=11,
+        color="#94A3B8",
+        fillcolor="#F8FAFC",
+        fontcolor="#0F172A",
+        margin="0.11,0.07"
+    ];
+    edge [
+        color="#64748B",
+        fontname="Hiragino Sans GB",
+        fontsize=9,
+        fontcolor="#475569",
+        arrowsize=0.6
+    ];
+
+    subgraph cluster_car {
+        label="车辆侧";
+        style="rounded,dashed";
+        color="#047857";
+        fillcolor="#ECFDF5";
+        fontcolor="#065F46";
+        Ad [label="BLE 广播\n车名 / 厂商 / VIN 尾号\nRSSI", fillcolor="#D1FAE5", color="#059669"];
+        Link [label="车机 BLE 外设\nACL 单连接槽位", fillcolor="#D1FAE5", color="#059669"];
+        Auth [label="车机 V2 鉴权\n确认钥匙身份", fillcolor="#D1FAE5", color="#059669"];
+        Lock [label="车辆锁控\n解锁 / 上锁执行", fillcolor="#A7F3D0", color="#047857"];
+    }
+
+    subgraph cluster_phone {
+        label="手机侧";
+        style="rounded,dashed";
+        color="#1D4ED8";
+        fillcolor="#EFF6FF";
+        fontcolor="#1E3A8A";
+
+        subgraph cluster_app {
+            label="银河无感钥匙 App";
+            style="rounded,dashed";
+            color="#0369A1";
+            fillcolor="#F0F9FF";
+            fontcolor="#075985";
+            Scan [label="BLE 扫描器\n硬件过滤 + 低延迟", fillcolor="#E0F2FE", color="#0284C7"];
+            Selector [label="VehicleTargetSelector\n本车识别 / 冲突隔离", fillcolor="#E0F2FE", color="#0284C7"];
+            Gate [label="VehicleWakeGate\n连接触发 + 单次预算", fillcolor="#DBEAFE", color="#2563EB"];
+            Rssi [label="RssiFilter\n平滑 / 口袋补偿", fillcolor="#EDE9FE", color="#7C3AED"];
+            Logic [label="PassiveKeyLogic\n靠近 / 离开状态机", fillcolor="#EDE9FE", color="#7C3AED"];
+            Queue [label="PendingControl\n唯一待发队列", fillcolor="#EDE9FE", color="#7C3AED"];
+            Bridge [label="通知桥接\n按钮 PI 捕获 / 发送", fillcolor="#FCE7F3", color="#DB2777"];
+            Gatt [label="只读 GATT 观察\n连接态 RSSI\n鉴权帧 cmdId=5", fillcolor="#DBEAFE", color="#2563EB"];
+            Store [label="VehicleIdentityStore\n本车身份 + 四项参数", fillcolor="#F1F5F9", color="#64748B"];
+            Live [label="LiveActivity\n顶部实时行为", fillcolor="#D1FAE5", color="#059669"];
+            Diag [label="诊断日志\n轮转 / 脱敏导出", fillcolor="#F1F5F9", color="#64748B"];
+        }
+
+        subgraph cluster_official {
+            label="吉利银河官方 App";
+            style="rounded,dashed";
+            color="#B45309";
+            fillcolor="#FFFBEB";
+            fontcolor="#92400E";
+            Miui [label="MiuiService\nVehicleV2BleStrategy", fillcolor="#FEF3C7", color="#D97706"];
+            Dk [label="dkservice\nV2 鉴权 / 钥匙状态", fillcolor="#FEF3C7", color="#D97706"];
+            Notif [label="通知栏 id=5\n已连接状态 + 解锁/上锁按钮", fillcolor="#FEF3C7", color="#D97706"];
+        }
+
+        subgraph cluster_android {
+            label="Android 系统能力";
+            style="rounded,dashed";
+            color="#475569";
+            fillcolor="#F8FAFC";
+            fontcolor="#334155";
+            Perm [label="蓝牙权限\n通知使用权\n电池白名单", fillcolor="#F1F5F9", color="#64748B"];
+            Fgs [label="前台服务\n扫描 / WakeLock", fillcolor="#F1F5F9", color="#64748B"];
+            Listener [label="NotificationListenerService\n系统通知绑定", fillcolor="#F1F5F9", color="#64748B"];
+        }
+    }
+
+    subgraph cluster_ext {
+        label="外部服务";
+        style="rounded,dashed";
+        color="#6D28D9";
+        fillcolor="#F5F3FF";
+        fontcolor="#5B21B6";
+        Github [label="GitHub Releases\nupdate.json + APK", fillcolor="#EDE9FE", color="#7C3AED"];
+        Update [label="UpdateManager\n每小时检查 / 校验 / 安装", fillcolor="#EDE9FE", color="#7C3AED"];
+    }
+
+    Ad -> Scan [label="广播包"];
+    Scan -> Selector [label="候选"];
+    Selector -> Gate [label="身份通过"];
+    Selector -> Rssi [label="可信 RSSI"];
+    Rssi -> Logic;
+    Gate -> Miui [label="提交真实\nScanResult"];
+    Miui -> Link [label="官方发起连接"];
+    Link -> Auth;
+    Auth -> Dk [label="鉴权完成"];
+    Dk -> Notif [label="已连接通知"];
+    Notif -> Bridge [label="PI / 按钮"];
+    Logic -> Queue [label="解锁/上锁资格"];
+    Bridge -> Queue [label="官方就绪"];
+    Queue -> Bridge [label="发送动作"];
+    Bridge -> Lock [label="官方 PendingIntent"];
+    Gatt -> Link [label="只读挂载", style=dashed];
+    Link -> Gatt [label="ACL / RSSI", style=dashed];
+    Gatt -> Rssi [label="连接态 RSSI", style=dashed];
+    Store -> Selector [label="本车身份", style=dashed];
+    Store -> Gate [label="连接阈值", style=dashed];
+    Store -> Logic [label="解锁/上锁阈值", style=dashed];
+    Queue -> Live [label="阶段", style=dashed];
+    Notification [shape=note, label="通知桥接不是车控实现\n只复用官方按钮 PendingIntent\nSENT ≠ 车锁回执", fillcolor="#FFFBEB", color="#D97706", fontcolor="#78350F"];
+    Bridge -> Notification [style=dashed, arrowhead=none];
+    Live -> Diag [style=dashed];
+    Perm -> Fgs [style=dashed];
+    Perm -> Listener [style=dashed];
+    Listener -> Bridge [style=dashed];
+    Github -> Update [label="latest Release"];
+    Update -> Diag [style=dashed];
+}

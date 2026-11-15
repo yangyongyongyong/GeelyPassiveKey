@@ -1,0 +1,105 @@
+digraph UnlockSequence {
+    graph [
+        rankdir=TB,
+        newrank=true,
+        splines=polyline,
+        nodesep=0.35,
+        ranksep=0.48,
+        fontname="Hiragino Sans GB",
+        fontsize=22,
+        bgcolor="#FFFFFF",
+        pad=0.35,
+        label="银河无感钥匙 · 靠近解锁时序（v4.5.5）",
+        labelloc=t
+    ];
+    node [
+        shape=box,
+        style="rounded,filled",
+        fontname="Hiragino Sans GB",
+        fontsize=11,
+        color="#94A3B8",
+        fillcolor="#F8FAFC",
+        fontcolor="#0F172A",
+        margin="0.10,0.07"
+    ];
+    edge [
+        color="#64748B",
+        fontname="Hiragino Sans GB",
+        fontsize=9,
+        fontcolor="#475569",
+        arrowsize=0.65,
+        penwidth=1.1
+    ];
+
+    subgraph cluster_phone {
+        label="手机 · 银河无感钥匙";
+        style="rounded,dashed";
+        color="#0369A1";
+        fillcolor="#F0F9FF";
+        fontcolor="#075985";
+        A1 [label="① BLE 扫描\n识别本车广播\n记录 RSSI", fillcolor="#E0F2FE", color="#0284C7"];
+        A2 [label="② 唤醒门控\n连接触发阈值\n单目标连接预算", fillcolor="#DBEAFE", color="#2563EB"];
+        A3 [label="③ 距离状态机\n靠近解锁阈值\n形成解锁资格", fillcolor="#EDE9FE", color="#7C3AED"];
+        A4 [label="⑥ 待发队列\n12s 期限\n最多 2 次", fillcolor="#EDE9FE", color="#7C3AED"];
+        A5 [label="⑦ 通知桥接\n读取官方按钮 PI", fillcolor="#FCE7F3", color="#DB2777"];
+        A6 [label="⑧ 发送官方 PI\nSENT / UNKNOWN", fillcolor="#FCE7F3", color="#DB2777"];
+        A7 [label="⑨ 实时状态条\n展示当前阶段", fillcolor="#D1FAE5", color="#059669"];
+        A8 [label="⑩ 继续监测离开\n准备下一次动作", fillcolor="#D1FAE5", color="#059669"];
+    }
+
+    subgraph cluster_official {
+        label="手机 · 吉利银河 App";
+        style="rounded,dashed";
+        color="#B45309";
+        fillcolor="#FFFBEB";
+        fontcolor="#92400E";
+        G1 [label="④ MiuiService\nVehicleV2BleStrategy\n发起 V2 连接", fillcolor="#FEF3C7", color="#D97706"];
+        G2 [label="⑦ dkservice\n完成 V2 鉴权\n发布已连接通知", fillcolor="#FEF3C7", color="#D97706"];
+    }
+
+    subgraph cluster_car {
+        label="车辆";
+        style="rounded,dashed";
+        color="#047857";
+        fillcolor="#ECFDF5";
+        fontcolor="#065F46";
+        C1 [label="⑤ 车机 BLE 外设\nACL 建立\n单连接槽位", fillcolor="#D1FAE5", color="#059669"];
+        C2 [label="⑥ 车机 V2 鉴权\n确认钥匙身份", fillcolor="#D1FAE5", color="#059669"];
+        C3 [label="⑨ 车锁执行\n解锁完成并回写车况", fillcolor="#A7F3D0", color="#047857"];
+    }
+
+    Start [shape=oval, label="人靠近车辆", fillcolor="#F1F5F9", color="#475569"];
+    Safe [shape=diamond, label="安全门控通过？", fillcolor="#FEF3C7", color="#D97706"];
+    Wait [label="继续扫描等待\n不抢占 GATT\n不伪造官方按钮", fillcolor="#FEE2E2", color="#DC2626", fontcolor="#991B1B"];
+    End [shape=oval, label="车辆解锁完成", fillcolor="#D1FAE5", color="#059669"];
+
+    { rank=same; Start; A1; }
+    { rank=same; Safe; A2; Wait; }
+    { rank=same; A3; G1; }
+    { rank=same; C1; C2; }
+    { rank=same; G2; A5; }
+    { rank=same; A4; A6; C3; }
+    { rank=same; A7; A8; End; }
+
+    Start -> A1 [label=" 广播"];
+    A1 -> A2 [label=" 新鲜 RSSI"];
+    A1 -> A3 [label="持续测距", style=dashed];
+    A2 -> Safe [label=" 达到连接触发"];
+    Safe -> Wait [label="否", color="#DC2626", style=dashed];
+    Wait -> A1 [label="恢复", color="#DC2626", style=dashed, constraint=false];
+    Safe -> G1 [label="是：提交真实 ScanResult"];
+    A3 -> A4 [label="达到解锁阈值
+形成解锁资格"];
+    G1 -> C1 [label="官方连接请求"];
+    C1 -> C2 [label="链路完成"];
+    C2 -> G2 [label="鉴权完成"];
+    G2 -> A5 [label="已连接通知 + 按钮"];
+    A4 -> A6 [label="与官方就绪汇合", style=dashed];
+    A5 -> A6 [label="按钮就绪"];
+    A6 -> C3 [label="官方 PendingIntent"];
+    C3 -> End;
+    A6 -> A7 [label="发送状态", style=dashed];
+    End -> A8 [style=dashed];
+
+    note [shape=note, label="关键边界：\n• 唤醒银河 = 提交真实 ScanResult，不是直接抢占 GATT\n• 连接触发阈值 ≠ 解锁阈值\n• 本 App 不生成钥匙，V2 鉴权由银河完成\n• SENT 只表示已交给银河官方，不是车锁回执\n• 顶部状态条只有服务确认后才前进", fillcolor="#FFFBEB", color="#D97706", fontcolor="#78350F"];
+}
