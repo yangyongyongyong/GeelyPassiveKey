@@ -9,8 +9,9 @@ import java.util.Map;
 final class VehicleWakeGate<T extends VehicleBeacon> {
     static final long ACL_AUTH_GRACE_MS = 5000L;
     // 常规连接门槛；长时间无车后的首个明确候选可单独放宽，但仍不授予RSSI或车控资格。
-    static final int NORMAL_CONNECT_MIN_RSSI = -95;
-    static final int LONG_ABSENCE_CONNECT_MIN_RSSI = -102;
+    static final float NORMAL_CONNECT_MIN_RSSI = PassiveKeyDefaults.CONNECT_DBM;
+    static final float LONG_ABSENCE_CONNECT_MIN_RSSI = PassiveKeyDefaults.CONNECT_DBM
+            - PassiveKeyDefaults.LONG_ABSENCE_CONNECT_OFFSET_DBM;
     static final long LONG_ABSENCE_MS = 5 * 60 * 1000L;
 
     enum Result {
@@ -25,6 +26,8 @@ final class VehicleWakeGate<T extends VehicleBeacon> {
     private String protectedAclAddress = "";
     private String knownAddress = "";
     private boolean waitVerifiedEarlyPeer;
+    private float normalConnectMinRssi = NORMAL_CONNECT_MIN_RSSI;
+    private float longAbsenceConnectMinRssi = LONG_ABSENCE_CONNECT_MIN_RSSI;
     private long startedAtMs;
     private long lastAttemptAtMs;
     private long longAbsenceGrantedAtMs;
@@ -36,6 +39,25 @@ final class VehicleWakeGate<T extends VehicleBeacon> {
     /** 与普通候选共用未知连接预算和失败冷却，调用方只需维护一个唤醒门控。 */
     VehicleWakeGate(VehicleTargetSelector<T> targets) {
         this.targets = targets;
+    }
+
+    /** 普通连接阈值可配置；长时间无车首个强身份包自动再放宽固定7dB。 */
+    void setConnectThreshold(float normalDbm) {
+        float configured = Float.isFinite(normalDbm) ? normalDbm : PassiveKeyDefaults.CONNECT_DBM;
+        float bounded = Math.max(-115.0f, Math.min(-45.0f, configured));
+        normalConnectMinRssi = bounded;
+        longAbsenceConnectMinRssi = Math.max(PassiveKeyDefaults.MIN_CONNECT_DBM,
+                bounded - PassiveKeyDefaults.LONG_ABSENCE_CONNECT_OFFSET_DBM);
+    }
+
+    /** 返回当前普通连接阈值，供日志解释这次为何唤醒或继续等待。 */
+    float normalConnectMinRssi() {
+        return normalConnectMinRssi;
+    }
+
+    /** 返回长时无车首包宽限阈值。 */
+    float longAbsenceConnectMinRssi() {
+        return longAbsenceConnectMinRssi;
     }
 
     /** 原selected路径保留；只有已学完整名与当前广播厂商一致的非主候选允许首包提前连接。 */
@@ -70,8 +92,8 @@ final class VehicleWakeGate<T extends VehicleBeacon> {
         // 首次学习阶段没有已学地址，按历史协议宽过滤观察后仍允许走官方鉴权；不产生RSSI或车控资格。
         boolean firstLearning = known == null && longAbsenceFirstCandidate && absenceSinceMs > 0L
                 && nowMs >= absenceSinceMs && nowMs - absenceSinceMs >= LONG_ABSENCE_MS
-                && ad.rssi >= NORMAL_CONNECT_MIN_RSSI;
-        int minimumRssi = strongIdentity && absenceGrant ? LONG_ABSENCE_CONNECT_MIN_RSSI : NORMAL_CONNECT_MIN_RSSI;
+                && ad.rssi >= normalConnectMinRssi;
+        float minimumRssi = strongIdentity && absenceGrant ? longAbsenceConnectMinRssi : normalConnectMinRssi;
         if (targets.isConnectionCooling(ad.address, nowMs)) return result(Result.CANDIDATE_COOLDOWN);
         boolean selected = targets.isSelected(ad);
         if (ad.rssi < minimumRssi || ad.rssi >= 0) return result(Result.WEAK_SIGNAL);
@@ -80,7 +102,7 @@ final class VehicleWakeGate<T extends VehicleBeacon> {
         if (selected && strongIdentity && "LEARNED_ADDRESS_FRESH".equals(earlyReason)) {
             earlyReason = "SELECTED_LEARNED_ADDRESS";
         }
-        if (absenceGrant && strongIdentity && ad.rssi < NORMAL_CONNECT_MIN_RSSI
+        if (absenceGrant && strongIdentity && ad.rssi < normalConnectMinRssi
                 && "NO_FRESH_FULL_NAME".equals(earlyReason)) {
             // 长时间无车后的第一个已验证MAC候选不需要再等普通选择；弱包只负责提前叫醒官方。
             earlyReason = "LONG_ABSENCE_STRONG_IDENTITY";
@@ -126,7 +148,7 @@ final class VehicleWakeGate<T extends VehicleBeacon> {
         lastWakeAd = ad;
         attempts++;
         // 一旦真正使用了-102弱信号宽限，就记录时间；同一长时间无车会话不会再次续用。
-        if ((absenceGrant && ad.rssi < NORMAL_CONNECT_MIN_RSSI) || firstLearning) {
+        if ((absenceGrant && ad.rssi < normalConnectMinRssi) || firstLearning) {
             longAbsenceGrantedAtMs = nowMs;
         }
         if (!selected) waitVerifiedEarlyPeer = true;

@@ -25,10 +25,12 @@ final class VehicleIdentityStore {
     private static final String KEY_UNLOCK_DBM = "unlock_dbm";
     private static final String KEY_LOCK_DBM = "lock_dbm";
     private static final String KEY_LOCK_DWELL_MS = "lock_dwell_ms";
+    private static final String KEY_CONNECT_DBM = "connect_dbm";
 
-    static final float DEFAULT_UNLOCK_DBM = -75.0f; // 实车验证最佳提前解锁阈值
-    static final float DEFAULT_LOCK_DBM = -82.0f;   // 约 7~8 米
-    static final long DEFAULT_LOCK_DWELL_MS = 4500L;
+    static final float DEFAULT_UNLOCK_DBM = PassiveKeyDefaults.UNLOCK_DBM;
+    static final float DEFAULT_LOCK_DBM = PassiveKeyDefaults.LOCK_DBM;
+    static final long DEFAULT_LOCK_DWELL_MS = PassiveKeyDefaults.LOCK_DWELL_MS;
+    static final float DEFAULT_CONNECT_DBM = PassiveKeyDefaults.CONNECT_DBM;
 
     private final Context appContext;
     private final SharedPreferences prefs;
@@ -186,12 +188,24 @@ final class VehicleIdentityStore {
         return prefs.getLong(KEY_LOCK_DWELL_MS, DEFAULT_LOCK_DWELL_MS);
     }
 
-    /** 同步持久化用户阈值，本轮多车修复不主动修改这些值。 */
-    void saveThresholds(float unlockDbm, float lockDbm, long lockDwellMs) {
+    /** 读取提前唤醒银河的普通连接阈值；与解闭锁阈值相互独立。 */
+    float getConnectDbm() {
+        return prefs.getFloat(KEY_CONNECT_DBM, DEFAULT_CONNECT_DBM);
+    }
+
+    /** 判断用户是否保存过自定义触发参数；升级时只读，不写默认值。 */
+    boolean hasCustomThresholds() {
+        return prefs.contains(KEY_UNLOCK_DBM) || prefs.contains(KEY_LOCK_DBM)
+                || prefs.contains(KEY_LOCK_DWELL_MS) || prefs.contains(KEY_CONNECT_DBM);
+    }
+
+    /** 同步持久化四项触发参数，不改变车辆身份或自动动作开关。 */
+    void saveThresholds(float unlockDbm, float lockDbm, long lockDwellMs, float connectDbm) {
         prefs.edit()
                 .putFloat(KEY_UNLOCK_DBM, unlockDbm)
                 .putFloat(KEY_LOCK_DBM, lockDbm)
                 .putLong(KEY_LOCK_DWELL_MS, lockDwellMs)
+                .putFloat(KEY_CONNECT_DBM, connectDbm)
                 .apply();
     }
 }

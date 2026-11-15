@@ -2,9 +2,10 @@ package com.luca.geelykeyradar;
 
 /** GATT鉴权完成帧解析回归，只验证明文头和cmdId=5。 */
 public final class GattAuthFrameParserTest {
-    /** 执行Session响应、其他命令、短帧和错误magic检查。 */
+    /** 执行Session响应、原生PE落锁、其他命令、短帧和错误magic检查。 */
     public static void main(String[] args) {
         parseSessionResponse();
+        parseNativeApproachLockNotice();
         rejectNonSuccessFrames();
         System.out.println("GattAuthFrameParserTest passed");
     }
@@ -17,6 +18,16 @@ public final class GattAuthFrameParserTest {
         check(frame != null && frame.length == 12 && frame.cmdId == 5 && frame.sequence == 9,
                 "Session响应头解析");
         check(frame.isDk15AuthSuccess(), "cmdId=5判为鉴权完成");
+    }
+
+    /** 0x0159只标记车机原生PE落锁，不能同时被当成鉴权成功。 */
+    private static void parseNativeApproachLockNotice() {
+        GattAuthFrameParser.Frame frame = GattAuthFrameParser.parse(new byte[]{
+                (byte) 0xFE, 1, 0, 10, 0x01, 0x59, 0, 12, 1, 2
+        });
+        check(frame != null && frame.cmdId == 345, "原生PE落锁命令头解析");
+        check(frame.isApproachLockNotice() && !frame.isDk15AuthSuccess(),
+                "0x0159只识别为原生落锁，不授予鉴权成功");
     }
 
     /** 其他cmdId、短帧和错误magic不能误触发解锁资格。 */

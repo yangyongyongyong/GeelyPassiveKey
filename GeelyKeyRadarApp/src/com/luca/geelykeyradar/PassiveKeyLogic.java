@@ -12,7 +12,7 @@ import java.util.Locale;
  * 额外保留的安全约束：
  * - 冷启动/一直在远处时，不主动补发上锁；
  * - 蓝牙断连、无新样本时不使用旧 RSSI 误锁；
- * - 同一接近会话只解锁一次，必须真正离开并持续远场后才重新武装；
+ * - 同一接近会话默认只解锁一次；车机原生PE误锁或长时间静止后真实重新靠近时，最多允许一次纠偏；
  * - 行车中不自动上锁，也不重新武装。
  */
 final class PassiveKeyLogic {
@@ -23,11 +23,11 @@ final class PassiveKeyLogic {
         LOCK
     }
 
-    static final float UNLOCK_DBM = -75.0f; // 实车验证最佳提前解锁阈值
-    static final float LOCK_DBM = -82.0f;
+    static final float UNLOCK_DBM = PassiveKeyDefaults.UNLOCK_DBM;
+    static final float LOCK_DBM = PassiveKeyDefaults.LOCK_DBM;
     static final float REARM_HYSTERESIS_DBM = 4.0f;
     static final float NEAR_GUARD_DBM = -78.0f;
-    static final long LOCK_DWELL_MS = 4500L;
+    static final long LOCK_DWELL_MS = PassiveKeyDefaults.LOCK_DWELL_MS;
     static final long NEAR_GUARD_MS = 6000L;
     static final long UNLOCK_COOLDOWN_MS = 8000L;
     static final long REARM_FAR_MS = 8000L;
@@ -37,6 +37,14 @@ final class PassiveKeyLogic {
     static final long CONTROL_FAILURE_COOLDOWN_MS = 5000L;
     static final long RETURN_NEAR_CONFIRM_MS = 1000L;
     static final float EARLY_DEPARTURE_DROP_DBM = 6.0f;
+    // 官方连接可能持续数分钟。只有深谷后强信号返回，才把同一连接视为下一次靠近。
+    static final long RELOCK_RECOVERY_QUIET_MS = 60_000L;
+    static final float RELOCK_RECOVERY_DIP_DBM = 2.0f;
+    static final float RELOCK_RECOVERY_RISE_DBM = 8.0f;
+    static final float RELOCK_RECOVERY_FAST_RISE_DBM = 12.0f;
+    static final long RELOCK_RECOVERY_CONFIRM_MS = 1000L;
+    static final long NATIVE_APPROACH_LOCK_MIN_UNLOCK_AGE_MS = 3000L;
+    static final long SELF_LOCK_SUPPRESS_MS = 10_000L;
     static final int MAX_REQUESTS_PER_ACTION = 2;
     static final int LOCK_MIN_SAMPLES = 3;
 
@@ -57,7 +65,11 @@ final class PassiveKeyLogic {
     private long officialDisconnectedAtMs = 0L;
     private long lockInhibitUntilMs = 0L;
     private float lastDistanceDbm = Float.NaN;
+    private float lastApproachDbm = Float.NaN;
     private Action pendingAction = Action.NONE;
+    private Action lastSentAction = Action.NONE;
+    private long lastSentActionAtMs = 0L;
+    private long lastUnlockSentAtMs = 0L;
     private int unlockRequests = 0;
     private int lockRequests = 0;
     private long controlRetryAfterMs = 0L;
@@ -74,6 +86,12 @@ final class PassiveKeyLogic {
     private long earlyUnlockSentAtMs = 0L;
     private float earlyApproachPeakDbm = Float.NaN;
     private String measurementSource = "";
+    private boolean relockRecoveryUsed = false;
+    private float relockRecoveryDipDbm = Float.NaN;
+    private long relockRecoveryNearStartMs = 0L;
+    private int relockRecoveryNearSamples = 0;
+    private String lastRelockDecision = "NO_RELOCK_EVENT";
+    private long lastRelockDecisionAtMs = 0L;
 
     /**
      * 动态更新自定义阈值（靠近解锁阈值、离开上锁阈值、离开确认毫秒数）。
@@ -161,9 +179,11 @@ final class PassiveKeyLogic {
             earlyApproachPeakDbm = Float.NaN;
             resetLockDwell();
             farSinceMs = 0L;
+            resetRelockRecoveryEvidence(relockRecoveryUsed);
         }
         lastSampleAtMs = nowMs;
         lastDistanceDbm = distanceDbm;
+        lastApproachDbm = approachDbm;
         if (officialConnected) {
             officialDisconnectedAtMs = 0L;
         }
@@ -190,6 +210,15 @@ final class PassiveKeyLogic {
         }
         if (returnConfirmationRequired && !confirmReturn(distanceDbm, nearGuard, nowMs, driving)) {
             return sampleDecision(Action.NONE, driving ? "DRIVING_OR_WIRED_BLOCK" : "RETURN_CONFIRMATION", nowMs);
+        }
+
+        // 官方钥匙常会一直保持连接。长时间静置后先出现明显深谷，再恢复到解锁阈值，
+        // 才允许同一连接内的第二次靠近纠偏；普通口袋/多径抖动没有完整“深谷+回升”不会放行。
+        if (officialConnected && approachLatched && pendingAction == Action.NONE) {
+            Action recovery = evaluateRelockRecovery(approachDbm, distanceDbm, nowMs, driving, autoUnlock);
+            if (recovery == Action.UNLOCK) {
+                return sampleDecision(Action.UNLOCK, "RELOCK_RECOVERY_THRESHOLD_REACHED", nowMs);
+            }
         }
 
         if (approachDbm >= unlockDbm && distanceDbm > lockDbm) {
@@ -308,6 +337,7 @@ final class PassiveKeyLogic {
     synchronized void onSignalLost(long nowMs) {
         resetLockDwell();
         resetReturnConfirmation();
+        resetRelockRecoveryEvidence(relockRecoveryUsed);
         earlyApproachPeakDbm = Float.NaN;
         farSinceMs = 0L;
         lockInhibitUntilMs = nowMs + SIGNAL_LOST_INHIBIT_MS;
@@ -318,8 +348,10 @@ final class PassiveKeyLogic {
         onSignalLost(nowMs);
         lastSampleAtMs = 0L;
         lastDistanceDbm = Float.NaN;
+        lastApproachDbm = Float.NaN;
         lastNearAtMs = 0L;
         hasBeenNear = false;
+        resetRelockRecoveryEvidence(relockRecoveryUsed);
         departureArmed = false;
         earlyUnlockSentAtMs = 0L;
         measurementSource = "";
@@ -333,6 +365,7 @@ final class PassiveKeyLogic {
     synchronized void onBluetoothReset(long nowMs) {
         resetLockDwell();
         resetReturnConfirmation();
+        resetRelockRecoveryEvidence(relockRecoveryUsed);
         earlyApproachPeakDbm = Float.NaN;
         farSinceMs = 0L;
         lockInhibitUntilMs = nowMs + 15000L;
@@ -401,7 +434,47 @@ final class PassiveKeyLogic {
         }
         resetLockDwell();
         resetReturnConfirmation();
+        resetRelockRecoveryEvidence(relockRecoveryUsed);
         earlyApproachPeakDbm = Float.NaN;
+    }
+
+    /**
+     * 车机DK1.5原生PE落锁通知（LISTENER_APPROACH_LOCK / 0x0159）。
+     * 这是比RSSI猜测更精确的误锁证据：只有本次已发送过自动解锁、仍在近场、
+     * 且最近一条锁车不是本App自己发出的，才允许当场纠正一次。
+     */
+    synchronized Action onNativeApproachLock(long nowMs, boolean driving, boolean autoUnlock) {
+        if (driving) return relockDecision(Action.NONE, "DRIVING_OR_WIRED_BLOCK", nowMs);
+        if (!autoUnlock) return relockDecision(Action.NONE, "UNLOCK_DISABLED", nowMs);
+        if (manualLockLatched) return relockDecision(Action.NONE, "MANUAL_LOCK_LATCHED", nowMs);
+        if (pendingAction != Action.NONE) return relockDecision(Action.NONE, "CONTROL_PENDING", nowMs);
+        if (!approachLatched) return relockDecision(Action.NONE, "NO_ACTIVE_APPROACH", nowMs);
+        if (relockRecoveryUsed) return relockDecision(Action.NONE, "RECOVERY_ALREADY_USED", nowMs);
+        if (lastUnlockSentAtMs == 0L
+                || nowMs - lastUnlockSentAtMs < NATIVE_APPROACH_LOCK_MIN_UNLOCK_AGE_MS) {
+            return relockDecision(Action.NONE, "UNLOCK_NOT_ESTABLISHED", nowMs);
+        }
+        if (lastSentAction == Action.LOCK && nowMs - lastSentActionAtMs < SELF_LOCK_SUPPRESS_MS) {
+            return relockDecision(Action.NONE, "SELF_LOCK_RECENT", nowMs);
+        }
+        if (lastSampleAtMs == 0L || nowMs - lastSampleAtMs > SIGNAL_STALE_MS) {
+            return relockDecision(Action.NONE, "SIGNAL_STALE", nowMs);
+        }
+        float nearGuard = Math.max(lockDbm + 3.0f, Math.min(unlockDbm - 3.0f, NEAR_GUARD_DBM));
+        float correctionNearDbm = Math.max(nearGuard, unlockDbm - 1.0f);
+        if (!Float.isFinite(lastDistanceDbm) || lastDistanceDbm < correctionNearDbm) {
+            return relockDecision(Action.NONE, "NOT_NEAR_ENOUGH", nowMs);
+        }
+        if (unlockRequests >= MAX_REQUESTS_PER_ACTION) {
+            return relockDecision(Action.NONE, "UNLOCK_REQUEST_LIMIT", nowMs);
+        }
+        relockRecoveryUsed = true;
+        relockRecoveryDipDbm = Float.NaN;
+        resetRelockRecoveryConfirmation();
+        lastUnlockAtMs = nowMs;
+        pendingAction = Action.UNLOCK;
+        unlockRequests++;
+        return relockDecision(Action.UNLOCK, "NATIVE_APPROACH_LOCK_RECOVERY", nowMs);
     }
 
     /**
@@ -457,7 +530,11 @@ final class PassiveKeyLogic {
         lockInhibitUntilMs = 0L;
         farSinceMs = 0L;
         lastDistanceDbm = Float.NaN;
+        lastApproachDbm = Float.NaN;
         pendingAction = Action.NONE;
+        lastSentAction = Action.NONE;
+        lastSentActionAtMs = 0L;
+        lastUnlockSentAtMs = 0L;
         unlockRequests = 0;
         lockRequests = 0;
         controlRetryAfterMs = 0L;
@@ -468,8 +545,11 @@ final class PassiveKeyLogic {
         lastControlFeedback = "NONE";
         lastSampleDecisionAtMs = 0L;
         lastOfficialDecisionAtMs = 0L;
+        lastRelockDecision = "RESET";
+        lastRelockDecisionAtMs = 0L;
         resetDepartureEvidence();
         resetReturnConfirmation();
+        resetRelockRecoveryEvidence(false);
         resetLockDwell();
     }
 
@@ -494,7 +574,12 @@ final class PassiveKeyLogic {
         lastControlFeedback = "FINISHED_" + action;
         pendingAction = Action.NONE;
         controlRetryAfterMs = 0L;
+        lastSentAction = action;
+        lastSentActionAtMs = nowMs;
         if (action == Action.UNLOCK) {
+            lastUnlockSentAtMs = nowMs;
+            relockRecoveryDipDbm = Float.NaN;
+            resetRelockRecoveryConfirmation();
             earlyUnlockSentAtMs = nowMs;
             earlyApproachPeakDbm = Float.NaN;
             farSinceMs = 0L;
@@ -505,6 +590,7 @@ final class PassiveKeyLogic {
             hasBeenNear = false;
             farSinceMs = 0L;
             lastUnlockAtMs = nowMs;
+            resetRelockRecoveryEvidence(true);
             resetLockDwell();
             returnConfirmationRequired = true;
             resetReturnConfirmation();
@@ -520,6 +606,11 @@ final class PassiveKeyLogic {
         manualLockLatched = action == Action.LOCK;
         hasBeenNear = action == Action.UNLOCK;
         lastUnlockAtMs = nowMs;
+        lastUnlockSentAtMs = action == Action.UNLOCK ? nowMs : lastUnlockSentAtMs;
+        lastSentAction = action;
+        lastSentActionAtMs = nowMs;
+        relockRecoveryUsed = true;
+        relockRecoveryDipDbm = Float.NaN;
         lastNearAtMs = 0L;
         lastApproachAtMs = nowMs;
         farSinceMs = 0L;
@@ -543,7 +634,10 @@ final class PassiveKeyLogic {
         if (action == Action.UNLOCK) {
             approachLatched = false;
             lastUnlockAtMs = 0L;
+            lastUnlockSentAtMs = 0L;
+            resetRelockRecoveryConfirmation();
         } else {
+            resetRelockRecoveryEvidence(true);
             resetLockDwell();
         }
     }
@@ -561,6 +655,7 @@ final class PassiveKeyLogic {
         returnConfirmationRequired = false;
         resetDepartureEvidence();
         resetReturnConfirmation();
+        resetRelockRecoveryEvidence(false);
         resetLockDwell();
     }
 
@@ -587,6 +682,71 @@ final class PassiveKeyLogic {
     private void resetReturnConfirmation() {
         returnNearStartMs = 0L;
         returnNearSamples = 0;
+    }
+
+    /** 官方持续连接时，只有解锁后静置至少60秒、跌破解锁阈值2dB，再恢复并上升8dB才补发。 */
+    private Action evaluateRelockRecovery(float approachDbm, float distanceDbm, long nowMs,
+                                          boolean driving, boolean autoUnlock) {
+        if (driving || !autoUnlock || pendingAction != Action.NONE || relockRecoveryUsed
+                || lastUnlockSentAtMs == 0L || unlockRequests >= MAX_REQUESTS_PER_ACTION) {
+            resetRelockRecoveryConfirmation();
+            return Action.NONE;
+        }
+        if (nowMs - lastUnlockSentAtMs < RELOCK_RECOVERY_QUIET_MS) return Action.NONE;
+
+        float dipThreshold = unlockDbm - RELOCK_RECOVERY_DIP_DBM;
+        if (Float.isNaN(relockRecoveryDipDbm)) {
+            if (distanceDbm <= dipThreshold) {
+                relockRecoveryDipDbm = distanceDbm;
+                relockDecision(Action.NONE, "RELOCK_RECOVERY_ARMED", nowMs);
+            }
+            return Action.NONE;
+        }
+        if (distanceDbm < relockRecoveryDipDbm) {
+            relockRecoveryDipDbm = distanceDbm;
+            relockDecision(Action.NONE, "RELOCK_RECOVERY_ARMED", nowMs);
+        }
+
+        if (distanceDbm < unlockDbm || approachDbm < unlockDbm) {
+            resetRelockRecoveryConfirmation();
+            return Action.NONE;
+        }
+        float riseDbm = distanceDbm - relockRecoveryDipDbm;
+        if (riseDbm < RELOCK_RECOVERY_RISE_DBM) {
+            resetRelockRecoveryConfirmation();
+            return Action.NONE;
+        }
+        if (riseDbm < RELOCK_RECOVERY_FAST_RISE_DBM) {
+            if (relockRecoveryNearStartMs == 0L) relockRecoveryNearStartMs = nowMs;
+            relockRecoveryNearSamples++;
+            if (relockRecoveryNearSamples < 2
+                    || nowMs - relockRecoveryNearStartMs < RELOCK_RECOVERY_CONFIRM_MS) {
+                relockDecision(Action.NONE, "RELOCK_RECOVERY_CONFIRMING", nowMs);
+                return Action.NONE;
+            }
+        }
+
+        relockRecoveryUsed = true;
+        relockRecoveryDipDbm = Float.NaN;
+        resetRelockRecoveryConfirmation();
+        approachLatched = true;
+        lastUnlockAtMs = nowMs;
+        pendingAction = Action.UNLOCK;
+        unlockRequests++;
+        return relockDecision(Action.UNLOCK, "RELOCK_RECOVERY_UNLOCK", nowMs);
+    }
+
+    /** 清除“深谷+回流”的确认计时，但不重写本次会话是否已用掉纠偏额度。 */
+    private void resetRelockRecoveryConfirmation() {
+        relockRecoveryNearStartMs = 0L;
+        relockRecoveryNearSamples = 0;
+    }
+
+    /** 会话真正结束时连同纠偏额度一起清空；采样源中断时只清深谷与确认。 */
+    private void resetRelockRecoveryEvidence(boolean keepUsed) {
+        relockRecoveryUsed = keepUsed;
+        relockRecoveryDipDbm = Float.NaN;
+        resetRelockRecoveryConfirmation();
     }
 
     /** 到过真实近场才能按原阈值锁车；提前解锁后直接转身离开，须同源信号持续比峰值弱六dB。 */
@@ -648,6 +808,16 @@ final class PassiveKeyLogic {
         return lastOfficialDecision;
     }
 
+    /** 返回最近真正交付给银河的动作，供顶部实时状态展示。 */
+    synchronized Action getLastSentAction() {
+        return lastSentAction;
+    }
+
+    /** 返回最近动作交付时间；未发送过时为0。 */
+    synchronized long getLastSentActionAtMs() {
+        return lastSentActionAtMs;
+    }
+
     /** 一次性读取判定原因、预算和各保护窗口，调用不会修改车控状态。 */
     synchronized String diagnosticSnapshot(long nowMs) {
         float nearGuard = Math.max(lockDbm + 3f, Math.min(unlockDbm - 3f, NEAR_GUARD_DBM));
@@ -659,7 +829,10 @@ final class PassiveKeyLogic {
                         + "unlock_cooldown_left_ms=%d retry_left_ms=%d unlock_requests=%d/%d lock_requests=%d/%d "
                         + "return_required=%s return_ms=%d return_samples=%d near_age_ms=%d approach_age_ms=%d "
                         + "far_ms=%d disconnected_ms=%d has_near=%s latched=%s manual_lock_latched=%s logic_pending=%s "
-                        + "departure_armed=%s early_unlock_age_ms=%d early_peak_dbm=%.1f departure_drop_dbm=%.1f rssi_source=%s",
+                        + "departure_armed=%s early_unlock_age_ms=%d early_peak_dbm=%.1f departure_drop_dbm=%.1f rssi_source=%s "
+                        + "relock_recovery_used=%s relock_dip_dbm=%.1f relock_rise_dbm=%.1f "
+                        + "relock_reason=%s relock_reason_age_ms=%d last_unlock_sent_age_ms=%d "
+                        + "last_sent_action=%s last_sent_age_ms=%d",
                 lastSampleDecision, age(nowMs, lastSampleDecisionAtMs),
                 lastOfficialDecision, age(nowMs, lastOfficialDecisionAtMs), lastMaintenanceDecision,
                 lastControlFeedback, lastDistanceDbm, unlockDbm, lockDbm, nearGuard,
@@ -674,7 +847,11 @@ final class PassiveKeyLogic {
                 farSinceMs == 0L ? 0L : Math.max(0L, nowMs - farSinceMs),
                 age(nowMs, officialDisconnectedAtMs), hasBeenNear, approachLatched, manualLockLatched, pendingAction,
                 departureArmed, age(nowMs, earlyUnlockSentAtMs), earlyApproachPeakDbm,
-                earlyApproachPeakDbm - lastDistanceDbm, measurementSource);
+                earlyApproachPeakDbm - lastDistanceDbm, measurementSource,
+                relockRecoveryUsed, relockRecoveryDipDbm,
+                Float.isFinite(relockRecoveryDipDbm) ? lastDistanceDbm - relockRecoveryDipDbm : Float.NaN,
+                lastRelockDecision, age(nowMs, lastRelockDecisionAtMs), age(nowMs, lastUnlockSentAtMs),
+                lastSentAction, age(nowMs, lastSentActionAtMs));
     }
 
     /** 仅标记当前样本真实返回的结果和分支，不改变原返回动作。 */
@@ -688,6 +865,13 @@ final class PassiveKeyLogic {
     private Action officialDecision(Action action, String reason, long nowMs) {
         lastOfficialDecision = reason;
         lastOfficialDecisionAtMs = nowMs;
+        return action;
+    }
+
+    /** 记录车机原生落锁纠偏的最近分支，便于导出日志判断是否收到0x0159。 */
+    private Action relockDecision(Action action, String reason, long nowMs) {
+        lastRelockDecision = reason;
+        lastRelockDecisionAtMs = nowMs;
         return action;
     }
 

@@ -44,12 +44,17 @@ public final class PassiveKeyLogicTest {
         manualUnlockOverridesManualLock();
         manualActionsInvalidateQueuedAutomaticAction();
         manualLockResetRestoresAutomaticControl();
+        relockRecoveryAfterLongQuietValleyAndReturn();
+        relockRecoveryNeedsQuietDipAndRealRise();
+        nativeApproachLockRecoversOnceWhileStillNear();
+        nativeApproachLockRejectsStaleOrManualLock();
+        projectDefaultsMatchAdjustedSettings();
         System.out.println("PassiveKeyLogicTest passed");
     }
 
     /** 一次接近完成解锁后，不因持续近场而重复下发。 */
     private static void unlockOnlyOncePerApproach() {
-        PassiveKeyLogic logic = new PassiveKeyLogic();
+        PassiveKeyLogic logic = legacyLogic();
         check(logic.onSample(-60f, 1_000L, false, false, true, true) == PassiveKeyLogic.Action.UNLOCK,
                 "首次进入近场应解锁");
         logic.onControlSent(PassiveKeyLogic.Action.UNLOCK, 1_000L);
@@ -61,7 +66,7 @@ public final class PassiveKeyLogicTest {
 
     /** 已完成解锁的会话只有在足量连续远场确认后才请求上锁。 */
     private static void awayLockNeedsDwellAndSamples() {
-        PassiveKeyLogic logic = new PassiveKeyLogic();
+        PassiveKeyLogic logic = legacyLogic();
         check(logic.onSample(-60f, 1_000L, true, false, true, true) == PassiveKeyLogic.Action.UNLOCK,
                 "先解锁");
         logic.onControlSent(PassiveKeyLogic.Action.UNLOCK, 1_000L);
@@ -77,7 +82,7 @@ public final class PassiveKeyLogicTest {
 
     /** 从未接近过车辆的远处样本不能补锁。 */
     private static void coldStartWeakSignalNeverLocks() {
-        PassiveKeyLogic logic = new PassiveKeyLogic();
+        PassiveKeyLogic logic = legacyLogic();
         for (int sampleIndex = 0; sampleIndex < 30; sampleIndex++) {
             check(logic.onSample(-90f, 1_000L + sampleIndex * 1_000L, false, false, true, true)
                     == PassiveKeyLogic.Action.NONE, "冷启动一直在远处不得补发上锁");
@@ -86,7 +91,7 @@ public final class PassiveKeyLogicTest {
 
     /** 物理链路中断后的保护窗口不能利用旧信号上锁。 */
     private static void signalLossDoesNotLock() {
-        PassiveKeyLogic logic = new PassiveKeyLogic();
+        PassiveKeyLogic logic = legacyLogic();
         check(logic.onSample(-60f, 1_000L, true, false, true, true) == PassiveKeyLogic.Action.UNLOCK,
                 "先解锁");
         logic.onControlSent(PassiveKeyLogic.Action.UNLOCK, 1_000L);
@@ -99,7 +104,7 @@ public final class PassiveKeyLogicTest {
 
     /** 行驶或插线禁控状态下只记录近车证据，不发解锁。 */
     private static void drivingDoesNotSendUnlock() {
-        PassiveKeyLogic logic = new PassiveKeyLogic();
+        PassiveKeyLogic logic = legacyLogic();
         check(logic.onSample(-55f, 1_000L, true, true, true, true) == PassiveKeyLogic.Action.NONE,
                 "行驶中不得下发解锁");
         check(logic.isApproachLatched(), "行驶中应占用本次接近会话");
@@ -109,7 +114,7 @@ public final class PassiveKeyLogicTest {
 
     /** 上一次解锁完成且真正离开后，可以再次接近解锁。 */
     private static void rearmAllowsNextApproachUnlock() {
-        PassiveKeyLogic logic = new PassiveKeyLogic();
+        PassiveKeyLogic logic = legacyLogic();
         check(logic.onSample(-60f, 1_000L, false, false, true, false) == PassiveKeyLogic.Action.UNLOCK,
                 "第一次接近解锁");
         logic.onControlSent(PassiveKeyLogic.Action.UNLOCK, 1_000L);
@@ -123,7 +128,7 @@ public final class PassiveKeyLogicTest {
 
     /** 行驶期间的弱信号不触发锁车，停车后重新累计远场。 */
     private static void drivingBlocksLockAndRearmUntilParked() {
-        PassiveKeyLogic logic = new PassiveKeyLogic();
+        PassiveKeyLogic logic = legacyLogic();
         check(logic.onSample(-60f, 1_000L, true, false, true, true) == PassiveKeyLogic.Action.UNLOCK,
                 "先解锁");
         logic.onControlSent(PassiveKeyLogic.Action.UNLOCK, 1_000L);
@@ -145,7 +150,7 @@ public final class PassiveKeyLogicTest {
 
     /** 回到安全区后，先前的上锁计时不能继续累计。 */
     private static void middleZoneCancelsLockDwell() {
-        PassiveKeyLogic logic = new PassiveKeyLogic();
+        PassiveKeyLogic logic = legacyLogic();
         check(logic.onSample(-60f, 1_000L, true, false, true, true) == PassiveKeyLogic.Action.UNLOCK,
                 "先解锁");
         logic.onControlSent(PassiveKeyLogic.Action.UNLOCK, 1_000L);
@@ -161,7 +166,7 @@ public final class PassiveKeyLogicTest {
 
     /** 持续不足六秒的车内深衰落仍由近场保护拦截。 */
     private static void nearGuardAvoidsCabinFalseLock() {
-        PassiveKeyLogic logic = new PassiveKeyLogic();
+        PassiveKeyLogic logic = legacyLogic();
         check(logic.onSample(-60f, 1_000L, true, false, true, true) == PassiveKeyLogic.Action.UNLOCK,
                 "先解锁");
         logic.onControlSent(PassiveKeyLogic.Action.UNLOCK, 1_000L);
@@ -176,7 +181,7 @@ public final class PassiveKeyLogicTest {
 
     /** 官方就绪立即产生请求，发送完成后真正离开才能重新武装。 */
     private static void officialConnectedFiresUnlockAndSilenceRearms() {
-        PassiveKeyLogic logic = new PassiveKeyLogic();
+        PassiveKeyLogic logic = legacyLogic();
         // 银河抢先连上车机导致广播停止时，onOfficialConnected 应立即触发一次解锁
         check(logic.onOfficialConnected(1_000L, false, true) == PassiveKeyLogic.Action.UNLOCK,
                 "银河蓝牙刚连上时应立即触发解锁");
@@ -279,7 +284,7 @@ public final class PassiveKeyLogicTest {
 
     /** 等待鉴权的解锁在禁控、开关关闭或明确远场时必须停止。 */
     private static void pendingUnlockRespectsAllSwitches() {
-        PassiveKeyLogic logic = new PassiveKeyLogic();
+        PassiveKeyLogic logic = legacyLogic();
         logic.onSample(-60f, 1_000L, false, false, true, true);
         check(logic.isPendingActionValid(PassiveKeyLogic.Action.UNLOCK, 4_100L, false, true, true),
                 "车机停广播鉴权期间可等待有限时间");
@@ -294,7 +299,7 @@ public final class PassiveKeyLogicTest {
 
     /** 官方鉴权晚于距离请求时，仅完成已有请求，不再产生另一个动作。 */
     private static void lateOfficialConnectionDoesNotCreateAnotherAction() {
-        PassiveKeyLogic logic = new PassiveKeyLogic();
+        PassiveKeyLogic logic = legacyLogic();
         logic.onSample(-60f, 1_000L, false, false, true, true);
         check(logic.onOfficialConnected(4_100L, false, true) == PassiveKeyLogic.Action.NONE,
                 "已有待发解锁不应再创建一次");
@@ -310,7 +315,7 @@ public final class PassiveKeyLogicTest {
 
     /** 解锁发送失败耗尽本轮预算后，真正离开仍能恢复下一次接近。 */
     private static void failedUnlockRearmsAfterLeaving() {
-        PassiveKeyLogic logic = new PassiveKeyLogic();
+        PassiveKeyLogic logic = legacyLogic();
         check(logic.onSample(-60f, 1_000L, false, false, true, false) == PassiveKeyLogic.Action.UNLOCK,
                 "第一次请求");
         logic.onControlFailed(PassiveKeyLogic.Action.UNLOCK, 1_100L);
@@ -349,7 +354,7 @@ public final class PassiveKeyLogicTest {
 
     /** 官方先连使广播停止时，过期的远场记录不能阻止新的就绪事件。 */
     private static void staleFarSignalDoesNotBlockOfficialConnection() {
-        PassiveKeyLogic logic = new PassiveKeyLogic();
+        PassiveKeyLogic logic = legacyLogic();
         logic.onSample(-95f, 1_000L, false, false, true, true);
         check(logic.onOfficialConnected(2_000L, false, true) == PassiveKeyLogic.Action.NONE,
                 "新鲜的远场仍要阻止远处解锁");
@@ -359,7 +364,7 @@ public final class PassiveKeyLogicTest {
 
     /** 已确认未发送的解锁耗尽预算后，车主远离再回到近场可恢复，即使官方始终连接。 */
     private static void failedUnlockBudgetRecoversAfterReturnWhileConnected() {
-        PassiveKeyLogic logic = new PassiveKeyLogic();
+        PassiveKeyLogic logic = legacyLogic();
         logic.onSample(-60f, 1_000L, true, false, true, false);
         logic.onControlFailed(PassiveKeyLogic.Action.UNLOCK, 1_100L);
         check(logic.onSample(-60f, 6_100L, true, false, true, false) == PassiveKeyLogic.Action.UNLOCK,
@@ -420,7 +425,7 @@ public final class PassiveKeyLogicTest {
 
     /** 车内USB禁控只占用当前接近，拔线后靠新的远场样本正常锁车。 */
     private static void wiredSessionLocksAfterUnplugAndDeparture() {
-        PassiveKeyLogic logic = new PassiveKeyLogic();
+        PassiveKeyLogic logic = legacyLogic();
         check(logic.onOfficialConnected(1_000L, true, false) == PassiveKeyLogic.Action.NONE,
                 "插线期间官方连接也不发送解锁");
         for (long time = 1_500L; time <= 30_000L; time += 500L) {
@@ -446,7 +451,7 @@ public final class PassiveKeyLogicTest {
 
     /** 等价回放实车弱信号提前解锁后持续走近的窗口，不能在六秒保护结束时反向上锁。 */
     private static void earlyOfficialUnlockDoesNotLockWhileApproaching() {
-        PassiveKeyLogic logic = new PassiveKeyLogic();
+        PassiveKeyLogic logic = legacyLogic();
         long connectedAt = 10_000L;
         logic.onSample(-86f, connectedAt - 4_416L, false, false, true, true);
         check(logic.onOfficialConnected(connectedAt, false, true) == PassiveKeyLogic.Action.UNLOCK,
@@ -469,7 +474,7 @@ public final class PassiveKeyLogicTest {
 
     /** 提前解锁后停在远距边界，不能仅因保护计时结束自动上锁。 */
     private static void remainingAtEarlyUnlockDistanceDoesNotLock() {
-        PassiveKeyLogic logic = new PassiveKeyLogic();
+        PassiveKeyLogic logic = legacyLogic();
         logic.onOfficialConnected(1_000L, false, true);
         logic.onControlSent(PassiveKeyLogic.Action.UNLOCK, 1_005L);
         for (long time = 1_500L; time <= 31_000L; time += 500L) {
@@ -480,7 +485,7 @@ public final class PassiveKeyLogicTest {
 
     /** 提前解锁但没有走到车旁便转身离开，仍可凭同源持续变弱确认远离，避免留下未锁车辆。 */
     private static void abortedEarlyApproachStillLocksAfterRealWeakening() {
-        PassiveKeyLogic logic = new PassiveKeyLogic();
+        PassiveKeyLogic logic = legacyLogic();
         logic.onOfficialConnected(1_000L, false, true);
         logic.onControlSent(PassiveKeyLogic.Action.UNLOCK, 1_005L);
         for (long time = 1_500L; time <= 12_000L; time += 500L) {
@@ -500,7 +505,7 @@ public final class PassiveKeyLogicTest {
 
     /** 广播负八十切到GATT负八十九是来源差异，不能作为提前解锁后的远离下降。 */
     private static void switchingRssiSourceDoesNotPretendDeparture() {
-        PassiveKeyLogic logic = new PassiveKeyLogic();
+        PassiveKeyLogic logic = legacyLogic();
         check(logic.onSample(-72f, -80f, 1_000L, false, false, true, true, "SCAN")
                 == PassiveKeyLogic.Action.UNLOCK, "保留口袋补偿的提前解锁");
         logic.onControlSent(PassiveKeyLogic.Action.UNLOCK, 1_005L);
@@ -534,7 +539,7 @@ public final class PassiveKeyLogicTest {
 
     /** 手动解锁计入本次靠近会话，重复通知与近场样本不能再自动解锁。 */
     private static void manualUnlockIsNotAutomaticallyRepeated() {
-        PassiveKeyLogic logic = new PassiveKeyLogic();
+        PassiveKeyLogic logic = legacyLogic();
         logic.onManualControlSent(PassiveKeyLogic.Action.UNLOCK, 1_000L);
         check(logic.onOfficialConnected(1_500L, false, true) == PassiveKeyLogic.Action.NONE,
                 "手动解锁后官方连接通知不得重复解锁");
@@ -549,7 +554,7 @@ public final class PassiveKeyLogicTest {
 
     /** 距离阈值之外手动解锁后，停留或继续靠近不应立刻反向自动上锁。 */
     private static void manualEarlyUnlockDoesNotImmediatelyLock() {
-        PassiveKeyLogic logic = new PassiveKeyLogic();
+        PassiveKeyLogic logic = legacyLogic();
         logic.onManualControlSent(PassiveKeyLogic.Action.UNLOCK, 1_000L);
         for (long time = 1_500L; time <= 20_000L; time += 500L) {
             check(logic.onSample(-84f, time, true, false, true, true) == PassiveKeyLogic.Action.NONE,
@@ -559,7 +564,7 @@ public final class PassiveKeyLogicTest {
 
     /** 手动上锁后，即使人在车旁或官方仍连接，也不得自动重开或重复上锁。 */
     private static void manualLockRemainsLockedWhileNearby() {
-        PassiveKeyLogic logic = new PassiveKeyLogic();
+        PassiveKeyLogic logic = legacyLogic();
         logic.onManualControlSent(PassiveKeyLogic.Action.LOCK, 1_000L);
         check(logic.onOfficialConnected(1_500L, false, true) == PassiveKeyLogic.Action.NONE,
                 "手动上锁后的连接事件不能重新解锁");
@@ -579,7 +584,7 @@ public final class PassiveKeyLogicTest {
 
     /** 手动上锁后，真实远场连续八秒且官方断开，才恢复下一次自动靠近。 */
     private static void manualLockRearmsAfterRealDeparture() {
-        PassiveKeyLogic logic = new PassiveKeyLogic();
+        PassiveKeyLogic logic = legacyLogic();
         logic.onManualControlSent(PassiveKeyLogic.Action.LOCK, 1_000L);
         logic.onSample(-60f, 2_000L, true, false, true, true);
         logic.onOfficialDisconnected(3_000L);
@@ -595,7 +600,7 @@ public final class PassiveKeyLogicTest {
 
     /** 手动上锁后自然离开至无信号，沿用原静默重新武装规则。 */
     private static void manualLockSilenceRearmsNextApproach() {
-        PassiveKeyLogic logic = new PassiveKeyLogic();
+        PassiveKeyLogic logic = legacyLogic();
         logic.onManualControlSent(PassiveKeyLogic.Action.LOCK, 1_000L);
         logic.onSample(-60f, 2_000L, true, false, true, true);
         logic.onOfficialDisconnected(3_000L);
@@ -607,7 +612,7 @@ public final class PassiveKeyLogicTest {
 
     /** 用户再点手动解锁可立即解除手动上锁锁存，随后正常监测远离。 */
     private static void manualUnlockOverridesManualLock() {
-        PassiveKeyLogic logic = new PassiveKeyLogic();
+        PassiveKeyLogic logic = legacyLogic();
         logic.onManualControlSent(PassiveKeyLogic.Action.LOCK, 1_000L);
         logic.onSample(-60f, 2_000L, true, false, true, true);
         logic.onManualControlSent(PassiveKeyLogic.Action.UNLOCK, 3_000L);
@@ -620,7 +625,7 @@ public final class PassiveKeyLogicTest {
 
     /** 手动操作完成后，旧自动请求不再有效，不能延迟覆盖用户选择。 */
     private static void manualActionsInvalidateQueuedAutomaticAction() {
-        PassiveKeyLogic logic = new PassiveKeyLogic();
+        PassiveKeyLogic logic = legacyLogic();
         check(logic.onSample(-60f, 1_000L, true, false, true, true) == PassiveKeyLogic.Action.UNLOCK,
                 "先建立自动待发解锁");
         logic.onManualControlSent(PassiveKeyLogic.Action.LOCK, 1_500L);
@@ -636,16 +641,110 @@ public final class PassiveKeyLogicTest {
 
     /** 重学或重新启用服务时清除手动会话锁存，不永久影响自动功能。 */
     private static void manualLockResetRestoresAutomaticControl() {
-        PassiveKeyLogic logic = new PassiveKeyLogic();
+        PassiveKeyLogic logic = legacyLogic();
         logic.onManualControlSent(PassiveKeyLogic.Action.LOCK, 1_000L);
         logic.reset();
         check(logic.onSample(-60f, 2_000L, true, false, true, true) == PassiveKeyLogic.Action.UNLOCK,
                 "重置后应恢复自动解锁");
     }
 
+    /** 官方持续连接时，解锁静置60秒后完整“深谷+强回升”只允许再补一次解锁。 */
+    private static void relockRecoveryAfterLongQuietValleyAndReturn() {
+        PassiveKeyLogic logic = nearSession();
+        for (long time = 5_000L; time <= 61_000L; time += 5_000L) {
+            check(logic.onSample(-60f, time, true, false, true, true) == PassiveKeyLogic.Action.NONE,
+                    "持续近场不应重复解锁");
+        }
+        check(logic.onSample(-78f, 62_000L, true, false, true, true) == PassiveKeyLogic.Action.NONE,
+                "深谷只建立回流资格，不立即解锁");
+        check(logic.onSample(-64f, 63_000L, true, false, true, true) == PassiveKeyLogic.Action.UNLOCK,
+                "同连接内深谷后强回升应补一次解锁");
+        check(logic.getLastSampleDecision().equals("RELOCK_RECOVERY_THRESHOLD_REACHED"),
+                "导出日志应区分长时间重靠近纠偏");
+        logic.onControlSent(PassiveKeyLogic.Action.UNLOCK, 63_005L);
+        for (long time = 64_000L; time <= 80_000L; time += 1_000L) {
+            check(logic.onSample(-60f, time, true, false, true, true) == PassiveKeyLogic.Action.NONE,
+                    "纠偏解锁后同一会话不得第三次发送");
+        }
+    }
+
+    /** 未满60秒、没有跌破阈值2dB，或回升不足8dB时都不能制造第二次解锁。 */
+    private static void relockRecoveryNeedsQuietDipAndRealRise() {
+        PassiveKeyLogic early = nearSession();
+        check(early.onSample(-78f, 20_000L, true, false, true, true) == PassiveKeyLogic.Action.NONE,
+                "60秒内的深谷不能建立资格");
+        check(early.onSample(-60f, 21_000L, true, false, true, true) == PassiveKeyLogic.Action.NONE,
+                "静置时间不足时不能补解锁");
+
+        PassiveKeyLogic noDip = nearSession();
+        for (long time = 5_000L; time <= 65_000L; time += 5_000L) {
+            noDip.onSample(-68f, time, true, false, true, true);
+        }
+        check(noDip.onSample(-60f, 66_000L, true, false, true, true) == PassiveKeyLogic.Action.NONE,
+                "始终在近场波动、没有跌破解锁阈值2dB时不能补解锁");
+
+        PassiveKeyLogic shallowRise = nearSession();
+        check(shallowRise.onSample(-78f, 62_000L, true, false, true, true) == PassiveKeyLogic.Action.NONE,
+                "建立深谷");
+        check(shallowRise.onSample(-71f, 63_000L, true, false, true, true) == PassiveKeyLogic.Action.NONE,
+                "回升不足8dB时不能解锁");
+    }
+
+    /** 收到车机0x0159时，即使当前仅-70dBm，只要仍在近场且解锁已交付就允许一次当场纠偏。 */
+    private static void nativeApproachLockRecoversOnceWhileStillNear() {
+        PassiveKeyLogic logic = legacyLogic();
+        check(logic.onSample(-70f, 1_000L, true, false, true, true) == PassiveKeyLogic.Action.UNLOCK,
+                "先完成自动解锁");
+        logic.onControlSent(PassiveKeyLogic.Action.UNLOCK, 1_005L);
+        check(logic.onSample(-70f, 6_000L, true, false, true, true) == PassiveKeyLogic.Action.NONE,
+                "保持同一接近会话");
+        check(logic.onNativeApproachLock(6_500L, false, true) == PassiveKeyLogic.Action.UNLOCK,
+                "车机原生PE落锁时允许一次近场纠偏");
+        logic.onControlSent(PassiveKeyLogic.Action.UNLOCK, 6_505L);
+        check(logic.onNativeApproachLock(20_000L, false, true) == PassiveKeyLogic.Action.NONE,
+                "同一会话的连续原生落锁通知不能无限重解");
+    }
+
+    /** 原生落锁通知不能使用过期信号、远场样本或推翻手动上锁。 */
+    private static void nativeApproachLockRejectsStaleOrManualLock() {
+        PassiveKeyLogic stale = legacyLogic();
+        stale.onSample(-70f, 1_000L, true, false, true, true);
+        stale.onControlSent(PassiveKeyLogic.Action.UNLOCK, 1_005L);
+        check(stale.onNativeApproachLock(5_000L, false, true) == PassiveKeyLogic.Action.NONE,
+                "超过3秒的旧RSSI不能触发原生误锁纠偏");
+
+        PassiveKeyLogic far = legacyLogic();
+        far.onSample(-70f, 1_000L, true, false, true, true);
+        far.onControlSent(PassiveKeyLogic.Action.UNLOCK, 1_005L);
+        far.onSample(-85f, 5_000L, true, false, true, true);
+        check(far.onNativeApproachLock(5_500L, false, true) == PassiveKeyLogic.Action.NONE,
+                "新鲜远场样本说明人不在车旁，不得纠偏");
+
+        PassiveKeyLogic manual = nearSession();
+        manual.onManualControlSent(PassiveKeyLogic.Action.LOCK, 2_000L);
+        check(manual.onNativeApproachLock(8_000L, false, true) == PassiveKeyLogic.Action.NONE,
+                "手动上锁锁存优先于车机落锁纠偏");
+    }
+
+    /** 当前实车调好的默认值为 -79/-85/2.0s，运行时仍会被持久化配置覆盖。 */
+    private static void projectDefaultsMatchAdjustedSettings() {
+        PassiveKeyLogic logic = new PassiveKeyLogic();
+        check(logic.getUnlockDbm() == -79.0f, "项目默认解锁阈值应为 -79");
+        check(logic.getLockDbm() == -85.0f, "项目默认上锁阈值应为 -85");
+        check(logic.getLockDwellMs() == 2000L, "项目默认上锁确认时长应为 2 秒");
+        check(PassiveKeyDefaults.CONNECT_DBM == -95.0f, "项目默认连接触发应为 -95");
+    }
+
+    /** 既有算法回归固定使用旧基线，避免默认值调整掩盖状态机行为变化。 */
+    private static PassiveKeyLogic legacyLogic() {
+        PassiveKeyLogic logic = new PassiveKeyLogic();
+        logic.setThresholds(-75.0f, -82.0f, 4500L);
+        return logic;
+    }
+
     /** 创建已完成一次解锁的近车会话，供远离场景复用。 */
     private static PassiveKeyLogic nearSession() {
-        PassiveKeyLogic logic = new PassiveKeyLogic();
+        PassiveKeyLogic logic = legacyLogic();
         check(logic.onSample(-60f, 1_000L, true, false, true, true) == PassiveKeyLogic.Action.UNLOCK,
                 "先完成近车解锁");
         logic.onControlSent(PassiveKeyLogic.Action.UNLOCK, 1_000L);

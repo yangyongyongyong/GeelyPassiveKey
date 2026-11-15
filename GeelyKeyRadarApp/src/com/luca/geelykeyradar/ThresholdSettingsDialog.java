@@ -25,8 +25,8 @@ import android.widget.TextView;
 /** 原生阈值设置弹窗：固定字段标签、独立说明、单位、推荐值、就地校验和可滚动内容。 */
 final class ThresholdSettingsDialog {
     interface OnSaveListener {
-        /** 只有三项输入校验通过且用户明确保存时调用，不因填推荐值或取消写配置。 */
-        void onSave(float unlockDbm, float lockDbm, long dwellMs);
+        /** 只有四项输入校验通过且用户明确保存时调用，不因填入默认值或取消写配置。 */
+        void onSave(float unlockDbm, float lockDbm, long dwellMs, float connectDbm);
     }
 
     private static final int COLOR_BG = Color.rgb(8, 17, 31);
@@ -38,11 +38,13 @@ final class ThresholdSettingsDialog {
     private static final int COLOR_BLUE = Color.rgb(56, 189, 248);
     private static final int COLOR_PURPLE = Color.rgb(196, 181, 253);
     private static final int COLOR_TEAL = Color.rgb(94, 234, 212);
+    private static final int COLOR_AMBER = Color.rgb(251, 191, 36);
     private static final int COLOR_ERROR = Color.rgb(248, 113, 113);
 
     private final Activity activity;
     private final OnSaveListener onSave;
     private final Dialog dialog;
+    private final Field connect;
     private final Field unlock;
     private final Field lock;
     private final Field dwell;
@@ -53,7 +55,7 @@ final class ThresholdSettingsDialog {
 
     /** 构建独立弹窗，字段与布局不再继续堆入主Activity，且不依赖新的UI库。 */
     private ThresholdSettingsDialog(Activity activity, float unlockDbm, float lockDbm,
-                                    long dwellMs, OnSaveListener onSave) {
+                                    long dwellMs, float connectDbm, OnSaveListener onSave) {
         this.activity = activity;
         this.onSave = onSave;
         dialog = new Dialog(activity);
@@ -70,10 +72,10 @@ final class ThresholdSettingsDialog {
         header.setPadding(dp(20), dp(20), dp(20), dp(14));
         TextView eyebrow = text("无感进出 · 触发设置", 13, COLOR_BLUE, false);
         header.addView(eyebrow);
-        TextView title = text("自定义靠近 / 离开", 22, COLOR_TEXT, true);
+        TextView title = text("自定义触发参数", 22, COLOR_TEXT, true);
         title.setAccessibilityHeading(true);
         header.addView(title, spaced(5));
-        header.addView(text("共 3 项设置，向下滑动查看全部", 13, COLOR_MUTED, false), spaced(6));
+        header.addView(text("共 4 项设置，向下滑动查看全部", 13, COLOR_MUTED, false), spaced(6));
         root.addView(header);
 
         ScrollView scroll = new ScrollView(activity);
@@ -94,23 +96,39 @@ final class ThresholdSettingsDialog {
                 13, COLOR_TEXT, false), spaced(6));
         content.addView(intro, spaced(0));
 
-        unlock = field(content, "01  靠近解锁信号", "信号达到此值或更强，才满足解锁条件。", "≥", "dBm",
+        LinearLayout defaults = column();
+        defaults.setPadding(dp(14), dp(12), dp(14), dp(12));
+        defaults.setBackground(rounded(Color.rgb(37, 34, 20), 12, Color.rgb(96, 77, 31)));
+        defaults.addView(text("项目默认参数 · 仅辅助选择", 14, COLOR_AMBER, true));
+        defaults.addView(text(ThresholdSettingsForm.defaultsSummary(), 13, COLOR_TEXT, false), spaced(6));
+        defaults.addView(text("这里只展示默认值。点击“填入默认值”只会修改当前草稿，仍须点“保存并生效”；升级或覆盖安装不会自动改写已保存的自定义参数。",
+                12, COLOR_MUTED, false), spaced(6));
+        content.addView(defaults, spaced(12));
+
+        connect = field(content, "01  蓝牙连接触发", "本车广播达到此值或更强时，提前唤醒银河蓝牙钥匙；只负责连接，不会直接解锁。", "≥", "dBm",
+                "推荐 " + ThresholdSettingsForm.number(VehicleIdentityStore.DEFAULT_CONNECT_DBM) + " dBm · 范围 -115 至 -45",
+                "更负更早叫醒，更接近 0 会更晚连接；至少比解锁信号低 5 dB。", COLOR_AMBER, true);
+        unlock = field(content, "02  靠近解锁信号", "信号达到此值或更强，才满足解锁条件。", "≥", "dBm",
                 "推荐 " + ThresholdSettingsForm.number(VehicleIdentityStore.DEFAULT_UNLOCK_DBM) + " dBm · 范围 -90 至 -40",
                 "更负通常更早解锁；更接近 0，需要更靠近。", COLOR_BLUE, true);
-        lock = field(content, "02  离开上锁信号", "信号等于此值或更弱，开始离开确认计时。", "≤", "dBm",
+        lock = field(content, "03  离开上锁信号", "信号等于此值或更弱，开始离开确认计时。", "≤", "dBm",
                 "推荐 " + ThresholdSettingsForm.number(VehicleIdentityStore.DEFAULT_LOCK_DBM) + " dBm · 范围 -98 至 -46",
                 "更负通常要走得更远；至少比解锁低 6 dB。", COLOR_PURPLE, true);
-        dwell = field(content, "03  离开确认时长", "弱信号持续达到此时长，才满足上锁确认。", "", "秒",
+        dwell = field(content, "04  离开确认时长", "弱信号持续达到此时长，才满足上锁确认。", "", "秒",
                 "推荐 " + ThresholdSettingsForm.seconds(VehicleIdentityStore.DEFAULT_LOCK_DWELL_MS) + " 秒 · 范围 1.5 至 20",
                 "更长可减少短暂遮挡误锁，但锁车也会更晚。", COLOR_TEAL, false);
+        connect.input.setHint(ThresholdSettingsForm.number(VehicleIdentityStore.DEFAULT_CONNECT_DBM));
         unlock.input.setHint(ThresholdSettingsForm.number(VehicleIdentityStore.DEFAULT_UNLOCK_DBM));
         lock.input.setHint(ThresholdSettingsForm.number(VehicleIdentityStore.DEFAULT_LOCK_DBM));
         dwell.input.setHint(ThresholdSettingsForm.seconds(VehicleIdentityStore.DEFAULT_LOCK_DWELL_MS));
+        connect.input.setText(ThresholdSettingsForm.number(connectDbm));
         unlock.input.setText(ThresholdSettingsForm.number(unlockDbm));
         lock.input.setText(ThresholdSettingsForm.number(lockDbm));
         dwell.input.setText(ThresholdSettingsForm.seconds(dwellMs));
+        connect.input.setNextFocusForwardId(unlock.input.getId());
         unlock.input.setNextFocusForwardId(lock.input.getId());
         lock.input.setNextFocusForwardId(dwell.input.getId());
+        connect.input.setImeOptions(EditorInfo.IME_ACTION_NEXT);
         unlock.input.setImeOptions(EditorInfo.IME_ACTION_NEXT);
         lock.input.setImeOptions(EditorInfo.IME_ACTION_NEXT);
         dwell.input.setImeOptions(EditorInfo.IME_ACTION_DONE);
@@ -120,7 +138,7 @@ final class ThresholdSettingsDialog {
             return true;
         });
 
-        TextView protection = text("靠近信号含遮挡补偿，离开信号不补偿。信号回升会重新确认离开；近场、行驶和插线保护仍生效。dBm 填正数自动按负值保存。",
+        TextView protection = text("连接阈值只预热蓝牙钥匙，不直接解锁。靠近信号含遮挡补偿，离开信号不补偿；近场、行驶和插线保护仍生效。dBm 填正数自动按负值保存。",
                 13, COLOR_MUTED, false);
         content.addView(protection, spaced(12));
 
@@ -134,9 +152,9 @@ final class ThresholdSettingsDialog {
         preview.setGravity(Gravity.CENTER_VERTICAL);
         summary = text("", 13, COLOR_MUTED, false);
         preview.addView(summary, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
-        Button recommended = action("填推荐值", false);
+        Button recommended = action("填入默认值", false);
         recommended.setTextSize(13);
-        recommended.setContentDescription("填入推荐值，点击保存后才生效");
+        recommended.setContentDescription("只把项目默认值填入当前草稿，不会自动保存");
         recommended.setOnClickListener(view -> fillRecommended());
         LinearLayout.LayoutParams recommendedLp = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
@@ -159,6 +177,7 @@ final class ThresholdSettingsDialog {
         footer.addView(actions, spaced(10));
         root.addView(footer);
         dialog.setContentView(root);
+        watch(connect);
         watch(unlock);
         watch(lock);
         watch(dwell);
@@ -181,9 +200,10 @@ final class ThresholdSettingsDialog {
     }
 
     /** 展示弹窗，不读写车辆身份或调用车控；初值来自实际服务或持久化配置。 */
-    static Dialog show(Activity activity, float unlockDbm, float lockDbm, long dwellMs, OnSaveListener onSave) {
+    static Dialog show(Activity activity, float unlockDbm, float lockDbm, long dwellMs,
+                       float connectDbm, OnSaveListener onSave) {
         if (activity.isFinishing() || activity.isDestroyed()) return null;
-        return new ThresholdSettingsDialog(activity, unlockDbm, lockDbm, dwellMs, onSave).dialog;
+        return new ThresholdSettingsDialog(activity, unlockDbm, lockDbm, dwellMs, connectDbm, onSave).dialog;
     }
 
     private final class Field {
@@ -287,12 +307,14 @@ final class ThresholdSettingsDialog {
         });
     }
 
-    /** 校验三个字段并就地显示错误，错误情况下不关闭弹窗、不覆盖旧配置。 */
+    /** 校验四个字段并就地显示错误，错误情况下不关闭弹窗、不覆盖旧配置。 */
     private ThresholdSettingsForm.Result refreshValidation() {
         ThresholdSettingsForm.Result result = ThresholdSettingsForm.validate(
-                unlock.input.getText().toString(), lock.input.getText().toString(), dwell.input.getText().toString());
+                unlock.input.getText().toString(), lock.input.getText().toString(),
+                dwell.input.getText().toString(), connect.input.getText().toString());
         summary.setText(result.summary());
         if (showErrors) {
+            connect.showError(result.connectError);
             unlock.showError(result.unlockError);
             lock.showError(result.lockError);
             dwell.showError(result.dwellError);
@@ -303,17 +325,19 @@ final class ThresholdSettingsDialog {
     /** 只填入推荐草稿，用户可以继续编辑或取消，必须明确保存后才改变阈值。 */
     private void fillRecommended() {
         fillingRecommended = true;
+        connect.input.setText(ThresholdSettingsForm.number(VehicleIdentityStore.DEFAULT_CONNECT_DBM));
         unlock.input.setText(ThresholdSettingsForm.number(VehicleIdentityStore.DEFAULT_UNLOCK_DBM));
         lock.input.setText(ThresholdSettingsForm.number(VehicleIdentityStore.DEFAULT_LOCK_DBM));
         dwell.input.setText(ThresholdSettingsForm.seconds(VehicleIdentityStore.DEFAULT_LOCK_DWELL_MS));
         fillingRecommended = false;
         showErrors = false;
+        connect.showError("");
         unlock.showError("");
         lock.showError("");
         dwell.showError("");
         refreshValidation();
         formMessage.setTextColor(COLOR_TEAL);
-        formMessage.setText("推荐值已填入，点击保存后才生效");
+        formMessage.setText("默认值已填入草稿；点击保存才会覆盖当前配置");
         formMessage.setVisibility(View.VISIBLE);
     }
 
@@ -322,12 +346,13 @@ final class ThresholdSettingsDialog {
         showErrors = true;
         ThresholdSettingsForm.Result result = refreshValidation();
         if (!result.isValid()) {
-            Field first = !result.unlockError.isEmpty() ? unlock : (!result.lockError.isEmpty() ? lock : dwell);
+            Field first = !result.connectError.isEmpty() ? connect
+                    : (!result.unlockError.isEmpty() ? unlock : (!result.lockError.isEmpty() ? lock : dwell));
             first.input.requestFocus();
             return;
         }
         try {
-            onSave.onSave(result.unlockDbm, result.lockDbm, result.dwellMs);
+            onSave.onSave(result.unlockDbm, result.lockDbm, result.dwellMs, result.connectDbm);
             dialog.dismiss();
         } catch (RuntimeException failed) {
             formMessage.setTextColor(COLOR_ERROR);

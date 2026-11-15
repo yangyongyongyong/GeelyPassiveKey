@@ -121,6 +121,7 @@ public class PassiveKeyService extends Service implements SensorEventListener {
     private volatile float unlockDbm = VehicleIdentityStore.DEFAULT_UNLOCK_DBM;
     private volatile float lockDbm = VehicleIdentityStore.DEFAULT_LOCK_DBM;
     private volatile long lockDwellMs = VehicleIdentityStore.DEFAULT_LOCK_DWELL_MS;
+    private volatile float connectDbm = VehicleIdentityStore.DEFAULT_CONNECT_DBM;
     private volatile boolean isScanning = false;
     private boolean screenOn = true;
     private volatile boolean proximityCovered = false;
@@ -178,6 +179,9 @@ public class PassiveKeyService extends Service implements SensorEventListener {
     private long nextManualControlAtMs = 0L;
     private volatile String lastManualControlMessage = "请先在银河 App 连接蓝牙钥匙，再点击测试。";
     private volatile int lastRawRssi = -127;
+    private volatile PassiveKeyLogic.Action lastDispatchAction = PassiveKeyLogic.Action.NONE;
+    private volatile long lastDispatchStartedAtMs = 0L;
+    private volatile String lastControlResult = "NONE";
     private float lastSmoothRssi = Float.NaN;
     private float lastApproachRssi = Float.NaN;
     private volatile String lastSource = "";
@@ -207,6 +211,9 @@ public class PassiveKeyService extends Service implements SensorEventListener {
     private String authObservationAddress = "";
     private long authObservationStartedAtMs = 0L;
     private long gattAuthSuccessObservedAtMs = 0L;
+    private volatile int lastGattNotifyCmdId = -1;
+    private volatile long lastGattNotifyCmdAtMs = 0L;
+    private volatile long lastApproachLockNotifyAtMs = 0L;
 
     public final class LocalBinder extends Binder {
         public PassiveKeyService getService() {
@@ -227,6 +234,9 @@ public class PassiveKeyService extends Service implements SensorEventListener {
         public boolean geelyConnected;
         public boolean identityLearned;
         public boolean gattConnected;
+        public boolean driving;
+        public boolean wakeActive;
+        public boolean aclRecent;
         public boolean autoUnlock;
         public boolean autoLock;
         public boolean blockWhenCharging;
@@ -235,11 +245,24 @@ public class PassiveKeyService extends Service implements SensorEventListener {
         public float unlockDbm;
         public float lockDbm;
         public long lockDwellMs;
+        public float connectDbm;
+        public boolean usingDefaultThresholds = true;
         public int rssi = -127;
         public float smoothRssi = Float.NaN;
         public int unlockCount;
         public int lockCount;
         public long lastSampleAgeMs = -1L;
+        public long wakeAgeMs = -1L;
+        public long lastSentAgeMs = -1L;
+        public long dispatchAgeMs = -1L;
+        public long lockDwellElapsedMs = -1L;
+        public int lockDwellSamples;
+        public PassiveKeyLogic.Action pendingAction = PassiveKeyLogic.Action.NONE;
+        public PassiveKeyLogic.Action lastSentAction = PassiveKeyLogic.Action.NONE;
+        public PassiveKeyLogic.Action dispatchAction = PassiveKeyLogic.Action.NONE;
+        public String lastControlResult = "NONE";
+        public String pendingWaitReason = "";
+        public String sampleDecision = "";
         public String vehicleName = "";
         public String vehicleAddress = "";
         public String zone = "";
@@ -281,6 +304,8 @@ public class PassiveKeyService extends Service implements SensorEventListener {
         unlockDbm = identityStore.getUnlockDbm();
         lockDbm = identityStore.getLockDbm();
         lockDwellMs = identityStore.getLockDwellMs();
+        connectDbm = identityStore.getConnectDbm();
+        wakeGate.setConnectThreshold(connectDbm);
         logic.setThresholds(unlockDbm, lockDbm, lockDwellMs);
 
         bluetoothManager = (BluetoothManager) getSystemService(Context.BLUETOOTH_SERVICE);
@@ -397,6 +422,9 @@ public class PassiveKeyService extends Service implements SensorEventListener {
     public Status getStatus() {
         long now = SystemClock.elapsedRealtime();
         boolean signalFresh = lastSampleAtMs > 0L && (now - lastSampleAtMs) <= SIGNAL_EXPIRE_UI_MS;
+        boolean drivingNow = isDriving(now);
+        String activeWakeAddress = wakeGate.activeAddress();
+        long lockDwellStart = logic.getLockDwellStartMs();
         Status status = new Status();
         status.running = running;
         status.serviceEnabled = serviceEnabled;
@@ -407,6 +435,10 @@ public class PassiveKeyService extends Service implements SensorEventListener {
         status.geelyConnected = geelyConnected;
         status.identityLearned = hasCompleteIdentity();
         status.gattConnected = gattConnected;
+        status.driving = drivingNow;
+        status.wakeActive = !activeWakeAddress.isEmpty();
+        status.aclRecent = !activeWakeAddress.isEmpty()
+                && wakeGate.hasRecentAclHandshake(activeWakeAddress, now);
         status.autoUnlock = autoUnlock;
         status.autoLock = autoLock;
         status.blockWhenCharging = blockWhenCharging;
@@ -422,12 +454,26 @@ public class PassiveKeyService extends Service implements SensorEventListener {
         status.unlockDbm = unlockDbm;
         status.lockDbm = lockDbm;
         status.lockDwellMs = lockDwellMs;
+        status.connectDbm = connectDbm;
+        status.usingDefaultThresholds = !identityStore.hasCustomThresholds();
         status.rssi = signalFresh ? lastRawRssi : -127;
         status.smoothRssi = signalFresh && Float.isFinite(lastSmoothRssi) ? lastSmoothRssi : Float.NaN;
         status.unlockCount = unlockCount;
         status.lockCount = lockCount;
         status.lastSampleAgeMs = lastSampleAtMs > 0L
                 ? Math.max(0L, now - lastSampleAtMs) : -1L;
+        status.wakeAgeMs = age(now, firstWakeInSessionAtMs);
+        status.pendingAction = pendingControl.getAction();
+        status.pendingWaitReason = lastPendingWaitReason;
+        status.lastSentAction = logic.getLastSentAction();
+        status.dispatchAction = lastDispatchAction;
+        status.lastControlResult = lastControlResult;
+        status.lastSentAgeMs = age(now, logic.getLastSentActionAtMs());
+        status.dispatchAgeMs = age(now, lastDispatchStartedAtMs);
+        status.sampleDecision = logic.getLastSampleDecision();
+        status.lockDwellSamples = logic.getLockDwellSamples();
+        status.lockDwellElapsedMs = lockDwellStart == 0L ? -1L : Math.max(0L, now - lockDwellStart);
+        status.lockDwellMs = lockDwellMs;
         status.vehicleName = identity != null ? identity.displayName() : "";
         status.vehicleAddress = identity != null ? identity.address : "";
         status.zone = !serviceEnabled ? "无感进出服务已关闭"
@@ -496,10 +542,13 @@ public class PassiveKeyService extends Service implements SensorEventListener {
         }
         cancelPendingControl("用户发起" + label + "，取消自动待发请求");
         nextManualControlAtMs = now + MANUAL_CLICK_GAP_MS;
+        lastDispatchAction = action;
+        lastDispatchStartedAtMs = now;
         KeyNotificationBridgeService.ControlResult result =
                 KeyNotificationBridgeService.triggerManualControlViaNotification(action);
         if (result != KeyNotificationBridgeService.ControlResult.NOT_SENT) {
             logic.onManualControlSent(action, now);
+            lastControlResult = result.name();
         }
         if (result == KeyNotificationBridgeService.ControlResult.SENT) {
             if (action == PassiveKeyLogic.Action.UNLOCK) unlockCount++;
@@ -655,21 +704,28 @@ public class PassiveKeyService extends Service implements SensorEventListener {
     }
 
     /**
-     * 更新自定义阈值（靠近解锁 dBm、离开上锁 dBm、离开确认毫秒数）。
+     * 更新四项触发参数：连接预热、靠近解锁、离开上锁和离开确认毫秒数。
      */
-    public void updateThresholds(float newUnlockDbm, float newLockDbm, long newLockDwellMs) {
-        float clampedUnlock = Math.max(-90.0f, Math.min(-40.0f, newUnlockDbm));
-        float clampedLock = Math.max(-98.0f, Math.min(clampedUnlock - 6.0f, newLockDbm));
+    public void updateThresholds(float newUnlockDbm, float newLockDbm, long newLockDwellMs,
+                                 float newConnectDbm) {
+        float safeUnlock = Float.isFinite(newUnlockDbm) ? newUnlockDbm : VehicleIdentityStore.DEFAULT_UNLOCK_DBM;
+        float safeLock = Float.isFinite(newLockDbm) ? newLockDbm : VehicleIdentityStore.DEFAULT_LOCK_DBM;
+        float safeConnect = Float.isFinite(newConnectDbm) ? newConnectDbm : VehicleIdentityStore.DEFAULT_CONNECT_DBM;
+        float clampedUnlock = Math.max(-90.0f, Math.min(-40.0f, safeUnlock));
+        float clampedLock = Math.max(-98.0f, Math.min(clampedUnlock - 6.0f, safeLock));
         long clampedDwell = Math.max(1500L, Math.min(20000L, newLockDwellMs));
+        float clampedConnect = Math.max(-115.0f, Math.min(clampedUnlock - 5.0f, safeConnect));
         this.unlockDbm = clampedUnlock;
         this.lockDbm = clampedLock;
         this.lockDwellMs = clampedDwell;
-        identityStore.saveThresholds(clampedUnlock, clampedLock, clampedDwell);
+        this.connectDbm = clampedConnect;
+        identityStore.saveThresholds(clampedUnlock, clampedLock, clampedDwell, clampedConnect);
+        wakeGate.setConnectThreshold(clampedConnect);
         logic.setThresholds(clampedUnlock, clampedLock, clampedDwell);
         cancelPendingControl("用户调整阈值，重新确认距离");
         appendLog(String.format(Locale.US,
-                "✓ 已更新自定义阈值：靠近解锁 ≥ %.0f dBm | 离开上锁 ≤ %.0f dBm (连续 %.1fs)",
-                clampedUnlock, clampedLock, clampedDwell / 1000.0f));
+                "✓ 已更新触发设置：连接触发 ≥ %.0f dBm | 靠近解锁 ≥ %.0f dBm | 离开上锁 ≤ %.0f dBm (连续 %.1fs)",
+                clampedConnect, clampedUnlock, clampedLock, clampedDwell / 1000.0f));
         updateNotificationIfNeeded(true);
     }
 
@@ -1196,8 +1252,8 @@ public class PassiveKeyService extends Service implements SensorEventListener {
                 + " since_first_ad_ms=" + age(now, firstAdvertInSessionAtMs)
                 + " addr_id=" + DiagnosticLog.fingerprint(ad.address) + " rssi=" + ad.rssi
                 + " req_id=" + pendingControl.getSequence()
-                + " threshold_dbm=" + (ad.rssi < VehicleWakeGate.NORMAL_CONNECT_MIN_RSSI
-                        ? VehicleWakeGate.LONG_ABSENCE_CONNECT_MIN_RSSI : VehicleWakeGate.NORMAL_CONNECT_MIN_RSSI)
+                + " threshold_dbm=" + (ad.rssi < wakeGate.normalConnectMinRssi()
+                        ? wakeGate.longAbsenceConnectMinRssi() : wakeGate.normalConnectMinRssi())
                 + " long_absence_ms=" + age(now, longAbsenceSessionStartedAtMs)
                 + " since_first_wake_ms=" + age(now, firstWakeInSessionAtMs)
                 + " " + targetSelector.observationDiagnostic(ad, now));
@@ -1264,7 +1320,7 @@ public class PassiveKeyService extends Service implements SensorEventListener {
         lastWeakCandidateKey = key;
         lastWeakCandidateLogAtMs = now;
         DiagnosticLog.detail("Scan", "WEAK_CANDIDATE", "addr_id=" + DiagnosticLog.fingerprint(ad.address)
-                + " match_reason=" + match + " rssi=" + ad.rssi + " threshold_dbm=" + VehicleWakeGate.NORMAL_CONNECT_MIN_RSSI
+                + " match_reason=" + match + " rssi=" + ad.rssi + " threshold_dbm=" + wakeGate.normalConnectMinRssi()
                 + " sampled_mono_ms=" + ad.seenAtMs + " source=" + source);
         diagnostics.increment("weak_candidate");
     }
@@ -1564,6 +1620,8 @@ public class PassiveKeyService extends Service implements SensorEventListener {
             return;
         }
         int sequence = pendingControl.getSequence();
+        lastDispatchAction = action;
+        lastDispatchStartedAtMs = now;
         DiagnosticLog.event("Control", "SEND_ATTEMPT", pendingControl.diagnosticSnapshot(now)
                 + " just_ready=" + justReady + " " + signalDiagnostic(now));
         KeyNotificationBridgeService.ControlResult result = dispatchControlOnce(action);
@@ -1576,6 +1634,7 @@ public class PassiveKeyService extends Service implements SensorEventListener {
         }
         if (!pendingControl.complete(sequence)) return;
         logic.onControlSent(action, now);
+        lastControlResult = result.name();
         String label = action == PassiveKeyLogic.Action.UNLOCK ? "解锁" : "上锁";
         if (result == KeyNotificationBridgeService.ControlResult.UNKNOWN) {
             lastAction = label + "发送结果不确定，已停止重发，请核实车锁";
@@ -1786,15 +1845,29 @@ public class PassiveKeyService extends Service implements SensorEventListener {
         return local && write;
     }
 
-    /** 收到官方明文头cmdId=5时确认DK1.5鉴权完成，并立即进入正常官方就绪链路。 */
-    private void handleAuthObserverFrame(BluetoothGatt gatt, byte[] value, long now) {
+    /** 解析DK1.5通知头：cmdId=5确认鉴权，cmdId=0x0159识别车机原生PE误锁。 */
+    private void handleKeyNotifyFrame(BluetoothGatt gatt, byte[] value, long now) {
         GattAuthFrameParser.Frame frame = GattAuthFrameParser.parse(value);
-        if (frame == null || !authObservationActive || gatt != activeGatt) return;
+        if (frame == null || gatt != activeGatt) return;
+        lastGattNotifyCmdId = frame.cmdId;
+        lastGattNotifyCmdAtMs = now;
+        diagnostics.increment("gatt_notify_frames");
+
+        if (frame.isApproachLockNotice()) {
+            lastApproachLockNotifyAtMs = now;
+            DiagnosticLog.event("Gatt", "NATIVE_APPROACH_LOCK_NOTICE", "cmd_id=" + frame.cmdId
+                    + " seq=" + frame.sequence + " len=" + frame.length
+                    + " addr_id=" + DiagnosticLog.fingerprint(gatt.getDevice().getAddress()));
+            handler.post(this::handleNativeApproachLockOnMain);
+            return;
+        }
+
         DiagnosticLog.detail("Gatt", "AUTH_FRAME", "cmd_id=" + frame.cmdId + " seq=" + frame.sequence
                 + " len=" + frame.length + " addr_id=" + DiagnosticLog.fingerprint(authObservationAddress));
         if (!frame.isDk15AuthSuccess() || gattAuthSuccessObserved) return;
         String address = gatt.getDevice().getAddress();
-        if (!address.equalsIgnoreCase(authObservationAddress)) return;
+        if (!VehicleLearningState.hasAddress(authObservationAddress)
+                || !address.equalsIgnoreCase(authObservationAddress)) return;
         gattAuthSuccessObserved = true;
         gattAuthSuccessObservedAtMs = now;
         authObservationActive = false;
@@ -1809,6 +1882,19 @@ public class PassiveKeyService extends Service implements SensorEventListener {
         promoteAuthObserverToRssi();
         if (!geelyConnected) onGeelyConnectionChanged(true, now);
         else processPendingControl(true);
+    }
+
+    /** 只处理状态机已确认仍在本车近场的原生PE落锁；所有前置安全条件在纯逻辑内复核。 */
+    private void handleNativeApproachLockOnMain() {
+        long now = SystemClock.elapsedRealtime();
+        boolean blocked = isDriving(now) || isChargingBlocked();
+        PassiveKeyLogic.Action action = logic.onNativeApproachLock(now, blocked, autoUnlock && !blocked);
+        DiagnosticLog.event("Gatt", "NATIVE_APPROACH_LOCK_RESULT", "action=" + action
+                + " " + logic.diagnosticSnapshot(now) + " " + signalDiagnostic(now));
+        if (action == PassiveKeyLogic.Action.UNLOCK) {
+            beginControl(PassiveKeyLogic.Action.UNLOCK,
+                    lastRawRssi > -127 ? lastRawRssi : -60.0f, "车机PE原生误锁纠偏");
+        }
     }
 
     /** 官方通知或GATT鉴权任一先就绪时，复用同一client切换到RSSI轮询。 */
@@ -1830,8 +1916,17 @@ public class PassiveKeyService extends Service implements SensorEventListener {
             long lastProgress = Math.max(lastGattRssiAtMs, lastGattAttemptAtMs);
             if (gattConnected && (now - lastProgress) > SIGNAL_EXPIRE_UI_MS) {
                 appendLog("连接态 RSSI 已停更，重建测距通道 | " + signalDiagnostic(now));
-                logic.onSignalLost(now);
-                cancelPendingControl("连接态信号停更");
+                boolean freshBroadcast = lastSampleAtMs > 0L
+                        && (now - lastSampleAtMs) <= PassiveKeyLogic.SIGNAL_STALE_MS
+                        && lastSource.startsWith("广播");
+                if (!freshBroadcast) logic.onSignalLost(now);
+                PassiveKeyLogic.Action pending = pendingControl.getAction();
+                // 新鲜广播已经证明人仍在车旁时，重建 GATT 不能把合格的解锁请求一起取消。
+                // 上锁必须依赖连接态连续远场，没有新鲜 GATT 样本始终撤销。
+                if (pending == PassiveKeyLogic.Action.LOCK
+                        || (pending == PassiveKeyLogic.Action.UNLOCK && !freshBroadcast)) {
+                    cancelPendingControl(freshBroadcast ? "连接态信号停更，等待重建" : "连接态信号停更");
+                }
                 closeGatt("测距回调超时");
             }
             return;
@@ -1964,7 +2059,7 @@ public class PassiveKeyService extends Service implements SensorEventListener {
         public void onCharacteristicChanged(BluetoothGatt gatt, BluetoothGattCharacteristic characteristic) {
             if (gatt != activeGatt || characteristic == null
                     || !UUID.fromString(AUTH_NOTIFY_UUID).equals(characteristic.getUuid())) return;
-            handleAuthObserverFrame(gatt, characteristic.getValue(), SystemClock.elapsedRealtime());
+            handleKeyNotifyFrame(gatt, characteristic.getValue(), SystemClock.elapsedRealtime());
         }
 
         /** Android 13+新增带value重载，必须同样处理，否则新系统永远看不到鉴权帧。 */
@@ -1972,7 +2067,7 @@ public class PassiveKeyService extends Service implements SensorEventListener {
         public void onCharacteristicChanged(BluetoothGatt gatt, BluetoothGattCharacteristic characteristic, byte[] value) {
             if (gatt != activeGatt || characteristic == null
                     || !UUID.fromString(AUTH_NOTIFY_UUID).equals(characteristic.getUuid())) return;
-            handleAuthObserverFrame(gatt, value, SystemClock.elapsedRealtime());
+            handleKeyNotifyFrame(gatt, value, SystemClock.elapsedRealtime());
         }
 
         /** 读取成功并且仍属于当前通道时才提交新鲜样本。 */
@@ -2542,7 +2637,8 @@ public class PassiveKeyService extends Service implements SensorEventListener {
         try {
             Runtime runtime = Runtime.getRuntime();
             return "run=" + serviceRun + " enabled=" + serviceEnabled + " auto_unlock=" + autoUnlock
-                    + " auto_lock=" + autoLock + " wired=" + wiredCharging + " block_charging=" + blockWhenCharging
+                    + " auto_lock=" + autoLock + " connect_dbm=" + connectDbm
+                + " wired=" + wiredCharging + " block_charging=" + blockWhenCharging
                     + " bluetooth_permission=" + hasBluetoothPermission()
                     + " bluetooth_on=" + (bluetoothAdapter != null && bluetoothAdapter.isEnabled())
                     + " notification_access=" + KeyNotificationBridgeService.isNotificationListenerEnabled(this)
@@ -2583,6 +2679,8 @@ public class PassiveKeyService extends Service implements SensorEventListener {
                 + " auth_observe=" + (gattAuthSuccessObserved ? "CMD5_OBSERVED"
                 : authObserverNotifyReady ? "NOTIFY_READY" : authObservationActive ? "OBSERVING" : "IDLE")
                 + " auth_cmd5_age_ms=" + age(now, gattAuthSuccessObservedAtMs)
+                + " notify_cmd=" + lastGattNotifyCmdId + " notify_age_ms=" + age(now, lastGattNotifyCmdAtMs)
+                + " approach_lock_notify_age_ms=" + age(now, lastApproachLockNotifyAtMs)
                 + " read_pending=" + gattReadPending + " read_request_age_ms=" + age(now, lastGattReadRequestedAtMs)
                 + " read_success_age_ms=" + age(now, lastGattRssiAtMs) + " read_status=" + lastGattReadStatus;
     }

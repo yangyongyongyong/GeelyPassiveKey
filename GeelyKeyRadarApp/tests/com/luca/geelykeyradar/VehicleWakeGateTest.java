@@ -27,6 +27,7 @@ public final class VehicleWakeGateTest {
         earlyOfficialReadyWaitsForVerifiedPhysicalPeer();
         disabledOfficialReadyAndResetDoNotLeakAttempts();
         candidateDiagnosticsDescribeRealNameEvidence();
+        configuredConnectionThresholdOnlyGatesWakeup();
         earlyNeighborDoesNotChangeLockPipeline();
         System.out.println("VehicleWakeGateTest passed");
     }
@@ -450,12 +451,33 @@ public final class VehicleWakeGateTest {
                 && changedDiagnostic.equals(targets.observationDiagnostic(changed, 5300)), "只读快照不改变样本或原因");
     }
 
+    /** 自定义连接阈值只影响官方预热，不改变解锁、上锁或测距资格。 */
+    private static void configuredConnectionThresholdOnlyGatesWakeup() {
+        VehicleIdentity known = known();
+        VehicleTargetSelector<VehicleBeacon> targets = new VehicleTargetSelector<>();
+        VehicleWakeGate<VehicleBeacon> gate = new VehicleWakeGate<>(targets);
+        gate.setConnectThreshold(-80.0f);
+        check(gate.normalConnectMinRssi() == -80.0f && gate.longAbsenceConnectMinRssi() == -87.0f,
+                "普通阈值可配，长时无车宽限保持固定7dB差");
+        VehicleBeacon weak = named(NEW, -84, 1000, PREFIX);
+        targets.observe(weak, 1000);
+        check(gate.claim(weak, known, true, false, true, 1000) == VehicleWakeGate.Result.WEAK_SIGNAL,
+                "低于配置连接阈值的广播不能唤醒银河");
+        VehicleBeacon enough = named(NEW, -79, 2000, PREFIX);
+        targets.observe(enough, 2000);
+        check(gate.claim(enough, known, true, false, true, 2000) == VehicleWakeGate.Result.SEND_EARLY_NAME,
+                "达到配置连接阈值后仅发起官方预热");
+        check(!targets.authorizesRssi(known, enough), "连接预热仍不授予RSSI或车控资格");
+    }
+
     /** 官方在线的稳定上锁回放夹入同名新MAC；只读预连接门控不能改变任何RSSI/驻留输出。 */
     private static void earlyNeighborDoesNotChangeLockPipeline() {
         RssiFilter baselineFilter = new RssiFilter();
         RssiFilter optimizedFilter = new RssiFilter();
         PassiveKeyLogic baselineLogic = new PassiveKeyLogic();
+        baselineLogic.setThresholds(-75.0f, -82.0f, 4500L);
         PassiveKeyLogic optimizedLogic = new PassiveKeyLogic();
+        optimizedLogic.setThresholds(-75.0f, -82.0f, 4500L);
         VehicleTargetSelector<VehicleBeacon> targets = new VehicleTargetSelector<>();
         VehicleWakeGate<VehicleBeacon> gate = new VehicleWakeGate<>(targets);
         VehicleIdentity known = known();

@@ -107,10 +107,12 @@ find "$TEST_DIR" -type f -delete 2>/dev/null || true
 
 echo "[1/6] 纯逻辑单测"
 javac -source 11 -target 11 -d "$TEST_DIR" \
+    "$APP_DIR/src/com/luca/geelykeyradar/PassiveKeyDefaults.java" \
     "$APP_DIR/src/com/luca/geelykeyradar/PassiveKeyLogic.java" \
     "$APP_DIR/src/com/luca/geelykeyradar/RssiFilter.java" \
     "$APP_DIR/src/com/luca/geelykeyradar/RssiChartSeries.java" \
     "$APP_DIR/src/com/luca/geelykeyradar/GattAuthFrameParser.java" \
+    "$APP_DIR/src/com/luca/geelykeyradar/LiveActivity.java" \
     "$APP_DIR/src/com/luca/geelykeyradar/PendingControl.java" \
     "$APP_DIR/src/com/luca/geelykeyradar/NotificationEpoch.java" \
     "$APP_DIR/src/com/luca/geelykeyradar/RotatingFileLog.java" \
@@ -130,7 +132,7 @@ javac -source 11 -target 11 -d "$TEST_DIR" \
     "$APP_DIR/src/com/luca/geelykeyradar/PermissionAudit.java" \
     "$APP_DIR/src/com/luca/geelykeyradar/UpdatePolicy.java" \
     "$APP_DIR/tests/com/luca/geelykeyradar/"*Test.java
-for TEST_CLASS in PassiveKeyLogicTest RssiPipelineTest RssiChartSeriesTest GattAuthFrameParserTest PendingControlTest NotificationEpochTest RotatingFileLogTest DiagnosticsTest VehicleLearningStateTest VehicleIdentityTest VehicleTargetSelectorTest VehicleWakeGateTest VehicleScanPolicyTest OfficialReadyGateTest ThresholdSettingsFormTest VehicleParamCodecTest PermissionAuditTest UpdatePolicyTest; do
+for TEST_CLASS in PassiveKeyLogicTest RssiPipelineTest RssiChartSeriesTest GattAuthFrameParserTest PendingControlTest NotificationEpochTest RotatingFileLogTest DiagnosticsTest VehicleLearningStateTest VehicleIdentityTest VehicleTargetSelectorTest VehicleWakeGateTest VehicleScanPolicyTest OfficialReadyGateTest ThresholdSettingsFormTest VehicleParamCodecTest PermissionAuditTest UpdatePolicyTest LiveActivityTest; do
     java -ea -cp "$TEST_DIR" "com.luca.geelykeyradar.$TEST_CLASS"
 done
 
@@ -214,6 +216,13 @@ EOF
             echo "签名核对：与手机已安装版本一致"
         fi
     fi
+    read_threshold_values() {
+        "$ADB" "${ADB_ARGS[@]}" shell run-as com.luca.geelykeyradar \
+            cat shared_prefs/passive_key_prefs.xml 2>/dev/null \
+            | sed -n 's/.*name="\(unlock_dbm\|lock_dbm\|lock_dwell_ms\|connect_dbm\)"[^>]*value="\([^"]*\)".*/\1=\2/p' \
+            | LC_ALL=C sort || true
+    }
+    THRESHOLDS_BEFORE="$(read_threshold_values)"
     "$ADB" "${ADB_ARGS[@]}" shell input keyevent KEYCODE_WAKEUP >/dev/null 2>&1 || true
     "$ADB" "${ADB_ARGS[@]}" shell wm dismiss-keyguard >/dev/null 2>&1 || true
     "$ADB" "${ADB_ARGS[@]}" push "$APK" "$REMOTE_APK" >/dev/null
@@ -227,6 +236,21 @@ EOF
     if ! wait "$PM_PID"; then
         echo "安装失败，APK 已生成；尚未切换手机上的版本" >&2
         exit 1
+    fi
+    THRESHOLDS_AFTER="$(read_threshold_values)"
+    if [ -n "$THRESHOLDS_BEFORE" ] && [ "$THRESHOLDS_BEFORE" != "$THRESHOLDS_AFTER" ]; then
+        cat >&2 <<EOF
+覆盖安装后触发参数发生变化，已停止后续配置操作：
+  安装前:
+${THRESHOLDS_BEFORE}
+  安装后:
+${THRESHOLDS_AFTER}
+应用升级不得自动覆盖用户自定义参数。
+EOF
+        exit 4
+    fi
+    if [ -n "$THRESHOLDS_BEFORE" ]; then
+        echo "参数保留核对：用户阈值与连接参数未变化"
     fi
     "$ADB" "${ADB_ARGS[@]}" shell cmd notification disallow_listener \
         com.luca.geelykeyradar/com.luca.geelykeyradar.KeyNotificationBridgeService >/dev/null 2>&1 || true

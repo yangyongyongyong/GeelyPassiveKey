@@ -18,6 +18,7 @@ final class RssiChartView extends View {
     private static final int COLOR_TEXT = Color.rgb(148, 163, 184);
     private static final int COLOR_RAW = Color.rgb(56, 189, 248);
     private static final int COLOR_SMOOTH = Color.rgb(250, 204, 21);
+    private static final int COLOR_CONNECT = Color.rgb(168, 85, 247);
     private static final int COLOR_UNLOCK = Color.rgb(34, 197, 94);
     private static final int COLOR_LOCK = Color.rgb(248, 113, 113);
     private static final float MIN_DBM = -105f;
@@ -28,14 +29,18 @@ final class RssiChartView extends View {
     private final Paint textPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint rawPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint smoothPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint connectPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint unlockPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint lockPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint connectHaloPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint unlockHaloPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint lockHaloPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint connectTextPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint unlockTextPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint lockTextPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-    private float unlockDbm = -75f;
-    private float lockDbm = -82f;
+    private float connectDbm = -95f;
+    private float unlockDbm = -79f;
+    private float lockDbm = -85f;
 
     /** 初始化固定样式，曲线颜色与电源状态卡保持一致。 */
     RssiChartView(Context context) {
@@ -56,6 +61,10 @@ final class RssiChartView extends View {
         smoothPaint.setColor(COLOR_SMOOTH);
         smoothPaint.setStrokeWidth(dp(2));
         smoothPaint.setStyle(Paint.Style.STROKE);
+        connectPaint.setColor(COLOR_CONNECT);
+        connectPaint.setStrokeWidth(dp(2));
+        connectPaint.setStyle(Paint.Style.STROKE);
+        connectPaint.setPathEffect(new DashPathEffect(new float[]{dp(4), dp(5)}, 0));
         unlockPaint.setColor(COLOR_UNLOCK);
         unlockPaint.setStrokeWidth(dp(2));
         unlockPaint.setStyle(Paint.Style.STROKE);
@@ -64,6 +73,11 @@ final class RssiChartView extends View {
         lockPaint.setStrokeWidth(dp(2));
         lockPaint.setStyle(Paint.Style.STROKE);
         lockPaint.setPathEffect(new DashPathEffect(new float[]{dp(8), dp(5)}, 0));
+        connectHaloPaint.setColor(COLOR_CONNECT);
+        connectHaloPaint.setAlpha(42);
+        connectHaloPaint.setStrokeWidth(dp(6));
+        connectHaloPaint.setStyle(Paint.Style.STROKE);
+        connectHaloPaint.setPathEffect(new DashPathEffect(new float[]{dp(4), dp(5)}, 0));
         unlockHaloPaint.setColor(COLOR_UNLOCK);
         unlockHaloPaint.setAlpha(48);
         unlockHaloPaint.setStrokeWidth(dp(6));
@@ -74,16 +88,19 @@ final class RssiChartView extends View {
         lockHaloPaint.setStrokeWidth(dp(6));
         lockHaloPaint.setStyle(Paint.Style.STROKE);
         lockHaloPaint.setPathEffect(new DashPathEffect(new float[]{dp(8), dp(5)}, 0));
+        connectTextPaint.setColor(COLOR_CONNECT);
+        connectTextPaint.setTextSize(dp(11));
         unlockTextPaint.setColor(COLOR_UNLOCK);
         unlockTextPaint.setTextSize(dp(11));
         lockTextPaint.setColor(COLOR_LOCK);
         lockTextPaint.setTextSize(dp(11));
     }
 
-    /** 更新界面显示的解锁/上锁阈值线并在必要时重绘。 */
-    void setThresholds(float unlock, float lock) {
+    /** 更新界面显示的连接/解锁/上锁阈值线并在必要时重绘。 */
+    void setThresholds(float unlock, float lock, float connect) {
         unlockDbm = unlock;
         lockDbm = lock;
+        connectDbm = connect;
         invalidate();
     }
 
@@ -122,12 +139,16 @@ final class RssiChartView extends View {
             canvas.drawLine(left, y, right, y, gridPaint);
             canvas.drawText(String.valueOf(dbm), dp(2), y + dp(3), textPaint);
         }
+        float connectY = yFor(connectDbm, top, bottom);
         float unlockY = yFor(unlockDbm, top, bottom);
         float lockY = yFor(lockDbm, top, bottom);
+        canvas.drawLine(left, connectY, right, connectY, connectHaloPaint);
         canvas.drawLine(left, unlockY, right, unlockY, unlockHaloPaint);
         canvas.drawLine(left, lockY, right, lockY, lockHaloPaint);
+        canvas.drawLine(left, connectY, right, connectY, connectPaint);
         canvas.drawLine(left, unlockY, right, unlockY, unlockPaint);
         canvas.drawLine(left, lockY, right, lockY, lockPaint);
+        canvas.drawText("连接 " + Math.round(connectDbm), left + dp(4), connectY - dp(3), connectTextPaint);
         canvas.drawText("解锁 " + Math.round(unlockDbm), left + dp(4), unlockY - dp(3), unlockTextPaint);
         canvas.drawText("上锁 " + Math.round(lockDbm), left + dp(4), lockY - dp(3), lockTextPaint);
         canvas.drawText("-60s", left, getHeight() - dp(5), textPaint);

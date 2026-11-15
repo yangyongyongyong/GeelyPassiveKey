@@ -126,6 +126,49 @@ jobs:
           VERSION_CODE="$(xmllint --nonet --xpath \
             "string(/*[local-name()='manifest']/@*[local-name()='versionCode'])" \
             GeelyKeyRadarApp/AndroidManifest.xml)"
+          RELEASE_DEFAULTS_MARKDOWN="${RUNNER_TEMP}/release-defaults.md"
+          python3 - \
+            GeelyKeyRadarApp/src/com/luca/geelykeyradar/PassiveKeyDefaults.java \
+            "${RELEASE_DEFAULTS_MARKDOWN}" <<'PYTHON_DEFAULTS'
+          import pathlib
+          import re
+          import sys
+
+          source = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")
+          destination = pathlib.Path(sys.argv[2])
+
+          def number(name):
+              match = re.search(
+                  rf"\b{name}\s*=\s*([-+]?\d+(?:\.\d+)?)f\s*;", source
+              )
+              if match is None:
+                  raise SystemExit(f"Missing float default: {name}")
+              value = float(match.group(1))
+              return f"{value:g}"
+
+          def milliseconds(name):
+              match = re.search(rf"\b{name}\s*=\s*(\d+)L\s*;", source)
+              if match is None:
+                  raise SystemExit(f"Missing long default: {name}")
+              return int(match.group(1))
+
+          connect = number("CONNECT_DBM")
+          unlock = number("UNLOCK_DBM")
+          lock = number("LOCK_DBM")
+          dwell = milliseconds("LOCK_DWELL_MS") / 1000.0
+          body = (
+              "## 默认触发参数\n\n"
+              f"- 蓝牙连接触发：≥ {connect} dBm\n"
+              f"- 靠近解锁：≥ {unlock} dBm\n"
+              f"- 离开上锁：≤ {lock} dBm\n"
+              f"- 离开确认：{dwell:.1f} 秒\n\n"
+              "> 以上为全新安装默认值；升级安装会保留用户已保存的配置。\n"
+          )
+          destination.write_text(body, encoding="utf-8")
+          PYTHON_DEFAULTS
+          test -s "${RELEASE_DEFAULTS_MARKDOWN}"
+          grep -q "蓝牙连接触发" "${RELEASE_DEFAULTS_MARKDOWN}"
+          grep -q "离开确认" "${RELEASE_DEFAULTS_MARKDOWN}"
           CHECKSUM="${RUNNER_TEMP}/$(basename "${APK}").sha256"
           sha256sum "${APK}" > "${CHECKSUM}"
           APK_NAME="$(basename "${APK}")"
@@ -147,12 +190,14 @@ jobs:
           echo "update_manifest=${UPDATE_MANIFEST}" >> "$GITHUB_OUTPUT"
           echo "version=${VERSION_NAME}" >> "$GITHUB_OUTPUT"
           echo "signer=${SIGNER}" >> "$GITHUB_OUTPUT"
+          echo "defaults_markdown=${RELEASE_DEFAULTS_MARKDOWN}" >> "$GITHUB_OUTPUT"
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event.inputs.tag || github.ref_name }}
           name: GeelyPassiveKey v${{ steps.build.outputs.version }}
+          body_path: ${{ steps.build.outputs.defaults_markdown }}
           generate_release_notes: true
           fail_on_unmatched_files: true
           files: |

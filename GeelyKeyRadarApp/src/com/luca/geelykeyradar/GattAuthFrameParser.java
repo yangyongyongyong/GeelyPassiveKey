@@ -4,6 +4,7 @@ package com.luca.geelykeyradar;
 final class GattAuthFrameParser {
     static final int DK15_MAGIC = 0xFE;
     static final int CMD_SESSION_RSP15 = 5;
+    static final int CMD_APPROACH_LOCK_NOTIFY15 = 345;
 
     /** 只保留判断鉴权完成所需的明文头字段。 */
     static final class Frame {
@@ -24,7 +25,16 @@ final class GattAuthFrameParser {
 
         /** 官方DK1.5收到Session响应后才进入EVENT_DK_AUTH_SUCCESS。 */
         boolean isDk15AuthSuccess() {
-            return magic == DK15_MAGIC && version > 0 && length >= 8 && cmdId == CMD_SESSION_RSP15;
+            return isDk15Header(CMD_SESSION_RSP15);
+        }
+
+        /** 0x0159是车机原生PE接近落锁通知，可用于识别仍在近场却被原厂逻辑误锁。 */
+        boolean isApproachLockNotice() {
+            return isDk15Header(CMD_APPROACH_LOCK_NOTIFY15);
+        }
+
+        private boolean isDk15Header(int expectedCmdId) {
+            return magic == DK15_MAGIC && version > 0 && length >= 8 && cmdId == expectedCmdId;
         }
     }
 

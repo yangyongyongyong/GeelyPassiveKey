@@ -100,6 +100,10 @@ public class MainActivity extends Activity {
 
     private TextView statusView;
     private TextView topStatusChip;
+    private LinearLayout liveActivityCard;
+    private TextView liveActivityBadgeView;
+    private TextView liveActivityTitleView;
+    private TextView liveActivityDetailView;
     private TextView heroTitleView;
     private TextView heroDetailView;
     private TextView heroSignalView;
@@ -116,6 +120,8 @@ public class MainActivity extends Activity {
     private TextView vehicleParamView;
     private TextView identityView;
     private TextView thresholdView;
+    private TextView thresholdSourceView;
+    private TextView thresholdDefaultsView;
     private TextView permissionView;
     private TextView updateStatusView;
     private TextView logView;
@@ -361,10 +367,12 @@ public class MainActivity extends Activity {
 
     private LinearLayout buildTopAppBar() {
         LinearLayout bar = new LinearLayout(this);
-        bar.setOrientation(LinearLayout.HORIZONTAL);
-        bar.setGravity(Gravity.CENTER_VERTICAL);
+        bar.setOrientation(LinearLayout.VERTICAL);
         bar.setPadding(dp(20), dp(8), dp(20), dp(8));
 
+        LinearLayout titleRow = new LinearLayout(this);
+        titleRow.setOrientation(LinearLayout.HORIZONTAL);
+        titleRow.setGravity(Gravity.CENTER_VERTICAL);
         LinearLayout titles = new LinearLayout(this);
         titles.setOrientation(LinearLayout.VERTICAL);
         LinearLayout.LayoutParams titlesLp = new LinearLayout.LayoutParams(0,
@@ -375,7 +383,7 @@ public class MainActivity extends Activity {
                 LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
         subtitleLp.topMargin = dp(2);
         titles.addView(subtitle, subtitleLp);
-        bar.addView(titles, titlesLp);
+        titleRow.addView(titles, titlesLp);
 
         topStatusChip = text("启动中", 12, COLOR_ON_PRIMARY_CONTAINER, Typeface.BOLD);
         topStatusChip.setGravity(Gravity.CENTER);
@@ -383,7 +391,55 @@ public class MainActivity extends Activity {
         topStatusChip.setBackground(roundedBackground(COLOR_PRIMARY_CONTAINER, 999));
         topStatusChip.setContentDescription("应用运行状态");
         topStatusChip.setOnClickListener(v -> setTab(TAB_MAINTENANCE));
-        bar.addView(topStatusChip);
+        titleRow.addView(topStatusChip);
+        bar.addView(titleRow, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+
+        liveActivityCard = new LinearLayout(this);
+        liveActivityCard.setOrientation(LinearLayout.HORIZONTAL);
+        liveActivityCard.setGravity(Gravity.CENTER_VERTICAL);
+        liveActivityCard.setPadding(dp(14), dp(10), dp(12), dp(10));
+        liveActivityCard.setMinimumHeight(dp(62));
+        liveActivityCard.setClickable(true);
+        liveActivityCard.setFocusable(true);
+        liveActivityCard.setOnClickListener(v -> setTab(TAB_OVERVIEW));
+        liveActivityCard.setContentDescription("现在正在等待车辆蓝牙信号");
+        liveActivityCard.setBackground(rippleBackground(COLOR_SURFACE_VARIANT, COLOR_OUTLINE, 16,
+                Color.argb(28, 255, 255, 255)));
+
+        LinearLayout copy = new LinearLayout(this);
+        copy.setOrientation(LinearLayout.VERTICAL);
+        copy.addView(text("现在正在 · 实时行为", 11, COLOR_MUTED, Typeface.BOLD));
+        liveActivityTitleView = text("正在连接服务", 15, COLOR_TEXT, Typeface.BOLD);
+        liveActivityTitleView.setAccessibilityHeading(true);
+        liveActivityTitleView.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
+        LinearLayout.LayoutParams liveTitleLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        liveTitleLp.topMargin = dp(3);
+        copy.addView(liveActivityTitleView, liveTitleLp);
+        liveActivityDetailView = text("正在启动扫描与通知桥接", 12, COLOR_MUTED, Typeface.NORMAL);
+        liveActivityDetailView.setMaxLines(2);
+        liveActivityDetailView.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
+        LinearLayout.LayoutParams liveDetailLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        liveDetailLp.topMargin = dp(2);
+        copy.addView(liveActivityDetailView, liveDetailLp);
+        liveActivityCard.addView(copy, new LinearLayout.LayoutParams(0,
+                LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+
+        liveActivityBadgeView = text("启动", 11, COLOR_ON_PRIMARY_CONTAINER, Typeface.BOLD);
+        liveActivityBadgeView.setGravity(Gravity.CENTER);
+        liveActivityBadgeView.setPadding(dp(10), dp(5), dp(10), dp(5));
+        liveActivityBadgeView.setBackground(roundedBackground(COLOR_PRIMARY_CONTAINER, 999));
+        LinearLayout.LayoutParams badgeLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        badgeLp.leftMargin = dp(10);
+        liveActivityCard.addView(liveActivityBadgeView, badgeLp);
+
+        LinearLayout.LayoutParams liveCardLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        liveCardLp.topMargin = dp(10);
+        bar.addView(liveActivityCard, liveCardLp);
         return bar;
     }
 
@@ -543,16 +599,27 @@ public class MainActivity extends Activity {
 
         addSection(controlsPage, "距离判定");
         LinearLayout thresholdCard = card();
-        thresholdCard.addView(text("当前触发阈值", 16, COLOR_TEXT, Typeface.BOLD));
+        thresholdCard.addView(text("当前触发参数", 16, COLOR_TEXT, Typeface.BOLD));
         thresholdView = text("", 14, COLOR_TEXT, Typeface.NORMAL);
         LinearLayout.LayoutParams thresholdLp = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
         thresholdLp.topMargin = dp(10);
         thresholdCard.addView(thresholdView, thresholdLp);
-        Button customThresholdBtn = tonalButton("调整靠近/离开阈值");
+        thresholdSourceView = text("", 12, COLOR_PRIMARY, Typeface.BOLD);
+        LinearLayout.LayoutParams sourceLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        sourceLp.topMargin = dp(8);
+        thresholdCard.addView(thresholdSourceView, sourceLp);
+        thresholdDefaultsView = text("项目默认（仅辅助填充，不会自动应用）：\n"
+                + ThresholdSettingsForm.defaultsSummary(), 12, COLOR_MUTED, Typeface.NORMAL);
+        LinearLayout.LayoutParams defaultsLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        defaultsLp.topMargin = dp(10);
+        thresholdCard.addView(thresholdDefaultsView, defaultsLp);
+        Button customThresholdBtn = tonalButton("调整连接 / 解锁 / 上锁参数");
         customThresholdBtn.setOnClickListener(v -> promptCustomThresholds());
         thresholdCard.addView(customThresholdBtn, buttonLp());
-        thresholdCard.addView(text("RSSI 不对应固定米数；更负代表更弱，调整后立即生效。",
+        thresholdCard.addView(text("连接阈值只提前唤醒银河，不会直接解锁；RSSI 不对应固定米数，调整后立即生效。",
                 12, COLOR_MUTED, Typeface.NORMAL), supportLp());
         controlsPage.addView(thresholdCard, cardLp());
 
@@ -825,6 +892,7 @@ public class MainActivity extends Activity {
         boolean batteryWhitelisted = isBatteryWhitelisted();
         boolean geelyInstalled = GeelyBridge.isGeelyInstalled(this);
         boolean btPermission = hasBluetoothPermissions();
+        refreshLiveActivity(status, notificationAccess, listenerConnected);
         PermissionAudit.Result audit = PermissionAudit.evaluate(PermissionStatus.read(this, status));
         UpdateManager.Snapshot update = UpdateManager.snapshot(this);
         permissionView.setText(permissionCardText(audit));
@@ -844,7 +912,10 @@ public class MainActivity extends Activity {
             identityView.setText("等待服务启动");
             VehicleIdentityStore store = new VehicleIdentityStore(this);
             thresholdView.setText(ThresholdSettingsForm.configuredSummary(
-                    store.getUnlockDbm(), store.getLockDbm(), store.getLockDwellMs()));
+                    store.getUnlockDbm(), store.getLockDbm(), store.getLockDwellMs(),
+                    store.getConnectDbm()));
+            thresholdSourceView.setText("当前配置：" + (store.hasCustomThresholds()
+                    ? "用户自定义" : "项目默认"));
         } else {
             statusView.setText(
                     "服务总开关：" + (status.serviceEnabled ? "开启 (运行中)" : "已关闭 (完全停止操作)") + "\n"
@@ -890,7 +961,9 @@ public class MainActivity extends Activity {
             settingSwitches = false;
 
             thresholdView.setText(ThresholdSettingsForm.configuredSummary(
-                    status.unlockDbm, status.lockDbm, status.lockDwellMs));
+                    status.unlockDbm, status.lockDbm, status.lockDwellMs, status.connectDbm));
+            thresholdSourceView.setText("当前配置：" + (status.usingDefaultThresholds
+                    ? "项目默认" : "用户自定义"));
             logView.setText(service.getLogText());
         }
 
@@ -919,6 +992,102 @@ public class MainActivity extends Activity {
         } else {
             updateActionButton.setText("立即检查更新");
             updateActionButton.setEnabled(true);
+        }
+    }
+
+    /** 顶部跨页面实时行为条：由服务阶段映射，不使用最近日志文本猜测。 */
+    private void refreshLiveActivity(PassiveKeyService.Status status, boolean notificationAccess,
+                                     boolean listenerConnected) {
+        if (liveActivityCard == null) return;
+        LiveActivity.Input input = new LiveActivity.Input();
+        input.running = status != null && status.running;
+        input.serviceEnabled = status != null && status.serviceEnabled;
+        input.bluetoothOn = status != null && status.bluetoothOn;
+        input.notificationAccess = notificationAccess;
+        input.listenerConnected = listenerConnected;
+        if (status == null) {
+            renderLiveActivity(LiveActivity.resolve(input));
+            return;
+        }
+        input.chargingBlocked = status.wiredCharging && status.blockWhenCharging;
+        input.driving = status.driving;
+        input.identityComplete = status.identityLearned;
+        input.scanning = status.scanning;
+        input.geelyConnected = status.geelyConnected;
+        input.gattConnected = status.gattConnected;
+        input.wakeActive = status.wakeActive;
+        input.aclRecent = status.aclRecent;
+        input.signalFresh = status.rssi > -127 && status.rssi < 0 && status.lastSampleAgeMs >= 0L
+                && status.lastSampleAgeMs <= 3000L;
+        input.pendingUnlock = status.pendingAction == PassiveKeyLogic.Action.UNLOCK;
+        input.pendingLock = status.pendingAction == PassiveKeyLogic.Action.LOCK;
+        input.rssi = status.rssi;
+        input.connectDbm = status.connectDbm;
+        input.wakeAgeMs = status.wakeAgeMs;
+        input.lastSentAgeMs = status.lastSentAgeMs;
+        input.dispatchAgeMs = status.dispatchAgeMs;
+        input.lastSentAction = status.lastSentAction;
+        input.dispatchAction = status.dispatchAction;
+        input.lastControlResult = status.lastControlResult;
+        input.pendingWaitReason = status.pendingWaitReason;
+        input.sampleDecision = status.sampleDecision;
+        input.zone = status.zone;
+        input.lockDwellElapsedMs = status.lockDwellElapsedMs;
+        input.lockDwellMs = status.lockDwellMs;
+        input.lockDwellSamples = status.lockDwellSamples;
+        renderLiveActivity(LiveActivity.resolve(input));
+    }
+
+    /** 用同一套颜色语义渲染进度、成功、保护和错误，保持顶部状态稳定可读。 */
+    private void renderLiveActivity(LiveActivity.Result activity) {
+        if (liveActivityCard == null || activity == null) return;
+        int accent;
+        int container;
+        int badgeText;
+        switch (activity.tone) {
+            case SUCCESS:
+                accent = COLOR_GREEN;
+                container = COLOR_GREEN_CONTAINER;
+                badgeText = COLOR_GREEN;
+                break;
+            case WARNING:
+                accent = COLOR_AMBER;
+                container = COLOR_AMBER_CONTAINER;
+                badgeText = COLOR_AMBER;
+                break;
+            case ERROR:
+                accent = COLOR_RED;
+                container = COLOR_RED_CONTAINER;
+                badgeText = COLOR_RED;
+                break;
+            case PROGRESS:
+                accent = COLOR_PRIMARY;
+                container = COLOR_PRIMARY_CONTAINER;
+                badgeText = COLOR_ON_PRIMARY_CONTAINER;
+                break;
+            case IDLE:
+            default:
+                accent = COLOR_OUTLINE;
+                container = COLOR_SURFACE_HIGH;
+                badgeText = COLOR_MUTED;
+                break;
+        }
+        if (!activity.title.contentEquals(liveActivityTitleView.getText())) {
+            liveActivityTitleView.setText(activity.title);
+        }
+        if (!activity.detail.contentEquals(liveActivityDetailView.getText())) {
+            liveActivityDetailView.setText(activity.detail);
+        }
+        if (!activity.badge.contentEquals(liveActivityBadgeView.getText())) {
+            liveActivityBadgeView.setText(activity.badge);
+        }
+        liveActivityBadgeView.setTextColor(badgeText);
+        liveActivityBadgeView.setBackground(roundedBackground(container, 999));
+        liveActivityCard.setBackground(rippleBackground(COLOR_SURFACE_VARIANT, accent, 16,
+                Color.argb(28, 255, 255, 255)));
+        String description = "现在正在：" + activity.title + "。" + activity.detail;
+        if (!description.contentEquals(liveActivityCard.getContentDescription())) {
+            liveActivityCard.setContentDescription(description);
         }
     }
 
@@ -969,8 +1138,9 @@ public class MainActivity extends Activity {
                     && !VehicleLearningState.MANUAL.equals(status.learningSource);
             overviewVehicleDetailView.setText(observed ? "已学习本车蓝牙身份" : "已有本车配置");
             overviewVehicleMetaView.setText(String.format(Locale.ROOT,
-                    "解锁 ≥ %.0f dBm · 上锁 ≤ %.0f dBm / %.1fs",
-                    status.unlockDbm, status.lockDbm, status.lockDwellMs / 1000f));
+                    "连接 ≥ %.0f · 解锁 ≥ %.0f · 上锁 ≤ %.0f dBm / %.1fs · %s",
+                    status.connectDbm, status.unlockDbm, status.lockDbm, status.lockDwellMs / 1000f,
+                    status.usingDefaultThresholds ? "项目默认" : "自定义"));
         } else {
             overviewVehicleTitleView.setText("尚未识别本车");
             overviewVehicleDetailView.setText("保持应用运行，让银河连接车辆一次");
@@ -1143,7 +1313,8 @@ public class MainActivity extends Activity {
         long now = android.os.SystemClock.elapsedRealtime();
         float unlock = status != null ? status.unlockDbm : new VehicleIdentityStore(this).getUnlockDbm();
         float lock = status != null ? status.lockDbm : new VehicleIdentityStore(this).getLockDbm();
-        rssiChartView.setThresholds(unlock, lock);
+        float connect = status != null ? status.connectDbm : new VehicleIdentityStore(this).getConnectDbm();
+        rssiChartView.setThresholds(unlock, lock, connect);
         boolean fresh = status != null && status.rssi > -105 && status.rssi < 0
                 && status.lastSampleAgeMs >= 0L && status.lastSampleAgeMs <= 3000L;
         if (fresh) {
@@ -1459,8 +1630,8 @@ public class MainActivity extends Activity {
     }
 
     /**
-     * 弹出自定义信号阈值设置框：允许自定义靠近解锁阈值(dBm)、离开上锁阈值(dBm)与离开确认秒数。
-     * 独立弹窗固定展示字段含义、范围与推荐值；只在用户保存且三项校验通过后写配置。
+     * 弹出自定义触发设置框：连接预热、靠近解锁、离开上锁阈值与离开确认秒数。
+     * 独立弹窗固定展示字段含义、范围与推荐值；只在用户保存且四项校验通过后写配置。
      */
     private void promptCustomThresholds() {
         if (thresholdSettingsDialog != null && thresholdSettingsDialog.isShowing()) return;
@@ -1469,11 +1640,13 @@ public class MainActivity extends Activity {
         float unlockDbm = status != null ? status.unlockDbm : store.getUnlockDbm();
         float lockDbm = status != null ? status.lockDbm : store.getLockDbm();
         long dwellMs = status != null ? status.lockDwellMs : store.getLockDwellMs();
-        thresholdSettingsDialog = ThresholdSettingsDialog.show(this, unlockDbm, lockDbm, dwellMs, (unlock, lock, dwell) -> {
+        float connectDbm = status != null ? status.connectDbm : store.getConnectDbm();
+        thresholdSettingsDialog = ThresholdSettingsDialog.show(this, unlockDbm, lockDbm, dwellMs, connectDbm,
+                (unlock, lock, dwell, connect) -> {
             if (service != null) {
-                service.updateThresholds(unlock, lock, dwell);
+                service.updateThresholds(unlock, lock, dwell, connect);
             } else {
-                store.saveThresholds(unlock, lock, dwell);
+                store.saveThresholds(unlock, lock, dwell, connect);
             }
             Toast.makeText(this, "自定义阈值已保存并立即生效", Toast.LENGTH_SHORT).show();
             refreshUi();
