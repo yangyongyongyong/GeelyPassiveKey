@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.luca.geelykeyradar"
-    android:versionCode="202"
-    android:versionName="4.2.2-min">
+    android:versionCode="501"
+    android:versionName="4.5.1-min">
 
     <uses-sdk
         android:minSdkVersion="29"
@@ -38,6 +38,9 @@
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <queries>
         <package android:name="com.geelygalaxy.customer" />
@@ -68,6 +71,19 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <activity
+            android:name=".PermissionGuideActivity"
+            android:exported="false"
+            android:label="授权与运行全检"
+            android:screenOrientation="portrait"
+            android:configChanges="orientation|screenSize|keyboardHidden" />
+
+        <provider
+            android:name=".UpdateApkProvider"
+            android:authorities="com.luca.geelykeyradar.updates"
+            android:exported="false"
+            android:grantUriPermissions="true" />
 
         <service
             android:name=".PassiveKeyService"

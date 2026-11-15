@@ -2,9 +2,22 @@
 set -euo pipefail
 
 APP_DIR="$(cd "$(dirname "$0")" && pwd)"
-BUILD_TOOLS="${BUILD_TOOLS:-/opt/homebrew/share/android-commandlinetools/build-tools/36.0.0}"
-ANDROID_JAR="${ANDROID_JAR:-/opt/homebrew/share/android-commandlinetools/platforms/android-36/android.jar}"
-ADB="${ADB:-$(command -v adb || echo "$HOME/platform-tools/platform-tools/adb")}"
+ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-$HOME/Library/Android/sdk}}"
+if [ -z "${BUILD_TOOLS:-}" ]; then
+    BUILD_TOOLS="$(find "$ANDROID_SDK_ROOT/build-tools" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort -V | tail -1 || true)"
+fi
+if [ -z "${ANDROID_JAR:-}" ]; then
+    ANDROID_JAR="$(find "$ANDROID_SDK_ROOT/platforms" -mindepth 2 -maxdepth 2 -name android.jar -type f 2>/dev/null | sort -V | tail -1 || true)"
+fi
+if [ -z "${ADB:-}" ]; then
+    if command -v adb >/dev/null 2>&1; then
+        ADB="$(command -v adb)"
+    elif [ -x "$ANDROID_SDK_ROOT/platform-tools/adb" ]; then
+        ADB="$ANDROID_SDK_ROOT/platform-tools/adb"
+    else
+        ADB="$HOME/platform-tools/platform-tools/adb"
+    fi
+fi
 if [ -n "${JAVA_HOME:-}" ] && [ -d "$JAVA_HOME/bin" ]; then
     PATH="$JAVA_HOME/bin:$PATH"
 elif [ -d "$HOME/Library/Java/JavaVirtualMachines/corretto-11.0.24/Contents/Home/bin" ]; then
@@ -51,6 +64,41 @@ fi
 
 echo "版本: $VERSION_NAME (versionCode=$VERSION_CODE)"
 
+if [ ! -x "$BUILD_TOOLS/aapt2" ] || [ ! -x "$BUILD_TOOLS/d8" ] || [ ! -f "$ANDROID_JAR" ]; then
+    echo "Android 构建工具不完整：BUILD_TOOLS=$BUILD_TOOLS ANDROID_JAR=$ANDROID_JAR" >&2
+    exit 1
+fi
+
+KEYSTORE="${ANDROID_KEYSTORE:-$APP_DIR/build/debug.keystore}"
+KEYSTORE_PASS="${ANDROID_KEYSTORE_PASS:-android}"
+KEY_ALIAS="${ANDROID_KEY_ALIAS:-androiddebugkey}"
+KEY_PASS="${ANDROID_KEY_PASS:-$KEYSTORE_PASS}"
+APKSIGNER="$BUILD_TOOLS/apksigner"
+if [ ! -f "$KEYSTORE" ]; then
+    if [ "${ALLOW_NEW_DEBUG_KEYSTORE:-0}" != "1" ]; then
+        cat >&2 <<EOF
+缺少签名密钥：$KEYSTORE
+为避免覆盖安装时证书变化，脚本不再自动生成新密钥。
+请设置 ANDROID_KEYSTORE 指向原发布密钥；仅在明确要创建全新签名时设置：
+  ALLOW_NEW_DEBUG_KEYSTORE=1
+EOF
+        exit 2
+    fi
+    mkdir -p "$(dirname "$KEYSTORE")"
+    keytool -genkeypair -v \
+        -keystore "$KEYSTORE" \
+        -storepass "$KEYSTORE_PASS" -keypass "$KEY_PASS" \
+        -alias "$KEY_ALIAS" \
+        -keyalg RSA -keysize 2048 -validity 10000 \
+        -dname "CN=Android Debug,O=Android,C=US"
+fi
+
+signer_sha256() {
+    "$APKSIGNER" verify --print-certs "$1" 2>/dev/null \
+        | sed -n 's/^.*certificate SHA-256 digest: //p' \
+        | head -1
+}
+
 mkdir -p "$GEN_DIR" "$CLASSES_DIR" "$DEX_DIR" "$TEST_DIR"
 find "$GEN_DIR" -type f -delete 2>/dev/null || true
 find "$CLASSES_DIR" -type f -delete 2>/dev/null || true
@@ -79,8 +127,10 @@ javac -source 11 -target 11 -d "$TEST_DIR" \
     "$APP_DIR/src/com/luca/geelykeyradar/VehicleScanPolicy.java" \
     "$APP_DIR/src/com/luca/geelykeyradar/OfficialReadyGate.java" \
     "$APP_DIR/src/com/luca/geelykeyradar/ThresholdSettingsForm.java" \
+    "$APP_DIR/src/com/luca/geelykeyradar/PermissionAudit.java" \
+    "$APP_DIR/src/com/luca/geelykeyradar/UpdatePolicy.java" \
     "$APP_DIR/tests/com/luca/geelykeyradar/"*Test.java
-for TEST_CLASS in PassiveKeyLogicTest RssiPipelineTest RssiChartSeriesTest GattAuthFrameParserTest PendingControlTest NotificationEpochTest RotatingFileLogTest DiagnosticsTest VehicleLearningStateTest VehicleIdentityTest VehicleTargetSelectorTest VehicleWakeGateTest VehicleScanPolicyTest OfficialReadyGateTest ThresholdSettingsFormTest VehicleParamCodecTest; do
+for TEST_CLASS in PassiveKeyLogicTest RssiPipelineTest RssiChartSeriesTest GattAuthFrameParserTest PendingControlTest NotificationEpochTest RotatingFileLogTest DiagnosticsTest VehicleLearningStateTest VehicleIdentityTest VehicleTargetSelectorTest VehicleWakeGateTest VehicleScanPolicyTest OfficialReadyGateTest ThresholdSettingsFormTest VehicleParamCodecTest PermissionAuditTest UpdatePolicyTest; do
     java -ea -cp "$TEST_DIR" "com.luca.geelykeyradar.$TEST_CLASS"
 done
 
@@ -106,21 +156,21 @@ echo "[4/6] 生成 DEX"
 
 echo "[5/6] 对齐与签名"
 "$BUILD_TOOLS/zipalign" -f -p 4 "$BUILD_DIR/unsigned.apk" "$BUILD_DIR/aligned.apk"
-if [ ! -f "$APP_DIR/build/debug.keystore" ]; then
-    keytool -genkeypair -v \
-        -keystore "$APP_DIR/build/debug.keystore" \
-        -storepass android -keypass android \
-        -alias androiddebugkey \
-        -keyalg RSA -keysize 2048 -validity 10000 \
-        -dname "CN=Android Debug,O=Android,C=US"
-fi
-"$BUILD_TOOLS/apksigner" sign \
-    --ks "$APP_DIR/build/debug.keystore" \
-    --ks-pass pass:android \
-    --key-pass pass:android \
+"$APKSIGNER" sign \
+    --ks "$KEYSTORE" \
+    --ks-pass "pass:$KEYSTORE_PASS" \
+    --ks-key-alias "$KEY_ALIAS" \
+    --key-pass "pass:$KEY_PASS" \
     --out "$APK" \
     "$BUILD_DIR/aligned.apk"
+SIGNER_SHA256="$(signer_sha256 "$APK")"
+if [ -z "$SIGNER_SHA256" ]; then
+    echo "无法读取新 APK 的签名证书" >&2
+    exit 1
+fi
 echo "APK: $APK"
+echo "签名密钥: $KEYSTORE"
+echo "证书SHA-256: $SIGNER_SHA256"
 
 if [ "${SKIP_INSTALL:-0}" = "1" ]; then
     echo "[6/6] 已跳过安装，APK 构建完成"
@@ -130,7 +180,9 @@ fi
 echo "[6/6] 尝试安装到真机"
 export ADB_LIBUSB=0
 ADB_ARGS=()
-if "$ADB" -P 5038 get-state >/dev/null 2>&1; then
+if [ -n "${ADB_SERIAL:-}" ]; then
+    ADB_ARGS=(-s "$ADB_SERIAL")
+elif "$ADB" -P 5038 get-state >/dev/null 2>&1; then
     ADB_ARGS=(-P 5038)
 elif [ -S /tmp/adb_claude.sock ] && ADB_SERVER_SOCKET=localfilesystem:/tmp/adb_claude.sock "$ADB" get-state >/dev/null 2>&1; then
     export ADB_SERVER_SOCKET=localfilesystem:/tmp/adb_claude.sock
@@ -138,6 +190,30 @@ elif "$ADB" get-state >/dev/null 2>&1; then
     ADB_ARGS=()
 fi
 if "$ADB" "${ADB_ARGS[@]}" get-state >/dev/null 2>&1; then
+    INSTALLED_PATH="$("$ADB" "${ADB_ARGS[@]}" shell pm path com.luca.geelykeyradar 2>/dev/null \
+        | tr -d '\r' | sed -n 's/^package://p' | head -1 || true)"
+    if [ -n "$INSTALLED_PATH" ]; then
+        SIGNATURE_TMP="$(mktemp -d "${TMPDIR:-/tmp}/geely-installed-signer.XXXXXX")"
+        "$ADB" "${ADB_ARGS[@]}" exec-out cat "$INSTALLED_PATH" > "$SIGNATURE_TMP/installed.apk"
+        INSTALLED_SIGNER="$(signer_sha256 "$SIGNATURE_TMP/installed.apk" || true)"
+        find "$SIGNATURE_TMP" -type f -delete 2>/dev/null || true
+        rmdir "$SIGNATURE_TMP" 2>/dev/null || true
+        if [ -n "$INSTALLED_SIGNER" ] && [ "$INSTALLED_SIGNER" != "$SIGNER_SHA256" ]; then
+            cat >&2 <<EOF
+签名不一致，已拒绝自动安装：
+  手机已装: $INSTALLED_SIGNER
+  本次 APK: $SIGNER_SHA256
+覆盖安装必须使用原签名密钥。脚本不会自动卸载，也不会清除应用数据。
+如已确认要更换签名，请自行备份并卸载后再安装；或显式设置 ALLOW_SIGNATURE_CHANGE=1。
+EOF
+            if [ "${ALLOW_SIGNATURE_CHANGE:-0}" != "1" ]; then
+                exit 3
+            fi
+            echo "警告：ALLOW_SIGNATURE_CHANGE=1，仍尝试安装；pm install -r 通常会被系统拒绝" >&2
+        elif [ -n "$INSTALLED_SIGNER" ]; then
+            echo "签名核对：与手机已安装版本一致"
+        fi
+    fi
     "$ADB" "${ADB_ARGS[@]}" shell input keyevent KEYCODE_WAKEUP >/dev/null 2>&1 || true
     "$ADB" "${ADB_ARGS[@]}" shell wm dismiss-keyguard >/dev/null 2>&1 || true
     "$ADB" "${ADB_ARGS[@]}" push "$APK" "$REMOTE_APK" >/dev/null

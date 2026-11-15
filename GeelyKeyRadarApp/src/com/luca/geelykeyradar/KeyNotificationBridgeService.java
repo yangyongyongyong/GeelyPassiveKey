@@ -135,6 +135,12 @@ public class KeyNotificationBridgeService extends NotificationListenerService {
         return service != null && service.listenerConnected;
     }
 
+    /** 已授权但系统尚未绑定监听时，返回本次掉绑已持续的单调时间；在线时为0。 */
+    static long getListenerDownDurationMs() {
+        if (isListenerConnected() || listenerDownSinceMs == 0L) return 0L;
+        return Math.max(0L, SystemClock.elapsedRealtime() - listenerDownSinceMs);
+    }
+
     /** GATT观察到官方DK1.5鉴权完成时设置临时就绪，避免等待锁屏通知刷新。 */
     public static void markGattAuthReady(boolean ready) {
         boolean changed = gattAuthReady != ready;
@@ -231,6 +237,11 @@ public class KeyNotificationBridgeService extends NotificationListenerService {
             if (!isNotificationListenerEnabled(context)) {
                 return;
             }
+            if (listenerDownSinceMs == 0L) {
+                listenerDownSinceMs = SystemClock.elapsedRealtime();
+                lastRecoveryDiagnostic = "listener_recovery=rebinding";
+                DiagnosticLog.event("Notification", "LISTENER_DOWN", "recovery_started=true source=ensure_rebound");
+            }
             requestRebindThrottled(new ComponentName(context, KeyNotificationBridgeService.class),
                     "ensure_rebound");
         } catch (Throwable t) {
@@ -264,6 +275,8 @@ public class KeyNotificationBridgeService extends NotificationListenerService {
         long downMs = Math.max(0L, now - listenerDownSinceMs);
         if (downMs >= 10000L) {
             lastRecoveryDiagnostic = "listener_recovery=needs_user_access_toggle";
+        } else {
+            lastRecoveryDiagnostic = "listener_recovery=rebinding";
         }
         ComponentName cn = new ComponentName(context, KeyNotificationBridgeService.class);
         requestRebindThrottled(cn, "down_ms=" + downMs);

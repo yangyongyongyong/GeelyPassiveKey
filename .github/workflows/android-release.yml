@@ -1,0 +1,159 @@
+name: Android Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to rebuild and publish, e.g. v4.4.0-min'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: android-release-${{ github.event.inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build signed APK and publish GitHub Release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout release ref
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+          fetch-depth: 0
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxml2-utils jq
+          yes | "${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
+          "${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager" \
+            "platforms;android-36" \
+            "build-tools;36.0.0"
+          echo "ANDROID_SDK_ROOT=${ANDROID_HOME}" >> "$GITHUB_ENV"
+
+      - name: Validate tag against AndroidManifest.xml
+        env:
+          RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          if [ "${GITHUB_REPOSITORY}" != "yangyongyongyong/GeelyPassiveKey" ]; then
+            echo "This workflow publishes the updater manifest for ${GITHUB_REPOSITORY}, but the App is pinned to yangyongyongyong/GeelyPassiveKey" >&2
+            exit 1
+          fi
+          VERSION_NAME="$(xmllint --nonet --xpath \
+            "string(/*[local-name()='manifest']/@*[local-name()='versionName'])" \
+            GeelyKeyRadarApp/AndroidManifest.xml)"
+          VERSION_CODE="$(xmllint --nonet --xpath \
+            "string(/*[local-name()='manifest']/@*[local-name()='versionCode'])" \
+            GeelyKeyRadarApp/AndroidManifest.xml)"
+          if [ "${RELEASE_TAG}" != "v${VERSION_NAME}" ]; then
+            echo "Tag ${RELEASE_TAG} does not match AndroidManifest version v${VERSION_NAME}" >&2
+            exit 1
+          fi
+          if [[ ! "${VERSION_CODE}" =~ ^[0-9]+$ ]]; then
+            echo "Invalid versionCode: ${VERSION_CODE}" >&2
+            exit 1
+          fi
+          echo "Version: v${VERSION_NAME} (${VERSION_CODE})"
+
+      - name: Decode release keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          if [ -z "${KEYSTORE_BASE64}" ]; then
+            echo "Missing repository secret ANDROID_KEYSTORE_BASE64" >&2
+            exit 1
+          fi
+          KEYSTORE_PATH="${RUNNER_TEMP}/release.keystore"
+          printf '%s' "${KEYSTORE_BASE64}" | base64 --decode > "${KEYSTORE_PATH}"
+          chmod 600 "${KEYSTORE_PATH}"
+          echo "ANDROID_KEYSTORE=${KEYSTORE_PATH}" >> "$GITHUB_ENV"
+
+      - name: Build signed APK
+        id: build
+        env:
+          ANDROID_KEYSTORE_PASS: ${{ secrets.ANDROID_KEYSTORE_PASS }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASS: ${{ secrets.ANDROID_KEY_PASS }}
+          EXPECTED_CERT_SHA256: ${{ secrets.ANDROID_CERT_SHA256 }}
+          RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+          SKIP_INSTALL: '1'
+        run: |
+          if [ -z "${ANDROID_KEYSTORE_PASS:-}" ]; then
+            echo "Missing repository secret ANDROID_KEYSTORE_PASS" >&2
+            exit 1
+          fi
+          if [ -z "${ANDROID_KEY_ALIAS:-}" ]; then
+            echo "Missing repository secret ANDROID_KEY_ALIAS" >&2
+            exit 1
+          fi
+          export BUILD_TOOLS="${ANDROID_SDK_ROOT}/build-tools/36.0.0"
+          export ANDROID_JAR="${ANDROID_SDK_ROOT}/platforms/android-36/android.jar"
+          APK="$(bash GeelyKeyRadarApp/build.sh --print-apk-path)"
+          bash GeelyKeyRadarApp/build.sh
+          test -f "${APK}"
+          "${BUILD_TOOLS}/apksigner" verify --verbose --print-certs "${APK}" \
+            | tee "${RUNNER_TEMP}/signature.txt"
+          SIGNER="$(sed -n 's/^.*certificate SHA-256 digest: //p' "${RUNNER_TEMP}/signature.txt" \
+            | head -1 | tr -d ':' | tr 'A-F' 'a-f')"
+          EXPECTED="$(printf '%s' "${EXPECTED_CERT_SHA256:-}" | tr -d ':' | tr 'A-F' 'a-f')"
+          if [ -n "${EXPECTED}" ] && [ "${SIGNER}" != "${EXPECTED}" ]; then
+            echo "Signer mismatch: expected ${EXPECTED_CERT_SHA256}, got ${SIGNER}" >&2
+            exit 1
+          fi
+          VERSION_NAME="$(xmllint --nonet --xpath \
+            "string(/*[local-name()='manifest']/@*[local-name()='versionName'])" \
+            GeelyKeyRadarApp/AndroidManifest.xml)"
+          VERSION_CODE="$(xmllint --nonet --xpath \
+            "string(/*[local-name()='manifest']/@*[local-name()='versionCode'])" \
+            GeelyKeyRadarApp/AndroidManifest.xml)"
+          CHECKSUM="${RUNNER_TEMP}/$(basename "${APK}").sha256"
+          sha256sum "${APK}" > "${CHECKSUM}"
+          APK_NAME="$(basename "${APK}")"
+          SHA256="$(sha256sum "${APK}" | awk '{print $1}')"
+          APK_SIZE="$(stat -c '%s' "${APK}")"
+          APK_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}/${APK_NAME}"
+          UPDATE_MANIFEST="${RUNNER_TEMP}/update.json"
+          jq -n \
+            --arg versionName "${VERSION_NAME}" \
+            --argjson versionCode "${VERSION_CODE}" \
+            --arg apkName "${APK_NAME}" \
+            --arg apkUrl "${APK_URL}" \
+            --arg sha256 "sha256:${SHA256}" \
+            --argjson size "${APK_SIZE}" \
+            '{versionName:$versionName,versionCode:$versionCode,apkName:$apkName,apkUrl:$apkUrl,sha256:$sha256,size:$size}' \
+            > "${UPDATE_MANIFEST}"
+          echo "apk=${APK}" >> "$GITHUB_OUTPUT"
+          echo "checksum=${CHECKSUM}" >> "$GITHUB_OUTPUT"
+          echo "update_manifest=${UPDATE_MANIFEST}" >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION_NAME}" >> "$GITHUB_OUTPUT"
+          echo "signer=${SIGNER}" >> "$GITHUB_OUTPUT"
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          name: GeelyPassiveKey v${{ steps.build.outputs.version }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            ${{ steps.build.outputs.apk }}
+            ${{ steps.build.outputs.checksum }}
+            ${{ steps.build.outputs.update_manifest }}

@@ -169,6 +169,7 @@ public class PassiveKeyService extends Service implements SensorEventListener {
     private volatile long lastGeelyConnectedAtMs = 0L;
     private volatile long lastNotificationUpdateAtMs = 0L;
     private long lastListenerRebindAtMs = 0L;
+    private long lastUpdateAutoCheckAtMs = 0L;
     private volatile long lastZoneLogAtMs = 0L;
     private volatile long lastLearnAttemptAtMs = 0L;
     private volatile int unlockCount = 0;
@@ -304,6 +305,7 @@ public class PassiveKeyService extends Service implements SensorEventListener {
             ServiceWatchdogReceiver.schedule(this);
             GeelyBridge.bindKeepAlive(this);
             KeyNotificationBridgeService.ensureRebound(this);
+            UpdateManager.maybeAutoCheck(this);
             startBleScan();
         } else {
             lastZone = "无感进出服务已关闭";
@@ -529,7 +531,11 @@ public class PassiveKeyService extends Service implements SensorEventListener {
         if (KeyNotificationBridgeService.isNotificationListenerEnabled(this)
                 && !KeyNotificationBridgeService.isListenerConnected()) {
             KeyNotificationBridgeService.requestImmediateRecovery(this);
-            return "通知监听被系统解绑，请点下方“修复通知监听”，在系统页关闭再开启";
+            long downMs = KeyNotificationBridgeService.getListenerDownDurationMs();
+            if (downMs < PermissionAudit.LISTENER_REBIND_GRACE_MS) {
+                return "系统授权仍在，通知桥接正在自动重绑；如持续未恢复，请打开“授权与运行全检”";
+            }
+            return "系统授权仍在，但通知桥接未绑定；请打开“授权与运行全检”修复";
         }
         if (!KeyNotificationBridgeService.isNotificationListenerEnabled(this)) return "请先开启本应用的通知使用权";
         if (!KeyNotificationBridgeService.isGeelyNotificationPresent()) {
@@ -2367,6 +2373,10 @@ public class PassiveKeyService extends Service implements SensorEventListener {
                 lastListenerRebindAtMs = now;
                 KeyNotificationBridgeService.recoverIfNeeded(PassiveKeyService.this);
             }
+            if ((now - lastUpdateAutoCheckAtMs) >= 60000L) {
+                lastUpdateAutoCheckAtMs = now;
+                UpdateManager.maybeAutoCheck(PassiveKeyService.this);
+            }
             if (serviceEnabled && !isScanning && hasBluetoothPermission()
                     && bluetoothAdapter != null && bluetoothAdapter.isEnabled()
                     && (now - lastScanRecoveryAtMs) >= 2000L) {
@@ -2424,7 +2434,10 @@ public class PassiveKeyService extends Service implements SensorEventListener {
     }
 
     private Notification buildNotification(String text) {
-        Intent intent = new Intent(this, MainActivity.class);
+        boolean permissionNeedsAttention = !KeyNotificationBridgeService.isNotificationListenerEnabled(this)
+                || !KeyNotificationBridgeService.isListenerConnected();
+        Intent intent = new Intent(this,
+                permissionNeedsAttention ? PermissionGuideActivity.class : MainActivity.class);
         intent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
         PendingIntent pendingIntent = PendingIntent.getActivity(
                 this,
@@ -2459,7 +2472,10 @@ public class PassiveKeyService extends Service implements SensorEventListener {
         } else if (!KeyNotificationBridgeService.isNotificationListenerEnabled(this)) {
             text = "通知使用权未开启 · 打开App授权";
         } else if (!KeyNotificationBridgeService.isListenerConnected()) {
-            text = "通知监听被系统解绑 · 点此打开App修复";
+            long downMs = KeyNotificationBridgeService.getListenerDownDurationMs();
+            text = downMs < PermissionAudit.LISTENER_REBIND_GRACE_MS
+                    ? "通知桥接正在恢复 · 授权仍然保留"
+                    : "通知桥接未绑定 · 点此打开App修复";
         } else if (!geelyConnected) {
             text = identity == null ? "正在学习本车蓝牙身份" : "等待银河蓝牙连接 · " + lastZone;
         } else {

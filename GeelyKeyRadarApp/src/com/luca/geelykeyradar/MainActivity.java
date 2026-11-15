@@ -10,9 +10,12 @@ import android.content.Intent;
 import android.content.ServiceConnection;
 import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
+import android.content.res.ColorStateList;
 import android.graphics.Color;
+import android.graphics.Insets;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
+import android.graphics.drawable.RippleDrawable;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -23,9 +26,13 @@ import android.os.PowerManager;
 import android.provider.Settings;
 import android.view.Gravity;
 import android.view.View;
+import android.view.WindowInsets;
+import android.view.Window;
 import android.widget.Button;
 import android.widget.CompoundButton;
 import android.widget.EditText;
+import android.widget.FrameLayout;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.Switch;
@@ -55,13 +62,27 @@ public class MainActivity extends Activity {
     private static final int REQUEST_NOTIFICATION_PERMISSION = 1003;
     private static final ExecutorService LOG_EXPORT_EXECUTOR = Executors.newSingleThreadExecutor();
     private static final AtomicBoolean LOG_EXPORT_BUSY = new AtomicBoolean();
-    private static final int COLOR_BG = Color.rgb(8, 17, 31);
-    private static final int COLOR_CARD = Color.rgb(17, 28, 46);
-    private static final int COLOR_TEXT = Color.rgb(229, 231, 235);
-    private static final int COLOR_MUTED = Color.rgb(148, 163, 184);
-    private static final int COLOR_ACCENT = Color.rgb(56, 189, 248);
-    private static final int COLOR_GREEN = Color.rgb(34, 197, 94);
-    private static final int COLOR_RED = Color.rgb(248, 113, 113);
+    private static final int TAB_OVERVIEW = 0;
+    private static final int TAB_CONTROLS = 1;
+    private static final int TAB_MAINTENANCE = 2;
+    private static final int COLOR_BG = Color.rgb(8, 13, 18);
+    private static final int COLOR_CARD = Color.rgb(17, 24, 32);
+    private static final int COLOR_SURFACE_VARIANT = Color.rgb(24, 34, 45);
+    private static final int COLOR_SURFACE_HIGH = Color.rgb(30, 42, 54);
+    private static final int COLOR_OUTLINE = Color.rgb(43, 60, 74);
+    private static final int COLOR_TEXT = Color.rgb(232, 238, 245);
+    private static final int COLOR_MUTED = Color.rgb(156, 171, 186);
+    private static final int COLOR_PRIMARY = Color.rgb(102, 211, 250);
+    private static final int COLOR_ON_PRIMARY = Color.rgb(5, 45, 59);
+    private static final int COLOR_PRIMARY_CONTAINER = Color.rgb(16, 59, 76);
+    private static final int COLOR_ON_PRIMARY_CONTAINER = Color.rgb(186, 237, 255);
+    private static final int COLOR_ACCENT = COLOR_PRIMARY;
+    private static final int COLOR_GREEN = Color.rgb(101, 214, 163);
+    private static final int COLOR_GREEN_CONTAINER = Color.rgb(20, 59, 43);
+    private static final int COLOR_RED = Color.rgb(255, 154, 168);
+    private static final int COLOR_RED_CONTAINER = Color.rgb(68, 31, 38);
+    private static final int COLOR_AMBER = Color.rgb(247, 198, 91);
+    private static final int COLOR_AMBER_CONTAINER = Color.rgb(58, 47, 20);
 
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final Runnable refreshRunnable = new Runnable() {
@@ -78,12 +99,25 @@ public class MainActivity extends Activity {
     private boolean settingSwitches = false;
 
     private TextView statusView;
+    private TextView topStatusChip;
+    private TextView heroTitleView;
+    private TextView heroDetailView;
+    private TextView heroSignalView;
+    private TextView heroSignalUnitView;
+    private TextView heroZoneView;
+    private TextView overviewVehicleTitleView;
+    private TextView overviewVehicleDetailView;
+    private TextView overviewVehicleMetaView;
+    private TextView overviewHealthTitleView;
+    private TextView overviewHealthDetailView;
+    private LinearLayout overviewHealthCard;
     private RssiChartView rssiChartView;
     private TextView rssiChartSummaryView;
     private TextView vehicleParamView;
     private TextView identityView;
     private TextView thresholdView;
     private TextView permissionView;
+    private TextView updateStatusView;
     private TextView logView;
     private Switch serviceMasterSwitch;
     private Switch autoUnlockSwitch;
@@ -93,8 +127,31 @@ public class MainActivity extends Activity {
     private Button manualLockButton;
     private TextView manualControlView;
     private Button exportLogButton;
-    private Button notificationPermissionButton;
-    private Button batteryWhitelistButton;
+    private Button permissionGuideButton;
+    private Button updateActionButton;
+    private Switch autoUpdateSwitch;
+    private ScrollView mainScrollView;
+    private LinearLayout overviewPage;
+    private LinearLayout controlsPage;
+    private LinearLayout maintenancePage;
+    private LinearLayout topAppBar;
+    private LinearLayout bottomNavigationBar;
+    private LinearLayout overviewTab;
+    private LinearLayout controlsTab;
+    private LinearLayout maintenanceTab;
+    private FrameLayout overviewTabIconContainer;
+    private FrameLayout controlsTabIconContainer;
+    private FrameLayout maintenanceTabIconContainer;
+    private ImageView overviewTabIcon;
+    private ImageView controlsTabIcon;
+    private ImageView maintenanceTabIcon;
+    private TextView overviewTabLabel;
+    private TextView controlsTabLabel;
+    private TextView maintenanceTabLabel;
+    private View maintenanceBadge;
+    private int activeTab = TAB_OVERVIEW;
+    private boolean settingUpdateSwitch;
+    private boolean pendingInstallAfterPermission;
     private String exportSnapshot = "service_snapshot=unavailable";
     private Dialog thresholdSettingsDialog;
     private VehicleParameterProbe parameterProbe;
@@ -129,6 +186,47 @@ public class MainActivity extends Activity {
             exportSnapshot = savedInstanceState.getString("diagnostic_snapshot", exportSnapshot);
         }
         buildUi();
+        configureEdgeToEdge();
+        if (savedInstanceState != null) {
+            setTab(savedInstanceState.getInt("active_tab", TAB_OVERVIEW));
+        }
+        handler.postDelayed(() -> handleUpdateIntent(getIntent()), 350L);
+    }
+
+    /** Android 15/16 默认 edge-to-edge；统一由窗口 insets 给顶栏和底栏留安全区。 */
+    private void configureEdgeToEdge() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            Api30Insets.configure(getWindow());
+        } else {
+            getWindow().getDecorView().setSystemUiVisibility(
+                    View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                            | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                            | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION);
+            getWindow().setStatusBarColor(Color.TRANSPARENT);
+            getWindow().setNavigationBarColor(Color.TRANSPARENT);
+        }
+        getWindow().getDecorView().requestApplyInsets();
+    }
+
+    /** API 30 类型引用隔离，避免 Android 10 在加载 MainActivity 时解析新类。 */
+    private static final class Api30Insets {
+        static void configure(Window window) {
+            window.setDecorFitsSystemWindows(false);
+            window.setStatusBarColor(Color.TRANSPARENT);
+            window.setNavigationBarColor(Color.TRANSPARENT);
+            android.view.WindowInsetsController controller =
+                    window.getDecorView().getWindowInsetsController();
+            if (controller != null) {
+                controller.setSystemBarsAppearance(0,
+                        android.view.WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS
+                                | android.view.WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS);
+            }
+        }
+
+        static int[] systemBars(WindowInsets insets) {
+            Insets bars = insets.getInsets(WindowInsets.Type.systemBars());
+            return new int[]{bars.top, bars.bottom};
+        }
     }
 
     @Override
@@ -136,7 +234,18 @@ public class MainActivity extends Activity {
         super.onResume();
         startPassiveKeyService();
         bindPassiveKeyService();
+        if (KeyNotificationBridgeService.isNotificationListenerEnabled(this)
+                && !KeyNotificationBridgeService.isListenerConnected()) {
+            KeyNotificationBridgeService.ensureRebound(this);
+            KeyNotificationBridgeService.requestImmediateRecovery(this);
+        }
         parameterProbe.start();
+        if (pendingInstallAfterPermission && UpdateManager.canInstallPackages(this)) {
+            pendingInstallAfterPermission = false;
+            handler.postDelayed(this::promptInstallUpdate, 250L);
+        }
+        UpdateManager.maybeAutoCheck(this);
+        handleUpdateIntent(getIntent());
         handler.removeCallbacks(refreshRunnable);
         handler.post(refreshRunnable);
     }
@@ -167,6 +276,13 @@ public class MainActivity extends Activity {
         super.onDestroy();
     }
 
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        handleUpdateIntent(intent);
+    }
+
     /** 从实际安装包读取版本名和构建号；界面显示不硬编码，读取失败不影响服务。 */
     private String installedVersionLabel() {
         try {
@@ -180,274 +296,376 @@ public class MainActivity extends Activity {
         }
     }
 
-    /** 保持极简配置页，增加两个车控测试按钮和手动日志导出入口；标题区域显示实际版本。 */
+    /**
+     * Material 3 信息架构：固定顶部栏 + 三页底部导航。
+     * 概览只放当前状态与快捷动作，控制页放自动动作，维护页放权限、更新和诊断。
+     */
     private void buildUi() {
-        ScrollView scrollView = new ScrollView(this);
-        scrollView.setBackgroundColor(COLOR_BG);
+        LinearLayout screen = new LinearLayout(this);
+        screen.setOrientation(LinearLayout.VERTICAL);
+        screen.setBackgroundColor(COLOR_BG);
 
-        LinearLayout root = new LinearLayout(this);
-        root.setOrientation(LinearLayout.VERTICAL);
-        root.setPadding(dp(20), dp(48), dp(20), dp(32));
-        scrollView.addView(root, new ScrollView.LayoutParams(
+        topAppBar = buildTopAppBar();
+        screen.addView(topAppBar, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+
+        mainScrollView = new ScrollView(this);
+        mainScrollView.setFillViewport(true);
+        mainScrollView.setClipToPadding(false);
+        mainScrollView.setBackgroundColor(COLOR_BG);
+        LinearLayout pageRoot = new LinearLayout(this);
+        pageRoot.setOrientation(LinearLayout.VERTICAL);
+        pageRoot.setPadding(dp(18), dp(2), dp(18), dp(24));
+
+        overviewPage = page();
+        controlsPage = page();
+        maintenancePage = page();
+        controlsPage.setVisibility(View.GONE);
+        maintenancePage.setVisibility(View.GONE);
+        pageRoot.addView(overviewPage);
+        pageRoot.addView(controlsPage);
+        pageRoot.addView(maintenancePage);
+
+        buildOverviewContent();
+        buildControlsContent();
+        buildMaintenanceContent();
+
+        mainScrollView.addView(pageRoot, new ScrollView.LayoutParams(
                 ScrollView.LayoutParams.MATCH_PARENT,
                 ScrollView.LayoutParams.WRAP_CONTENT
         ));
+        screen.addView(mainScrollView, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
+        bottomNavigationBar = buildBottomNavigation();
+        screen.addView(bottomNavigationBar, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+        setContentView(screen);
+        screen.setOnApplyWindowInsetsListener((view, insets) -> {
+            int top;
+            int bottom;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                int[] bars = Api30Insets.systemBars(insets);
+                top = bars[0];
+                bottom = bars[1];
+            } else {
+                top = insets.getSystemWindowInsetTop();
+                bottom = insets.getSystemWindowInsetBottom();
+            }
+            topAppBar.setPadding(dp(20), top + dp(8), dp(20), dp(8));
+            bottomNavigationBar.setPadding(0, 0, 0, bottom);
+            return insets;
+        });
+        screen.requestApplyInsets();
+        setTab(TAB_OVERVIEW);
+    }
 
-        TextView title = text("银河无感钥匙", 26, COLOR_TEXT, Typeface.BOLD);
-        root.addView(title);
-        TextView subtitle = text("只保留：息屏靠近解锁 / 离开上锁", 14, COLOR_MUTED, Typeface.NORMAL);
+    private LinearLayout buildTopAppBar() {
+        LinearLayout bar = new LinearLayout(this);
+        bar.setOrientation(LinearLayout.HORIZONTAL);
+        bar.setGravity(Gravity.CENTER_VERTICAL);
+        bar.setPadding(dp(20), dp(8), dp(20), dp(8));
+
+        LinearLayout titles = new LinearLayout(this);
+        titles.setOrientation(LinearLayout.VERTICAL);
+        LinearLayout.LayoutParams titlesLp = new LinearLayout.LayoutParams(0,
+                LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
+        titles.addView(text("银河无感钥匙", 22, COLOR_TEXT, Typeface.BOLD));
+        TextView subtitle = text("无感进出 · 靠近解锁 / 离开上锁", 12, COLOR_MUTED, Typeface.NORMAL);
         LinearLayout.LayoutParams subtitleLp = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-        );
-        subtitleLp.topMargin = dp(4);
-        subtitleLp.bottomMargin = dp(6);
-        root.addView(subtitle, subtitleLp);
-
-        TextView versionView = text(installedVersionLabel(), 14, COLOR_ACCENT, Typeface.NORMAL);
-        versionView.setTextIsSelectable(true);
-        LinearLayout.LayoutParams versionLp = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-        versionLp.bottomMargin = dp(18);
-        root.addView(versionView, versionLp);
+        subtitleLp.topMargin = dp(2);
+        titles.addView(subtitle, subtitleLp);
+        bar.addView(titles, titlesLp);
 
-        LinearLayout statusCard = card();
-        statusCard.addView(text("运行状态", 16, COLOR_ACCENT, Typeface.BOLD));
-        statusView = text("", 14, COLOR_TEXT, Typeface.NORMAL);
-        LinearLayout.LayoutParams bodyLp = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-        );
-        bodyLp.topMargin = dp(10);
-        statusCard.addView(statusView, bodyLp);
-        root.addView(statusCard, cardLp());
+        topStatusChip = text("启动中", 12, COLOR_ON_PRIMARY_CONTAINER, Typeface.BOLD);
+        topStatusChip.setGravity(Gravity.CENTER);
+        topStatusChip.setPadding(dp(12), dp(7), dp(12), dp(7));
+        topStatusChip.setBackground(roundedBackground(COLOR_PRIMARY_CONTAINER, 999));
+        topStatusChip.setContentDescription("应用运行状态");
+        topStatusChip.setOnClickListener(v -> setTab(TAB_MAINTENANCE));
+        bar.addView(topStatusChip);
+        return bar;
+    }
 
+    private void buildOverviewContent() {
+        addSection(overviewPage, "实时状态");
+        LinearLayout hero = heroCard();
+        hero.addView(text("当前连接", 12, COLOR_PRIMARY, Typeface.BOLD));
+        heroTitleView = text("正在连接服务", 25, COLOR_TEXT, Typeface.BOLD);
+        LinearLayout.LayoutParams heroTitleLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        heroTitleLp.topMargin = dp(8);
+        hero.addView(heroTitleView, heroTitleLp);
+
+        LinearLayout signalRow = new LinearLayout(this);
+        signalRow.setGravity(Gravity.BOTTOM);
+        heroSignalView = text("无信号", 18, COLOR_TEXT, Typeface.BOLD);
+        heroSignalView.setGravity(Gravity.BOTTOM);
+        signalRow.addView(heroSignalView);
+        heroSignalUnitView = text("dBm", 14, COLOR_MUTED, Typeface.NORMAL);
+        heroSignalUnitView.setVisibility(View.GONE);
+        LinearLayout.LayoutParams unitLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        unitLp.leftMargin = dp(6);
+        unitLp.bottomMargin = dp(7);
+        signalRow.addView(heroSignalUnitView, unitLp);
+        heroZoneView = text("等待服务绑定", 13, COLOR_MUTED, Typeface.NORMAL);
+        LinearLayout.LayoutParams signalRowLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        signalRowLp.topMargin = dp(10);
+        hero.addView(signalRow, signalRowLp);
+        LinearLayout.LayoutParams zoneLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        zoneLp.topMargin = dp(4);
+        hero.addView(heroZoneView, zoneLp);
+
+        heroDetailView = text("服务启动后会自动扫描车辆", 13, COLOR_MUTED, Typeface.NORMAL);
+        LinearLayout.LayoutParams heroDetailLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        heroDetailLp.topMargin = dp(8);
+        hero.addView(heroDetailView, heroDetailLp);
+        addDivider(hero);
+        serviceMasterSwitch = switchToggle();
+        addSwitchRow(hero, "自动运行", "关闭后停止扫描与所有自动解闭锁动作",
+                serviceMasterSwitch, true);
+        serviceMasterSwitch.setOnCheckedChangeListener((buttonView, isChecked) -> {
+            if (settingSwitches) return;
+            if (service != null) {
+                service.setServiceEnabled(isChecked);
+            } else {
+                new VehicleIdentityStore(MainActivity.this).setServiceEnabled(isChecked);
+                if (isChecked) startPassiveKeyService();
+            }
+            refreshUi();
+        });
+        overviewPage.addView(hero, cardLp());
+
+        addSection(overviewPage, "快捷控制");
+        LinearLayout manualCard = card();
+        manualCard.addView(text("打开前请先在银河 App 连接车辆", 12, COLOR_MUTED, Typeface.NORMAL));
+        LinearLayout manualButtons = new LinearLayout(this);
+        manualButtons.setOrientation(LinearLayout.HORIZONTAL);
+        manualUnlockButton = filledButton("解锁");
+        manualLockButton = tonalButton("上锁");
+        manualUnlockButton.setOnClickListener(view -> requestManualControl(PassiveKeyLogic.Action.UNLOCK));
+        manualLockButton.setOnClickListener(view -> requestManualControl(PassiveKeyLogic.Action.LOCK));
+        LinearLayout.LayoutParams unlockButtonLp = new LinearLayout.LayoutParams(0, dp(50), 1f);
+        unlockButtonLp.rightMargin = dp(5);
+        LinearLayout.LayoutParams lockButtonLp = new LinearLayout.LayoutParams(0, dp(50), 1f);
+        lockButtonLp.leftMargin = dp(5);
+        manualButtons.addView(manualUnlockButton, unlockButtonLp);
+        manualButtons.addView(manualLockButton, lockButtonLp);
+        LinearLayout.LayoutParams manualButtonsLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(50));
+        manualButtonsLp.topMargin = dp(14);
+        manualCard.addView(manualButtons, manualButtonsLp);
+        manualControlView = text("等待服务绑定", 13, COLOR_MUTED, Typeface.NORMAL);
+        LinearLayout.LayoutParams manualStatusLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        manualStatusLp.topMargin = dp(12);
+        manualCard.addView(manualControlView, manualStatusLp);
+        overviewPage.addView(manualCard, cardLp());
+
+        addSection(overviewPage, "本车");
+        LinearLayout vehicleCard = card();
+        LinearLayout vehicleHeader = new LinearLayout(this);
+        vehicleHeader.setGravity(Gravity.CENTER_VERTICAL);
+        overviewVehicleTitleView = text("尚未识别本车", 18, COLOR_TEXT, Typeface.BOLD);
+        vehicleHeader.addView(overviewVehicleTitleView, new LinearLayout.LayoutParams(0,
+                LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        TextView vehicleBadge = text("本车", 11, COLOR_ON_PRIMARY_CONTAINER, Typeface.BOLD);
+        vehicleBadge.setPadding(dp(9), dp(4), dp(9), dp(4));
+        vehicleBadge.setBackground(roundedBackground(COLOR_PRIMARY_CONTAINER, 999));
+        vehicleHeader.addView(vehicleBadge);
+        vehicleCard.addView(vehicleHeader);
+        overviewVehicleDetailView = text("保持应用运行，让银河连接车辆一次即可学习", 13, COLOR_MUTED,
+                Typeface.NORMAL);
+        LinearLayout.LayoutParams vehicleDetailLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        vehicleDetailLp.topMargin = dp(8);
+        vehicleCard.addView(overviewVehicleDetailView, vehicleDetailLp);
+        overviewVehicleMetaView = text("", 12, COLOR_PRIMARY, Typeface.NORMAL);
+        LinearLayout.LayoutParams vehicleMetaLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        vehicleMetaLp.topMargin = dp(8);
+        vehicleCard.addView(overviewVehicleMetaView, vehicleMetaLp);
+        overviewPage.addView(vehicleCard, cardLp());
+
+        addSection(overviewPage, "系统状态");
+        overviewHealthCard = clickableCard();
+        LinearLayout healthHeader = new LinearLayout(this);
+        healthHeader.setGravity(Gravity.CENTER_VERTICAL);
+        overviewHealthTitleView = text("正在检查系统状态", 16, COLOR_TEXT, Typeface.BOLD);
+        healthHeader.addView(overviewHealthTitleView, new LinearLayout.LayoutParams(0,
+                LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        healthHeader.addView(text("›", 28, COLOR_MUTED, Typeface.NORMAL));
+        overviewHealthCard.addView(healthHeader);
+        overviewHealthDetailView = text("", 13, COLOR_MUTED, Typeface.NORMAL);
+        LinearLayout.LayoutParams healthDetailLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        healthDetailLp.topMargin = dp(8);
+        overviewHealthCard.addView(overviewHealthDetailView, healthDetailLp);
+        overviewHealthCard.setOnClickListener(v ->
+                startActivity(new Intent(MainActivity.this, PermissionGuideActivity.class)));
+        overviewPage.addView(overviewHealthCard, cardLp());
+    }
+
+    private void buildControlsContent() {
+        addSection(controlsPage, "自动动作");
+        LinearLayout automationCard = card();
+        autoUnlockSwitch = switchToggle();
+        autoLockSwitch = switchToggle();
+        blockChargingSwitch = switchToggle();
+        autoUnlockSwitch.setOnCheckedChangeListener((buttonView, isChecked) -> {
+            if (settingSwitches) return;
+            if (service != null) service.setAutoUnlockEnabled(isChecked);
+        });
+        autoLockSwitch.setOnCheckedChangeListener((buttonView, isChecked) -> {
+            if (settingSwitches) return;
+            if (service != null) service.setAutoLockEnabled(isChecked);
+        });
+        blockChargingSwitch.setOnCheckedChangeListener((buttonView, isChecked) -> {
+            if (settingSwitches) return;
+            if (service != null) {
+                service.setBlockWhenChargingEnabled(isChecked);
+            } else {
+                new VehicleIdentityStore(MainActivity.this).setBlockWhenChargingEnabled(isChecked);
+            }
+            refreshUi();
+        });
+        addSwitchRow(automationCard, "靠近自动解锁", "接近信号达到阈值时，只解锁一次",
+                autoUnlockSwitch, false);
+        addSwitchRow(automationCard, "离开自动上锁", "持续远离达到确认时间后上锁，断连不会误锁",
+                autoLockSwitch, false);
+        addSwitchRow(automationCard, "插线禁控", "有线充电时禁止自动与手动解闭锁",
+                blockChargingSwitch, true);
+        controlsPage.addView(automationCard, cardLp());
+
+        addSection(controlsPage, "距离判定");
+        LinearLayout thresholdCard = card();
+        thresholdCard.addView(text("当前触发阈值", 16, COLOR_TEXT, Typeface.BOLD));
+        thresholdView = text("", 14, COLOR_TEXT, Typeface.NORMAL);
+        LinearLayout.LayoutParams thresholdLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        thresholdLp.topMargin = dp(10);
+        thresholdCard.addView(thresholdView, thresholdLp);
+        Button customThresholdBtn = tonalButton("调整靠近/离开阈值");
+        customThresholdBtn.setOnClickListener(v -> promptCustomThresholds());
+        thresholdCard.addView(customThresholdBtn, buttonLp());
+        thresholdCard.addView(text("RSSI 不对应固定米数；更负代表更弱，调整后立即生效。",
+                12, COLOR_MUTED, Typeface.NORMAL), supportLp());
+        controlsPage.addView(thresholdCard, cardLp());
+
+        addSection(controlsPage, "安全边界");
+        LinearLayout safetyCard = card();
+        safetyCard.addView(text("宁可少动作，也不在车旁误锁", 15, COLOR_TEXT, Typeface.BOLD));
+        safetyCard.addView(text(
+                "服务总开关关闭、插线禁控、行驶保护或官方钥匙未就绪时，不会发送车锁命令。"
+                        + "手动操作也受这些保护约束。",
+                13, COLOR_MUTED, Typeface.NORMAL), supportLp());
+        controlsPage.addView(safetyCard, cardLp());
+    }
+
+    private void buildMaintenanceContent() {
+        addSection(maintenancePage, "授权与系统");
+        LinearLayout permissionCard = card();
+        permissionCard.addView(text("授权与运行全检", 17, COLOR_TEXT, Typeface.BOLD));
+        permissionView = text("正在读取权限与运行状态...", 13, COLOR_MUTED, Typeface.NORMAL);
+        permissionCard.addView(permissionView, supportLp());
+        permissionGuideButton = tonalButton("打开授权与运行全检");
+        permissionGuideButton.setOnClickListener(v ->
+                startActivity(new Intent(MainActivity.this, PermissionGuideActivity.class)));
+        permissionCard.addView(permissionGuideButton, buttonLp());
+        maintenancePage.addView(permissionCard, cardLp());
+
+        addSection(maintenancePage, "本车识别");
+        LinearLayout identityCard = card();
+        identityCard.addView(text("本车身份", 16, COLOR_TEXT, Typeface.BOLD));
+        identityView = text("", 13, COLOR_MUTED, Typeface.NORMAL);
+        identityCard.addView(identityView, supportLp());
+        Button bindSuffixButton = outlinedButton("设置本车尾号匹配（可选）");
+        bindSuffixButton.setOnClickListener(v -> promptBindByVinSuffix());
+        identityCard.addView(bindSuffixButton, buttonLp());
+        Button resetButton = dangerOutlinedButton("重新学习本车");
+        resetButton.setOnClickListener(v -> confirmResetIdentity());
+        identityCard.addView(resetButton, buttonLp());
+        maintenancePage.addView(identityCard, cardLp());
+
+        addSection(maintenancePage, "应用维护");
+        LinearLayout updateCard = card();
+        updateCard.addView(text("应用更新", 17, COLOR_TEXT, Typeface.BOLD));
+        updateStatusView = text("读取更新状态...", 13, COLOR_MUTED, Typeface.NORMAL);
+        updateCard.addView(updateStatusView, supportLp());
+        autoUpdateSwitch = switchToggle();
+        settingUpdateSwitch = true;
+        autoUpdateSwitch.setChecked(UpdateManager.isAutoEnabled(this));
+        settingUpdateSwitch = false;
+        autoUpdateSwitch.setOnCheckedChangeListener((buttonView, isChecked) -> {
+            if (settingUpdateSwitch) return;
+            UpdateManager.setAutoEnabled(this, isChecked);
+            if (isChecked) UpdateManager.maybeAutoCheck(this);
+            refreshUi();
+        });
+        addDivider(updateCard);
+        addSwitchRow(updateCard, "自动检查更新", "默认每 1 小时检查；有新版自动下载",
+                autoUpdateSwitch, false);
+        updateActionButton = tonalButton("立即检查更新");
+        updateActionButton.setOnClickListener(v -> handleUpdateAction());
+        updateCard.addView(updateActionButton, buttonLp());
+        updateCard.addView(text(
+                "只从 GitHub Releases 下载。安装前校验 SHA-256、包名、构建号和当前签名。",
+                12, COLOR_MUTED, Typeface.NORMAL), supportLp());
+        maintenancePage.addView(updateCard, cardLp());
+
+        addSection(maintenancePage, "诊断工具");
         LinearLayout rssiChartCard = card();
-        rssiChartCard.addView(text("蓝牙信号实时曲线", 16, COLOR_ACCENT, Typeface.BOLD));
+        rssiChartCard.addView(text("蓝牙信号实时曲线", 16, COLOR_TEXT, Typeface.BOLD));
         rssiChartView = new RssiChartView(this);
         LinearLayout.LayoutParams chartLp = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, dp(220));
-        chartLp.topMargin = dp(8);
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(190));
+        chartLp.topMargin = dp(10);
         rssiChartCard.addView(rssiChartView, chartLp);
-        rssiChartSummaryView = text("等待服务绑定", 13, COLOR_TEXT, Typeface.NORMAL);
+        rssiChartSummaryView = text("等待服务绑定", 12, COLOR_MUTED, Typeface.NORMAL);
         LinearLayout.LayoutParams chartSummaryLp = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
         chartSummaryLp.topMargin = dp(8);
         rssiChartCard.addView(rssiChartSummaryView, chartSummaryLp);
-        rssiChartCard.addView(text("蓝线：原始RSSI · 黄线：平滑RSSI · 绿/红虚线：当前解锁/上锁阈值；无信号处断开。",
-                12, COLOR_MUTED, Typeface.NORMAL), chartSummaryLp);
-        root.addView(rssiChartCard, cardLp());
+        rssiChartCard.addView(text("蓝线原始 RSSI · 黄线平滑 RSSI · 绿/红虚线为解锁/上锁阈值",
+                11, COLOR_MUTED, Typeface.NORMAL), supportLp());
+        maintenancePage.addView(rssiChartCard, cardLp());
+
+        LinearLayout runtimeCard = card();
+        runtimeCard.addView(text("运行详情", 16, COLOR_TEXT, Typeface.BOLD));
+        statusView = text("", 12, COLOR_MUTED, Typeface.NORMAL);
+        statusView.setLineSpacing(dp(2), 1.08f);
+        runtimeCard.addView(statusView, supportLp());
+        maintenancePage.addView(runtimeCard, cardLp());
 
         LinearLayout vehicleParamCard = card();
-        vehicleParamCard.addView(text("车机参数（只读）", 16, COLOR_ACCENT, Typeface.BOLD));
-        vehicleParamView = text("等待读取银河官方AIDL...", 13, COLOR_TEXT, Typeface.NORMAL);
-        vehicleParamCard.addView(vehicleParamView, bodyLp);
-        Button refreshVehicleParamButton = button("重新读取车机参数（只读）");
+        vehicleParamCard.addView(text("车机参数（只读）", 16, COLOR_TEXT, Typeface.BOLD));
+        vehicleParamView = text("等待读取银河官方 AIDL...", 12, COLOR_MUTED, Typeface.NORMAL);
+        vehicleParamCard.addView(vehicleParamView, supportLp());
+        Button refreshVehicleParamButton = outlinedButton("重新读取车机参数");
         refreshVehicleParamButton.setOnClickListener(v -> {
             parameterProbe.queryReadOnly();
             refreshUi();
         });
         vehicleParamCard.addView(refreshVehicleParamButton, buttonLp());
-        LinearLayout.LayoutParams vehicleParamHintLp = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-        vehicleParamHintLp.topMargin = dp(8);
-        vehicleParamCard.addView(text(
-                "只发送0x0501原生PE状态查询、0x0121车况查询和0x0131标定读取请求；记录0x0132原始回执。"
-                        + "不修改PE开关、距离档位或任何车机参数。银河L6/DK1.5若不支持0x0131，会记录为无回执而不是猜值。",
-                12, COLOR_MUTED, Typeface.NORMAL), vehicleParamHintLp);
-        root.addView(vehicleParamCard, cardLp());
-
-        LinearLayout manualCard = card();
-        manualCard.addView(text("手动测试", 16, COLOR_ACCENT, Typeface.BOLD));
-        LinearLayout manualButtons = new LinearLayout(this);
-        manualButtons.setOrientation(LinearLayout.HORIZONTAL);
-        manualUnlockButton = button("解锁");
-        manualLockButton = button("上锁");
-        manualUnlockButton.setOnClickListener(view -> requestManualControl(PassiveKeyLogic.Action.UNLOCK));
-        manualLockButton.setOnClickListener(view -> requestManualControl(PassiveKeyLogic.Action.LOCK));
-        LinearLayout.LayoutParams unlockButtonLp = new LinearLayout.LayoutParams(0, dp(48), 1f);
-        unlockButtonLp.rightMargin = dp(6);
-        LinearLayout.LayoutParams lockButtonLp = new LinearLayout.LayoutParams(0, dp(48), 1f);
-        lockButtonLp.leftMargin = dp(6);
-        manualButtons.addView(manualUnlockButton, unlockButtonLp);
-        manualButtons.addView(manualLockButton, lockButtonLp);
-        LinearLayout.LayoutParams manualButtonsLp = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, dp(48));
-        manualButtonsLp.topMargin = dp(10);
-        manualCard.addView(manualButtons, manualButtonsLp);
-        manualControlView = text("等待服务绑定", 13, COLOR_TEXT, Typeface.NORMAL);
-        manualCard.addView(manualControlView, bodyLp);
-        LinearLayout.LayoutParams manualHintLp = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-        manualHintLp.topMargin = dp(8);
-        manualCard.addView(text("测试银河当前连接的车辆；不受距离阈值或自动动作分开关限制，不排队重发。总开关、插线禁控与行驶保护仍生效。",
-                12, COLOR_MUTED, Typeface.NORMAL), manualHintLp);
-        root.addView(manualCard, cardLp());
-
-        LinearLayout identityCard = card();
-        identityCard.addView(text("本车识别", 16, COLOR_ACCENT, Typeface.BOLD));
-        identityView = text("", 14, COLOR_TEXT, Typeface.NORMAL);
-        identityCard.addView(identityView, bodyLp);
-
-        TextView identityHint = text(
-                "首次使用：先授权并保持本应用运行，再用银河连接车辆。银河已连接时车机可能停止广播；若系统未提供地址，先在银河断开蓝牙钥匙再连接一次。",
-                12, COLOR_MUTED, Typeface.NORMAL
-        );
-        LinearLayout.LayoutParams hintLp = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-        );
-        hintLp.topMargin = dp(10);
-        identityCard.addView(identityHint, hintLp);
-
-        Button bindSuffixButton = button("设置本车尾号匹配（可选）");
-        bindSuffixButton.setOnClickListener(v -> promptBindByVinSuffix());
-        identityCard.addView(bindSuffixButton, buttonLp());
-
-        Button resetButton = button("重新学习本车");
-        resetButton.setOnClickListener(v -> confirmResetIdentity());
-        identityCard.addView(resetButton, buttonLp());
-        root.addView(identityCard, cardLp());
-
-        LinearLayout switchCard = card();
-        switchCard.addView(text("服务与自动动作", 16, COLOR_ACCENT, Typeface.BOLD));
-        serviceMasterSwitch = switchRow("无感进出服务总开关", "关闭后立即停止扫描与一切解闭锁操作");
-        autoUnlockSwitch = switchRow("靠近自动解锁", "接近信号达到阈值时，只解锁一次");
-        autoLockSwitch = switchRow("离开自动上锁", "持续远离达到确认秒数后上锁，断连不会误锁");
-        blockChargingSwitch = switchRow("插数据线/充电线后禁止解闭锁", "USB/AC 有线充电时视为在车内或调试中，禁止自动与手动解闭锁");
-        switchCard.addView(serviceMasterSwitch);
-        switchCard.addView(autoUnlockSwitch);
-        switchCard.addView(autoLockSwitch);
-        switchCard.addView(blockChargingSwitch);
-        serviceMasterSwitch.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
-            @Override
-            public void onCheckedChanged(CompoundButton buttonView, boolean isChecked) {
-                if (settingSwitches) return;
-                if (service != null) {
-                    service.setServiceEnabled(isChecked);
-                } else {
-                    new VehicleIdentityStore(MainActivity.this).setServiceEnabled(isChecked);
-                    if (isChecked) startPassiveKeyService();
-                }
-                refreshUi();
-            }
-        });
-        autoUnlockSwitch.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
-            @Override
-            public void onCheckedChanged(CompoundButton buttonView, boolean isChecked) {
-                if (settingSwitches) return;
-                if (service != null) service.setAutoUnlockEnabled(isChecked);
-            }
-        });
-        autoLockSwitch.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
-            @Override
-            public void onCheckedChanged(CompoundButton buttonView, boolean isChecked) {
-                if (settingSwitches) return;
-                if (service != null) service.setAutoLockEnabled(isChecked);
-            }
-        });
-        blockChargingSwitch.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
-            @Override
-            public void onCheckedChanged(CompoundButton buttonView, boolean isChecked) {
-                if (settingSwitches) return;
-                if (service != null) {
-                    service.setBlockWhenChargingEnabled(isChecked);
-                } else {
-                    new VehicleIdentityStore(MainActivity.this).setBlockWhenChargingEnabled(isChecked);
-                }
-                refreshUi();
-            }
-        });
-
-        thresholdView = text("", 13, COLOR_TEXT, Typeface.NORMAL);
-        LinearLayout.LayoutParams threshLp = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-        );
-        threshLp.topMargin = dp(8);
-        switchCard.addView(thresholdView, threshLp);
-
-        Button customThresholdBtn = button("自定义靠近/离开阈值");
-        customThresholdBtn.setOnClickListener(v -> promptCustomThresholds());
-        switchCard.addView(customThresholdBtn, buttonLp());
-        root.addView(switchCard, cardLp());
-
-        LinearLayout permissionCard = card();
-        permissionCard.addView(text("权限与保活", 16, COLOR_ACCENT, Typeface.BOLD));
-        permissionView = text("", 14, COLOR_TEXT, Typeface.NORMAL);
-        permissionCard.addView(permissionView, bodyLp);
-
-        Button btButton = button("授予蓝牙权限");
-        btButton.setOnClickListener(v -> requestBluetoothPermissions());
-        permissionCard.addView(btButton, buttonLp());
-
-        notificationPermissionButton = button("授予系统通知权限");
-        notificationPermissionButton.setOnClickListener(v -> requestNotificationPermission());
-        permissionCard.addView(notificationPermissionButton, buttonLp());
-
-        Button notificationButton = button("开启通知读取权限");
-        notificationButton.setOnClickListener(v ->
-                startActivity(new Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)));
-        permissionCard.addView(notificationButton, buttonLp());
-
-        Button repairNotificationButton = button("修复通知监听");
-        repairNotificationButton.setOnClickListener(v -> openNotificationListenerSettings());
-        permissionCard.addView(repairNotificationButton, buttonLp());
-
-        batteryWhitelistButton = button("加入电池白名单");
-        batteryWhitelistButton.setOnClickListener(v -> requestBatteryWhitelist());
-        permissionCard.addView(batteryWhitelistButton, buttonLp());
-
-        Button lockBackgroundButton = button("锁定后台（最近任务说明）");
-        lockBackgroundButton.setOnClickListener(v -> showBackgroundLockGuide());
-        permissionCard.addView(lockBackgroundButton, buttonLp());
-
-        Button backgroundButton = button("打开后台高耗电设置");
-        backgroundButton.setOnClickListener(v -> openBackgroundHighUsageSettings());
-        permissionCard.addView(backgroundButton, buttonLp());
-        root.addView(permissionCard, cardLp());
-
-        LinearLayout helpCard = card();
-        helpCard.addView(text("使用说明", 16, COLOR_ACCENT, Typeface.BOLD));
-        TextView help = text(
-                "1. 安装并登录银河 App，完成蓝牙钥匙绑定。\n"
-                        + "2. 靠近车辆，让银河 App 成功连接一次。\n"
-                        + "3. 本应用自动识别本车蓝牙，不需要填写 VIN 或 MAC。\n"
-                        + "4. 保持本应用后台运行；息屏放口袋，靠近解锁，离开上锁。\n"
-                        + "5. 若系统清理后台，请在电池设置里允许本应用后台高耗电。",
-                13, COLOR_TEXT, Typeface.NORMAL
-        );
-        LinearLayout.LayoutParams helpLp = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-        );
-        helpLp.topMargin = dp(10);
-        helpCard.addView(help, helpLp);
-        root.addView(helpCard, cardLp());
+        vehicleParamCard.addView(text("只读查询 PE 状态、车况和标定；不修改任何车机参数。",
+                11, COLOR_MUTED, Typeface.NORMAL), supportLp());
+        maintenancePage.addView(vehicleParamCard, cardLp());
 
         LinearLayout logCard = card();
-        logCard.addView(text("最近 10 条关键日志 (最新在上)", 16, COLOR_ACCENT, Typeface.BOLD));
-        logView = text("", 11, COLOR_MUTED, Typeface.NORMAL);
+        logCard.addView(text("最近关键日志", 16, COLOR_TEXT, Typeface.BOLD));
+        logView = text("", 10, COLOR_MUTED, Typeface.NORMAL);
         logView.setTypeface(Typeface.MONOSPACE);
-        logView.setLineSpacing(0f, 1.15f);
+        logView.setLineSpacing(0f, 1.18f);
         logView.setMaxLines(12);
-        LinearLayout.LayoutParams logLp = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-        );
-        logLp.topMargin = dp(10);
-        logCard.addView(logView, logLp);
-
-        LinearLayout.LayoutParams logHintLp = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-        logHintLp.topMargin = dp(10);
-        logCard.addView(text("后台自动记录判定原因、连接耗时及重启信息，最多 4 MiB；导出时隐藏车辆地址与尾号。",
-                12, COLOR_MUTED, Typeface.NORMAL), logHintLp);
-        exportLogButton = button("导出排查日志（ZIP）");
+        logCard.addView(logView, supportLp());
+        exportLogButton = tonalButton("导出排查日志（ZIP）");
         exportLogButton.setOnClickListener(view -> chooseLogExportDestination());
         logCard.addView(exportLogButton, buttonLp());
-
-        Button clearLogBtn = button("清空日志");
+        Button clearLogBtn = outlinedButton("清空日志");
         clearLogBtn.setOnClickListener(v -> {
             if (service != null) {
                 service.clearLogs();
@@ -455,9 +673,144 @@ public class MainActivity extends Activity {
             }
         });
         logCard.addView(clearLogBtn, buttonLp());
-        root.addView(logCard, cardLp());
+        maintenancePage.addView(logCard, cardLp());
 
-        setContentView(scrollView);
+        addSection(maintenancePage, "关于");
+        LinearLayout aboutCard = card();
+        aboutCard.addView(text("银河无感钥匙", 15, COLOR_TEXT, Typeface.BOLD));
+        TextView version = text(installedVersionLabel(), 12, COLOR_MUTED, Typeface.NORMAL);
+        version.setTextIsSelectable(true);
+        aboutCard.addView(version, supportLp());
+        maintenancePage.addView(aboutCard, cardLp());
+    }
+
+    private LinearLayout buildBottomNavigation() {
+        LinearLayout outer = new LinearLayout(this);
+        outer.setOrientation(LinearLayout.VERTICAL);
+        outer.setBackgroundColor(COLOR_BG);
+        View divider = new View(this);
+        divider.setBackgroundColor(COLOR_OUTLINE);
+        outer.addView(divider, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(1)));
+
+        LinearLayout bar = new LinearLayout(this);
+        bar.setOrientation(LinearLayout.HORIZONTAL);
+        bar.setGravity(Gravity.CENTER);
+        bar.setPadding(dp(10), dp(6), dp(10), dp(8));
+
+        NavItemView overview = navItem(R.drawable.ic_nav_overview, "概览");
+        NavItemView controls = navItem(R.drawable.ic_nav_controls, "控制");
+        NavItemView maintenance = navItem(R.drawable.ic_nav_maintenance, "维护");
+        overviewTab = overview.container;
+        overviewTabIconContainer = overview.iconContainer;
+        overviewTabIcon = overview.icon;
+        overviewTabLabel = overview.label;
+        controlsTab = controls.container;
+        controlsTabIconContainer = controls.iconContainer;
+        controlsTabIcon = controls.icon;
+        controlsTabLabel = controls.label;
+        maintenanceTab = maintenance.container;
+        maintenanceTabIconContainer = maintenance.iconContainer;
+        maintenanceTabIcon = maintenance.icon;
+        maintenanceTabLabel = maintenance.label;
+        maintenanceBadge = maintenance.badge;
+        overviewTab.setOnClickListener(v -> setTab(TAB_OVERVIEW));
+        controlsTab.setOnClickListener(v -> setTab(TAB_CONTROLS));
+        maintenanceTab.setOnClickListener(v -> setTab(TAB_MAINTENANCE));
+        bar.addView(overviewTab, new LinearLayout.LayoutParams(0, dp(58), 1f));
+        bar.addView(controlsTab, new LinearLayout.LayoutParams(0, dp(58), 1f));
+        bar.addView(maintenanceTab, new LinearLayout.LayoutParams(0, dp(58), 1f));
+        outer.addView(bar);
+        return outer;
+    }
+
+    private NavItemView navItem(int iconRes, String labelText) {
+        LinearLayout container = new LinearLayout(this);
+        container.setOrientation(LinearLayout.VERTICAL);
+        container.setGravity(Gravity.CENTER);
+        container.setClickable(true);
+        container.setFocusable(true);
+        container.setContentDescription(labelText);
+        container.setPadding(dp(8), dp(5), dp(8), dp(5));
+
+        FrameLayout iconHolder = new FrameLayout(this);
+        ImageView icon = new ImageView(this);
+        icon.setImageResource(iconRes);
+        FrameLayout.LayoutParams iconLp = new FrameLayout.LayoutParams(dp(24), dp(24));
+        iconLp.gravity = Gravity.CENTER;
+        iconHolder.addView(icon, iconLp);
+        View badge = new View(this);
+        badge.setBackground(roundedBackground(COLOR_RED, 999));
+        FrameLayout.LayoutParams badgeLp = new FrameLayout.LayoutParams(dp(8), dp(8));
+        badgeLp.gravity = Gravity.END | Gravity.TOP;
+        badge.setVisibility(View.GONE);
+        iconHolder.addView(badge, badgeLp);
+        container.addView(iconHolder, new LinearLayout.LayoutParams(dp(58), dp(32)));
+
+        TextView label = text(labelText, 11, COLOR_MUTED, Typeface.BOLD);
+        label.setGravity(Gravity.CENTER);
+        LinearLayout.LayoutParams labelLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        labelLp.topMargin = dp(3);
+        container.addView(label, labelLp);
+        return new NavItemView(container, iconHolder, icon, label, badge);
+    }
+
+    private void setTab(int tab) {
+        activeTab = tab;
+        overviewPage.setVisibility(tab == TAB_OVERVIEW ? View.VISIBLE : View.GONE);
+        controlsPage.setVisibility(tab == TAB_CONTROLS ? View.VISIBLE : View.GONE);
+        maintenancePage.setVisibility(tab == TAB_MAINTENANCE ? View.VISIBLE : View.GONE);
+        styleNavItem(overviewTab, overviewTabIconContainer, overviewTabIcon, overviewTabLabel,
+                tab == TAB_OVERVIEW);
+        styleNavItem(controlsTab, controlsTabIconContainer, controlsTabIcon, controlsTabLabel,
+                tab == TAB_CONTROLS);
+        styleNavItem(maintenanceTab, maintenanceTabIconContainer, maintenanceTabIcon, maintenanceTabLabel,
+                tab == TAB_MAINTENANCE);
+        if (mainScrollView != null) mainScrollView.scrollTo(0, 0);
+    }
+
+    private void styleNavItem(LinearLayout item, FrameLayout iconContainer,
+                              ImageView icon, TextView label, boolean selected) {
+        item.setBackground(null);
+        iconContainer.setBackground(selected
+                ? roundedBackground(COLOR_PRIMARY_CONTAINER, 999) : null);
+        icon.setColorFilter(selected ? COLOR_PRIMARY : COLOR_MUTED);
+        label.setTextColor(selected ? COLOR_PRIMARY : COLOR_MUTED);
+    }
+
+    private static final class NavItemView {
+        final LinearLayout container;
+        final FrameLayout iconContainer;
+        final ImageView icon;
+        final TextView label;
+        final View badge;
+
+        NavItemView(LinearLayout container, FrameLayout iconContainer,
+                    ImageView icon, TextView label, View badge) {
+            this.container = container;
+            this.iconContainer = iconContainer;
+            this.icon = icon;
+            this.label = label;
+            this.badge = badge;
+        }
+    }
+
+    private LinearLayout page() {
+        LinearLayout page = new LinearLayout(this);
+        page.setOrientation(LinearLayout.VERTICAL);
+        page.setLayoutParams(new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+        return page;
+    }
+
+    private void addSection(LinearLayout parent, String title) {
+        TextView label = text(title, 13, COLOR_PRIMARY, Typeface.BOLD);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        lp.topMargin = dp(18);
+        lp.bottomMargin = dp(8);
+        parent.addView(label, lp);
     }
 
     /** 刷新独立的官方连接、测距状态和已交付次数，不把尝试次数当作锁车成功。 */
@@ -472,14 +825,14 @@ public class MainActivity extends Activity {
         boolean batteryWhitelisted = isBatteryWhitelisted();
         boolean geelyInstalled = GeelyBridge.isGeelyInstalled(this);
         boolean btPermission = hasBluetoothPermissions();
-        if (notificationPermissionButton != null) {
-            notificationPermissionButton.setVisibility(notificationRuntimePermission
-                    ? View.GONE : View.VISIBLE);
-        }
-        if (batteryWhitelistButton != null) {
-            batteryWhitelistButton.setText(batteryWhitelisted
-                    ? "电池白名单：已加入" : "加入电池白名单");
-        }
+        PermissionAudit.Result audit = PermissionAudit.evaluate(PermissionStatus.read(this, status));
+        UpdateManager.Snapshot update = UpdateManager.snapshot(this);
+        permissionView.setText(permissionCardText(audit));
+        permissionGuideButton.setText(audit.essentialReady()
+                ? "查看授权与运行全检"
+                : "立即处理 " + audit.pendingRequired() + " 项");
+        refreshUpdateUi(update);
+        refreshOverview(status, audit, update);
 
         if (status == null) {
             statusView.setText("服务：未绑定\n"
@@ -541,17 +894,247 @@ public class MainActivity extends Activity {
             logView.setText(service.getLogText());
         }
 
-        permissionView.setText(
-                "蓝牙权限：" + yesNo(btPermission) + "\n"
-                        + "通知监听：" + notificationStatusText(notificationAccess, listenerConnected) + "\n"
-                        + "系统通知权限：" + yesNo(notificationRuntimePermission) + "\n"
-                        + (notificationAccess && !listenerConnected
-                        ? "系统已授权但没有绑定监听，请点“修复通知监听”，在系统页关闭再开启本应用。\n"
-                        : notificationAccess ? "" : "通知使用权是必需权限，否则无法读取和点击银河通知按钮。\n")
-                        + "电池白名单：" + yesNo(batteryWhitelisted) + "\n"
-                        + "银河 App：" + (geelyInstalled ? "已安装" : "未安装")
-        );
         if (vehicleParamView != null) vehicleParamView.setText(VehicleParameterProbe.loadDisplay(this));
+    }
+
+    /** 更新卡只显示当前真实状态；自动检查默认开启，周期固定为一小时。 */
+    private void refreshUpdateUi(UpdateManager.Snapshot update) {
+        if (updateStatusView == null || updateActionButton == null || autoUpdateSwitch == null) return;
+        settingUpdateSwitch = true;
+        autoUpdateSwitch.setChecked(UpdateManager.isAutoEnabled(this));
+        settingUpdateSwitch = false;
+        String checked = update.lastCheckAtMs <= 0L ? "尚未检查"
+                : "上次检查：" + new SimpleDateFormat("MM-dd HH:mm", Locale.ROOT)
+                .format(new Date(update.lastCheckAtMs));
+        updateStatusView.setText(update.status + "\n" + checked);
+        if (update.checking) {
+            updateActionButton.setText("正在检查更新…");
+            updateActionButton.setEnabled(false);
+        } else if (update.downloading) {
+            updateActionButton.setText("正在下载更新…");
+            updateActionButton.setEnabled(false);
+        } else if (update.updateReady) {
+            updateActionButton.setText("安装 v" + update.downloadedVersionName);
+            updateActionButton.setEnabled(true);
+        } else {
+            updateActionButton.setText("立即检查更新");
+            updateActionButton.setEnabled(true);
+        }
+    }
+
+    /** Material 3 首页只显示“现在是否正常”，诊断细节留在维护页。 */
+    private void refreshOverview(PassiveKeyService.Status status, PermissionAudit.Result audit,
+                                 UpdateManager.Snapshot update) {
+        if (heroTitleView == null) return;
+        boolean freshSignal = status != null && status.rssi > -127 && status.rssi < 0
+                && status.lastSampleAgeMs >= 0L && status.lastSampleAgeMs <= 3000L;
+        if (status == null) {
+            heroTitleView.setText("正在连接服务");
+            renderHeroSignal(false, 0);
+            heroZoneView.setText("等待服务绑定");
+            heroDetailView.setText("正在启动扫描与通知桥接");
+        } else if (!status.serviceEnabled) {
+            heroTitleView.setText("无感服务已暂停");
+            renderHeroSignal(false, 0);
+            heroZoneView.setText("自动解闭锁已关闭");
+            heroDetailView.setText("打开下方“自动运行”即可恢复扫描");
+        } else if (!status.bluetoothOn) {
+            heroTitleView.setText("手机蓝牙未开启");
+            renderHeroSignal(false, 0);
+            heroZoneView.setText("无法发现车辆");
+            heroDetailView.setText("请先打开手机蓝牙，再等待车辆广播");
+        } else if (status.geelyConnected) {
+            heroTitleView.setText("银河钥匙已连接");
+            renderHeroSignal(freshSignal, status.rssi);
+            heroZoneView.setText(status.zone == null || status.zone.isEmpty()
+                    ? "连接态测距中" : displayZone(status.zone));
+            heroDetailView.setText(status.gattConnected
+                    ? "连接态 RSSI 已挂载 · 自动动作保持运行"
+                    : "银河已连接，正在建立本应用测距通道");
+        } else {
+            heroTitleView.setText(status.scanning ? "正在等待车辆" : "服务正在恢复扫描");
+            renderHeroSignal(freshSignal, status.rssi);
+            heroZoneView.setText(status.zone == null || status.zone.isEmpty()
+                    ? "附近暂无车辆广播" : displayZone(status.zone));
+            heroDetailView.setText("自动解锁" + (status.autoUnlock ? "开" : "关")
+                    + " · 自动上锁" + (status.autoLock ? "开" : "关")
+                    + (status.wiredCharging && status.blockWhenCharging ? " · 插线禁控中" : ""));
+        }
+
+        if (status != null && status.identityLearned) {
+            overviewVehicleTitleView.setText(status.vehicleName == null || status.vehicleName.isEmpty()
+                    ? "本车已识别" : status.vehicleName);
+            boolean observed = !VehicleLearningState.UNKNOWN.equals(status.learningSource)
+                    && !VehicleLearningState.LEGACY.equals(status.learningSource)
+                    && !VehicleLearningState.MANUAL.equals(status.learningSource);
+            overviewVehicleDetailView.setText(observed ? "已学习本车蓝牙身份" : "已有本车配置");
+            overviewVehicleMetaView.setText(String.format(Locale.ROOT,
+                    "解锁 ≥ %.0f dBm · 上锁 ≤ %.0f dBm / %.1fs",
+                    status.unlockDbm, status.lockDbm, status.lockDwellMs / 1000f));
+        } else {
+            overviewVehicleTitleView.setText("尚未识别本车");
+            overviewVehicleDetailView.setText("保持应用运行，让银河连接车辆一次");
+            overviewVehicleMetaView.setText(status == null ? "等待服务启动" : status.learningMessage);
+        }
+
+        if (audit.essentialReady()) {
+            overviewHealthTitleView.setText("系统就绪");
+            overviewHealthDetailView.setText(audit.summaryLine() + " · 点击查看全检详情");
+        } else {
+            overviewHealthTitleView.setText(audit.headline());
+            overviewHealthDetailView.setText(audit.summaryLine() + " · 点击逐项处理");
+        }
+
+        String chip;
+        int chipText;
+        int chipBackground;
+        if (!audit.essentialReady()) {
+            chip = "需要处理";
+            chipText = COLOR_RED;
+            chipBackground = COLOR_RED_CONTAINER;
+        } else if (status == null) {
+            chip = "连接中";
+            chipText = COLOR_ON_PRIMARY_CONTAINER;
+            chipBackground = COLOR_PRIMARY_CONTAINER;
+        } else if (!status.serviceEnabled) {
+            chip = "已暂停";
+            chipText = COLOR_AMBER;
+            chipBackground = COLOR_AMBER_CONTAINER;
+        } else if (!status.bluetoothOn) {
+            chip = "蓝牙关闭";
+            chipText = COLOR_AMBER;
+            chipBackground = COLOR_AMBER_CONTAINER;
+        } else if (status.geelyConnected) {
+            chip = "钥匙已连接";
+            chipText = COLOR_GREEN;
+            chipBackground = COLOR_GREEN_CONTAINER;
+        } else {
+            chip = "自动运行";
+            chipText = COLOR_ON_PRIMARY_CONTAINER;
+            chipBackground = COLOR_PRIMARY_CONTAINER;
+        }
+        topStatusChip.setText(chip);
+        topStatusChip.setTextColor(chipText);
+        topStatusChip.setBackground(roundedBackground(chipBackground, 999));
+
+        if (maintenanceBadge != null) {
+            if (!audit.essentialReady()) {
+                maintenanceBadge.setBackground(roundedBackground(COLOR_RED, 999));
+                maintenanceBadge.setVisibility(View.VISIBLE);
+            } else if (update.updateReady) {
+                maintenanceBadge.setBackground(roundedBackground(COLOR_PRIMARY, 999));
+                maintenanceBadge.setVisibility(View.VISIBLE);
+            } else {
+                maintenanceBadge.setVisibility(View.GONE);
+            }
+        }
+    }
+
+    private void renderHeroSignal(boolean fresh, int rssi) {
+        if (fresh) {
+            heroSignalView.setText(String.valueOf(rssi));
+            heroSignalView.setTextSize(42);
+            heroSignalUnitView.setVisibility(View.VISIBLE);
+        } else {
+            heroSignalView.setText("无信号");
+            heroSignalView.setTextSize(18);
+            heroSignalUnitView.setVisibility(View.GONE);
+        }
+    }
+
+    private String displayZone(String zone) {
+        if (zone == null) return "";
+        return zone.replace(" (无信号)", "").replace("（无信号）", "").trim();
+    }
+
+    /** 有已校验更新时优先安装，否则立即发起一次手动检查。 */
+    private void handleUpdateAction() {
+        UpdateManager.Snapshot update = UpdateManager.snapshot(this);
+        if (update.updateReady) {
+            promptInstallUpdate();
+            return;
+        }
+        if (update.checking || update.downloading) {
+            Toast.makeText(this, "更新任务正在进行，请稍候", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        if (UpdateManager.checkNow(this, true)) {
+            Toast.makeText(this, "正在检查 GitHub Releases…", Toast.LENGTH_SHORT).show();
+        } else {
+            Toast.makeText(this, UpdateManager.snapshot(this).status, Toast.LENGTH_LONG).show();
+        }
+        refreshUi();
+    }
+
+    /** 通知点击和手动按钮都先确认一次，避免后台任务直接弹出安装器。 */
+    private void promptInstallUpdate() {
+        UpdateManager.Snapshot update = UpdateManager.snapshot(this);
+        if (!update.updateReady) {
+            Toast.makeText(this, "当前没有已下载的更新包", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        new AlertDialog.Builder(this)
+                .setTitle("安装 v" + update.downloadedVersionName)
+                .setMessage("新版本 APK 已通过 SHA-256、包名、构建号和签名校验。\n\n"
+                        + "下一步会打开 Android 系统安装器；覆盖安装不会清除现有车辆配置和授权。")
+                .setNegativeButton("稍后", null)
+                .setPositiveButton("开始安装", (dialog, which) -> openUpdateInstaller())
+                .show();
+    }
+
+    private void openUpdateInstaller() {
+        if (!UpdateManager.canInstallPackages(this)) {
+            pendingInstallAfterPermission = true;
+            new AlertDialog.Builder(this)
+                    .setTitle("需要安装未知应用权限")
+                    .setMessage("Android 要求由你允许本应用打开系统安装器。授权后返回本页会继续安装。")
+                    .setNegativeButton("取消", null)
+                    .setPositiveButton("去授权", (dialog, which) -> {
+                        try {
+                            startActivity(UpdateManager.installPermissionIntent(this));
+                        } catch (Throwable unavailable) {
+                            Toast.makeText(this, "无法打开安装权限设置，正在打开应用详情",
+                                    Toast.LENGTH_LONG).show();
+                            openAppDetails();
+                        }
+                    })
+                    .show();
+            return;
+        }
+        if (!UpdateManager.openInstaller(this)) {
+            Toast.makeText(this, "无法打开系统安装器，请确认下载文件仍然存在", Toast.LENGTH_LONG).show();
+        }
+        refreshUi();
+    }
+
+    /** 更新通知带一次性标记；打开后立即消费，防止每次onResume重复弹窗。 */
+    private void handleUpdateIntent(Intent intent) {
+        if (intent == null || !intent.getBooleanExtra(UpdateManager.EXTRA_OPEN_UPDATE, false)) return;
+        intent.removeExtra(UpdateManager.EXTRA_OPEN_UPDATE);
+        setIntent(intent);
+        setTab(TAB_MAINTENANCE);
+        handler.postDelayed(() -> {
+            if (UpdateManager.hasDownloadedUpdate(this)) promptInstallUpdate();
+            else Toast.makeText(this, "更新包已不存在，请重新检查更新", Toast.LENGTH_LONG).show();
+        }, 200L);
+    }
+
+    /** 主页只显示结论和最需要处理的几项，完整逐项状态在授权引导页。 */
+    private String permissionCardText(PermissionAudit.Result audit) {
+        StringBuilder text = new StringBuilder(audit.headline())
+                .append("\n").append(audit.summaryLine());
+        int shown = 0;
+        for (PermissionAudit.Row row : audit.rows) {
+            if (row.isReady() || shown >= 3) continue;
+            text.append("\n• ").append(row.item.title).append("：");
+            if (row.item == PermissionAudit.Item.LISTENER && row.isWaiting()) {
+                text.append("授权仍在，系统正在重连");
+            } else {
+                text.append(row.statusLabel());
+            }
+            shown++;
+        }
+        return text.toString();
     }
 
     /** 每次界面刷新采样运行态原始/平滑RSSI；失效时绘制断点，阈值随用户配置实时更新。 */
@@ -617,7 +1200,10 @@ public class MainActivity extends Activity {
     /** 区分系统是否授权与监听实例是否真正在线，避免把“已授权”误显示为可用。 */
     private String notificationStatusText(boolean accessGranted, boolean connected) {
         if (!accessGranted) return "未授权";
-        return connected ? "已授权 · 监听在线" : "已授权 · 系统未绑定";
+        if (connected) return "已授权 · 监听在线";
+        long downMs = KeyNotificationBridgeService.getListenerDownDurationMs();
+        return downMs < PermissionAudit.LISTENER_REBIND_GRACE_MS
+                ? "已授权 · 正在重连" : "已授权 · 监听未绑定";
     }
 
     /** 用户点击后通过系统文件选择器选择本地保存位置，无需存储权限，也不自动发送给他人。 */
@@ -643,6 +1229,7 @@ public class MainActivity extends Activity {
     @Override
     protected void onSaveInstanceState(Bundle outState) {
         outState.putString("diagnostic_snapshot", exportSnapshot);
+        outState.putInt("active_tab", activeTab);
         super.onSaveInstanceState(outState);
     }
 
@@ -937,15 +1524,162 @@ public class MainActivity extends Activity {
         return view;
     }
 
+    private LinearLayout.LayoutParams supportLp() {
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+        );
+        lp.topMargin = dp(9);
+        return lp;
+    }
+
     private LinearLayout card() {
         LinearLayout layout = new LinearLayout(this);
         layout.setOrientation(LinearLayout.VERTICAL);
-        layout.setPadding(dp(16), dp(16), dp(16), dp(16));
-        GradientDrawable bg = new GradientDrawable();
-        bg.setColor(COLOR_CARD);
-        bg.setCornerRadius(dp(16));
+        layout.setPadding(dp(18), dp(18), dp(18), dp(18));
+        layout.setBackground(roundedBackground(COLOR_CARD, 20));
+        return layout;
+    }
+
+    private LinearLayout heroCard() {
+        LinearLayout layout = new LinearLayout(this);
+        layout.setOrientation(LinearLayout.VERTICAL);
+        layout.setPadding(dp(20), dp(20), dp(20), dp(14));
+        GradientDrawable bg = new GradientDrawable(
+                GradientDrawable.Orientation.TL_BR,
+                new int[]{Color.rgb(15, 39, 50), COLOR_CARD}
+        );
+        bg.setCornerRadius(dp(24));
+        bg.setStroke(dp(1), Color.rgb(35, 67, 82));
         layout.setBackground(bg);
         return layout;
+    }
+
+    private LinearLayout clickableCard() {
+        LinearLayout layout = new LinearLayout(this);
+        layout.setOrientation(LinearLayout.VERTICAL);
+        layout.setPadding(dp(18), dp(18), dp(18), dp(18));
+        layout.setClickable(true);
+        layout.setFocusable(true);
+        layout.setBackground(rippleBackground(COLOR_CARD, COLOR_OUTLINE, 20,
+                Color.argb(34, 255, 255, 255)));
+        return layout;
+    }
+
+    private GradientDrawable roundedBackground(int color, int radiusDp) {
+        GradientDrawable background = new GradientDrawable();
+        background.setColor(color);
+        background.setCornerRadius(dp(radiusDp));
+        return background;
+    }
+
+    private RippleDrawable rippleBackground(int fillColor, int strokeColor, int radiusDp,
+                                            int rippleColor) {
+        GradientDrawable content = roundedBackground(fillColor, radiusDp);
+        if (strokeColor != Color.TRANSPARENT) content.setStroke(dp(1), strokeColor);
+        GradientDrawable mask = roundedBackground(Color.WHITE, radiusDp);
+        return new RippleDrawable(ColorStateList.valueOf(rippleColor), content, mask);
+    }
+
+    private void addDivider(LinearLayout parent) {
+        View divider = new View(this);
+        divider.setBackgroundColor(COLOR_OUTLINE);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(1));
+        lp.topMargin = dp(2);
+        lp.bottomMargin = dp(2);
+        parent.addView(divider, lp);
+    }
+
+    private Switch switchToggle() {
+        Switch toggle = new Switch(this);
+        toggle.setText("");
+        toggle.setShowText(false);
+        toggle.setMinWidth(dp(48));
+        toggle.setMinimumWidth(dp(48));
+        int[][] states = new int[][]{
+                new int[]{android.R.attr.state_checked},
+                new int[]{}
+        };
+        toggle.setTrackTintList(new ColorStateList(states,
+                new int[]{COLOR_PRIMARY_CONTAINER, COLOR_OUTLINE}));
+        toggle.setThumbTintList(new ColorStateList(states,
+                new int[]{COLOR_PRIMARY, COLOR_MUTED}));
+        return toggle;
+    }
+
+    private void addSwitchRow(LinearLayout parent, String title, String detail,
+                              Switch toggle, boolean last) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setMinimumHeight(dp(66));
+        row.setPadding(dp(4), dp(10), dp(4), dp(10));
+        row.setClickable(true);
+        row.setFocusable(true);
+        row.setBackground(rippleBackground(Color.TRANSPARENT, Color.TRANSPARENT,
+                12, Color.argb(28, 255, 255, 255)));
+
+        LinearLayout copy = new LinearLayout(this);
+        copy.setOrientation(LinearLayout.VERTICAL);
+        TextView titleView = text(title, 15, COLOR_TEXT, Typeface.BOLD);
+        TextView detailView = text(detail, 12, COLOR_MUTED, Typeface.NORMAL);
+        detailView.setLineSpacing(dp(1), 1.05f);
+        copy.addView(titleView);
+        LinearLayout.LayoutParams detailLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        detailLp.topMargin = dp(3);
+        copy.addView(detailView, detailLp);
+        row.addView(copy, new LinearLayout.LayoutParams(0,
+                LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+
+        LinearLayout.LayoutParams toggleLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        toggleLp.leftMargin = dp(12);
+        row.addView(toggle, toggleLp);
+        toggle.setContentDescription(title + "，" + detail);
+        row.setOnClickListener(v -> {
+            if (toggle.isEnabled()) toggle.setChecked(!toggle.isChecked());
+        });
+        parent.addView(row);
+        if (!last) addDivider(parent);
+    }
+
+    private Button filledButton(String label) {
+        return styledButton(label, COLOR_PRIMARY, COLOR_ON_PRIMARY,
+                Color.TRANSPARENT, Color.argb(50, 0, 0, 0));
+    }
+
+    private Button tonalButton(String label) {
+        return styledButton(label, COLOR_PRIMARY_CONTAINER, COLOR_ON_PRIMARY_CONTAINER,
+                Color.TRANSPARENT, Color.argb(38, 255, 255, 255));
+    }
+
+    private Button outlinedButton(String label) {
+        return styledButton(label, Color.TRANSPARENT, COLOR_PRIMARY,
+                COLOR_OUTLINE, Color.argb(32, 255, 255, 255));
+    }
+
+    private Button dangerOutlinedButton(String label) {
+        return styledButton(label, Color.TRANSPARENT, COLOR_RED,
+                COLOR_RED, Color.argb(32, 255, 154, 168));
+    }
+
+    private Button styledButton(String label, int fillColor, int textColor,
+                                int strokeColor, int rippleColor) {
+        Button button = new Button(this);
+        button.setText(label);
+        button.setAllCaps(false);
+        button.setTextSize(14);
+        button.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        button.setTextColor(textColor);
+        button.setGravity(Gravity.CENTER);
+        button.setMinHeight(dp(50));
+        button.setMinimumHeight(dp(50));
+        button.setPadding(dp(16), 0, dp(16), 0);
+        button.setStateListAnimator(null);
+        button.setBackground(rippleBackground(fillColor, strokeColor, 16, rippleColor));
+        return button;
     }
 
     private LinearLayout.LayoutParams cardLp() {
@@ -953,37 +1687,17 @@ public class MainActivity extends Activity {
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
         );
-        lp.bottomMargin = dp(14);
+        lp.bottomMargin = dp(4);
         return lp;
-    }
-
-    private Button button(String label) {
-        Button button = new Button(this);
-        button.setText(label);
-        button.setAllCaps(false);
-        button.setTextSize(14);
-        button.setTextColor(Color.rgb(8, 17, 31));
-        button.setBackgroundTintList(android.content.res.ColorStateList.valueOf(COLOR_ACCENT));
-        return button;
     }
 
     private LinearLayout.LayoutParams buttonLp() {
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
-                dp(46)
+                dp(50)
         );
-        lp.topMargin = dp(10);
+        lp.topMargin = dp(12);
         return lp;
-    }
-
-    private Switch switchRow(String title, String detail) {
-        Switch toggle = new Switch(this);
-        toggle.setText(title + "\n" + detail);
-        toggle.setTextSize(14);
-        toggle.setTextColor(COLOR_TEXT);
-        toggle.setGravity(Gravity.CENTER_VERTICAL);
-        toggle.setPadding(0, dp(10), 0, dp(10));
-        return toggle;
     }
 
     private int dp(int value) {
@@ -993,4 +1707,5 @@ public class MainActivity extends Activity {
     private String yesNo(boolean value) {
         return value ? "已开启" : "未开启";
     }
+
 }

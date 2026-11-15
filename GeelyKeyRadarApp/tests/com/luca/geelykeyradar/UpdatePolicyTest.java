@@ -1,0 +1,54 @@
+package com.luca.geelykeyradar;
+
+/** 自动更新纯逻辑回归，不访问网络、不读取真实安装包。 */
+public final class UpdatePolicyTest {
+    public static void main(String[] args) {
+        parsesOnlyVersionedApkNames();
+        comparesVersionAndHourlyWindow();
+        sanitizesAndMatchesDigest();
+        System.out.println("UpdatePolicyTest passed");
+    }
+
+    private static void parsesOnlyVersionedApkNames() {
+        UpdatePolicy.Asset asset = UpdatePolicy.parseAsset(
+                "GeelyPassiveKey-v4.4.0-min-400.apk",
+                "https://example.test/update.apk",
+                "sha256:ABCDEF", 1234L);
+        check(asset != null, "版本化 APK 应被识别");
+        check("4.4.0-min".equals(asset.versionName), "版本名应保留 -min");
+        check(asset.versionCode == 400 && asset.size == 1234L, "构建号和大小应保留");
+        check(UpdatePolicy.parseAsset("GeelyPassiveKey.apk", "https://example.test/a", "", 0) == null,
+                "旧的无版本 APK 不能参与自动更新");
+        check(UpdatePolicy.parseAsset("other-v4.4.0-400.apk", "https://example.test/a", "", 0) == null,
+                "其他 APK 不能被误选");
+        check(UpdatePolicy.parseAsset("GeelyPassiveKey-v4.4.0-min-0.apk", "https://example.test/a", "", 0) == null,
+                "非正构建号应拒绝");
+    }
+
+    private static void comparesVersionAndHourlyWindow() {
+        check(UpdatePolicy.isNewer(401, 400), "更高构建号应允许更新");
+        check(!UpdatePolicy.isNewer(400, 400), "同版本不能重复提示更新");
+        long now = 10_000_000L;
+        check(UpdatePolicy.isCheckDue(now, 0L, true), "首次启用应立即检查");
+        check(!UpdatePolicy.isCheckDue(now, now - UpdatePolicy.CHECK_INTERVAL_MS + 1L, true),
+                "未满一小时不应自动检查");
+        check(UpdatePolicy.isCheckDue(now, now - UpdatePolicy.CHECK_INTERVAL_MS, true),
+                "满一小时应检查");
+        check(UpdatePolicy.isCheckDue(now, now + 10L, true), "时钟回拨后允许重新检查");
+        check(!UpdatePolicy.isCheckDue(now, 0L, false), "关闭自动更新后不得自动检查");
+    }
+
+    private static void sanitizesAndMatchesDigest() {
+        check("evil.apk".equals(UpdatePolicy.safeFileName("../../evil.apk")),
+                "下载文件名不能带路径");
+        check("a_b.apk".equals(UpdatePolicy.safeFileName("a b")), "危险字符应替换并补 apk");
+        check(UpdatePolicy.digestMatches("sha256:ABCDEF", "abcdef"), "摘要前缀和大小写不影响比较");
+        check(UpdatePolicy.digestMatches("", "abcdef"), "旧 Release 没有 digest 时不凭空拒绝");
+        check(!UpdatePolicy.digestMatches("sha256:123", "456"), "摘要不一致应拒绝");
+        check(!UpdatePolicy.digestMatches("", ""), "实测摘要为空时不能视为通过");
+    }
+
+    private static void check(boolean condition, String message) {
+        if (!condition) throw new AssertionError(message);
+    }
+}
