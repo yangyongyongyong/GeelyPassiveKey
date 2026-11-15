@@ -16,6 +16,7 @@ final class VehicleIdentityStore {
     private static final String KEY_TAIL2 = "vehicle_vin_tail2";
     private static final String KEY_TAIL3 = "vehicle_vin_tail3";
     private static final String KEY_SIG = "vehicle_mfg_signature";
+    private static final String KEY_COMPANY = "vehicle_manufacturer_id";
     private static final String KEY_LEARNED_AT = "vehicle_learned_at";
     private static final String KEY_MANUAL_CLEARED = "vehicle_manual_cleared";
     private static final String KEY_LEARNING_SOURCE = "vehicle_learning_source";
@@ -32,6 +33,7 @@ final class VehicleIdentityStore {
     private final Context appContext;
     private final SharedPreferences prefs;
 
+    /** 打开本应用偏好，不读取官方App私有数据。 */
     VehicleIdentityStore(Context context) {
         this.appContext = context.getApplicationContext();
         this.prefs = this.appContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
@@ -58,7 +60,8 @@ final class VehicleIdentityStore {
             }
             return null;
         }
-        return new VehicleIdentity(address, name, tail2, tail3, signature, learnedAt);
+        int company = prefs.getInt(KEY_COMPANY, VehicleIdentity.inferManufacturerId(signature));
+        return new VehicleIdentity(address, name, tail2, tail3, signature, company, learnedAt);
     }
 
     /**
@@ -101,6 +104,7 @@ final class VehicleIdentityStore {
                 .putString(KEY_TAIL2, identity.vinTail2)
                 .putString(KEY_TAIL3, identity.vinTail3)
                 .putString(KEY_SIG, identity.mfgSignature)
+                .putInt(KEY_COMPANY, identity.manufacturerId)
                 .putLong(KEY_LEARNED_AT, identity.learnedAtMs)
                 .putString(KEY_LEARNING_SOURCE, source)
                 .putBoolean(KEY_MANUAL_CLEARED, false)
@@ -115,6 +119,7 @@ final class VehicleIdentityStore {
                 .remove(KEY_TAIL2)
                 .remove(KEY_TAIL3)
                 .remove(KEY_SIG)
+                .remove(KEY_COMPANY)
                 .remove(KEY_LEARNED_AT)
                 .remove(KEY_LEARNING_SOURCE)
                 .putBoolean(KEY_MANUAL_CLEARED, true)
@@ -126,50 +131,62 @@ final class VehicleIdentityStore {
         return prefs.getString(KEY_LEARNING_SOURCE, VehicleLearningState.UNKNOWN);
     }
 
+    /** 返回靠近自动解锁开关。 */
     boolean isAutoUnlockEnabled() {
         return prefs.getBoolean("auto_unlock", true);
     }
 
+    /** 返回远离自动上锁开关。 */
     boolean isAutoLockEnabled() {
         return prefs.getBoolean("auto_lock", true);
     }
 
+    /** 保存靠近自动解锁开关，不改变身份。 */
     void setAutoUnlockEnabled(boolean enabled) {
         prefs.edit().putBoolean("auto_unlock", enabled).apply();
     }
 
+    /** 保存远离自动上锁开关，不改变阈值。 */
     void setAutoLockEnabled(boolean enabled) {
         prefs.edit().putBoolean("auto_lock", enabled).apply();
     }
 
+    /** 返回无感服务总开关。 */
     boolean isServiceEnabled() {
         return prefs.getBoolean(KEY_SERVICE_ENABLED, true);
     }
 
+    /** 持久化服务启停状态。 */
     void setServiceEnabled(boolean enabled) {
         prefs.edit().putBoolean(KEY_SERVICE_ENABLED, enabled).apply();
     }
 
+    /** 返回插线禁控开关。 */
     boolean isBlockWhenChargingEnabled() {
         return prefs.getBoolean(KEY_BLOCK_WHEN_CHARGING, true);
     }
 
+    /** 保存插线禁控选择。 */
     void setBlockWhenChargingEnabled(boolean enabled) {
         prefs.edit().putBoolean(KEY_BLOCK_WHEN_CHARGING, enabled).apply();
     }
 
+    /** 读取原有解锁阈值，升级不重置用户配置。 */
     float getUnlockDbm() {
         return prefs.getFloat(KEY_UNLOCK_DBM, DEFAULT_UNLOCK_DBM);
     }
 
+    /** 读取原有上锁阈值，升级不重置用户配置。 */
     float getLockDbm() {
         return prefs.getFloat(KEY_LOCK_DBM, DEFAULT_LOCK_DBM);
     }
 
+    /** 读取连续远场确认时长。 */
     long getLockDwellMs() {
         return prefs.getLong(KEY_LOCK_DWELL_MS, DEFAULT_LOCK_DWELL_MS);
     }
 
+    /** 同步持久化用户阈值，本轮多车修复不主动修改这些值。 */
     void saveThresholds(float unlockDbm, float lockDbm, long lockDwellMs) {
         prefs.edit()
                 .putFloat(KEY_UNLOCK_DBM, unlockDbm)

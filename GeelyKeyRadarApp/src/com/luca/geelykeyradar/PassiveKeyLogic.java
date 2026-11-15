@@ -313,6 +313,20 @@ final class PassiveKeyLogic {
         lockInhibitUntilMs = nowMs + SIGNAL_LOST_INHIBIT_MS;
     }
 
+    /** 物理测距目标切换时撤销旧距离证据，但保留已发送/手动上锁锁存，避免重复车控。 */
+    synchronized void onMeasurementTargetChanged(long nowMs) {
+        onSignalLost(nowMs);
+        lastSampleAtMs = 0L;
+        lastDistanceDbm = Float.NaN;
+        lastNearAtMs = 0L;
+        hasBeenNear = false;
+        departureArmed = false;
+        earlyUnlockSentAtMs = 0L;
+        measurementSource = "";
+        lastSampleDecision = "MEASUREMENT_TARGET_CHANGED";
+        lastSampleDecisionAtMs = nowMs;
+    }
+
     /**
      * 蓝牙关闭/重启后短暂禁止自动上锁，避免把端口重启当成“人已走远”。
      */

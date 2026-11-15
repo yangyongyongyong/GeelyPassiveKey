@@ -3,10 +3,12 @@ package com.luca.geelykeyradar;
 import android.Manifest;
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.app.Dialog;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.content.ServiceConnection;
+import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
 import android.graphics.Color;
 import android.graphics.Typeface;
@@ -76,6 +78,9 @@ public class MainActivity extends Activity {
     private boolean settingSwitches = false;
 
     private TextView statusView;
+    private RssiChartView rssiChartView;
+    private TextView rssiChartSummaryView;
+    private TextView vehicleParamView;
     private TextView identityView;
     private TextView thresholdView;
     private TextView permissionView;
@@ -91,6 +96,8 @@ public class MainActivity extends Activity {
     private Button notificationPermissionButton;
     private Button batteryWhitelistButton;
     private String exportSnapshot = "service_snapshot=unavailable";
+    private Dialog thresholdSettingsDialog;
+    private VehicleParameterProbe parameterProbe;
 
     private final ServiceConnection connection = new ServiceConnection() {
         @Override
@@ -117,6 +124,7 @@ public class MainActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         DiagnosticLog.initialize(this);
+        parameterProbe = new VehicleParameterProbe(this);
         if (savedInstanceState != null) {
             exportSnapshot = savedInstanceState.getString("diagnostic_snapshot", exportSnapshot);
         }
@@ -128,6 +136,7 @@ public class MainActivity extends Activity {
         super.onResume();
         startPassiveKeyService();
         bindPassiveKeyService();
+        parameterProbe.start();
         handler.removeCallbacks(refreshRunnable);
         handler.post(refreshRunnable);
     }
@@ -147,7 +156,31 @@ public class MainActivity extends Activity {
         super.onPause();
     }
 
-    /** 保持极简配置页，增加两个车控测试按钮和手动日志导出入口。 */
+    /** 页面销毁时关闭所属设置窗口，不保留旧Activity或尚未保存的输入。 */
+    @Override
+    protected void onDestroy() {
+        if (thresholdSettingsDialog != null) {
+            thresholdSettingsDialog.dismiss();
+            thresholdSettingsDialog = null;
+        }
+        if (parameterProbe != null) parameterProbe.stop();
+        super.onDestroy();
+    }
+
+    /** 从实际安装包读取版本名和构建号；界面显示不硬编码，读取失败不影响服务。 */
+    private String installedVersionLabel() {
+        try {
+            PackageInfo info = getPackageManager().getPackageInfo(getPackageName(), 0);
+            String versionName = info.versionName == null ? "" : info.versionName.trim();
+            String displayName = versionName.isEmpty() ? "未知"
+                    : (versionName.startsWith("v") ? versionName : "v" + versionName);
+            return "版本：" + displayName + "（构建 " + info.getLongVersionCode() + "）";
+        } catch (PackageManager.NameNotFoundException | RuntimeException unavailable) {
+            return "版本：读取失败";
+        }
+    }
+
+    /** 保持极简配置页，增加两个车控测试按钮和手动日志导出入口；标题区域显示实际版本。 */
     private void buildUi() {
         ScrollView scrollView = new ScrollView(this);
         scrollView.setBackgroundColor(COLOR_BG);
@@ -168,8 +201,15 @@ public class MainActivity extends Activity {
                 LinearLayout.LayoutParams.WRAP_CONTENT
         );
         subtitleLp.topMargin = dp(4);
-        subtitleLp.bottomMargin = dp(18);
+        subtitleLp.bottomMargin = dp(6);
         root.addView(subtitle, subtitleLp);
+
+        TextView versionView = text(installedVersionLabel(), 14, COLOR_ACCENT, Typeface.NORMAL);
+        versionView.setTextIsSelectable(true);
+        LinearLayout.LayoutParams versionLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        versionLp.bottomMargin = dp(18);
+        root.addView(versionView, versionLp);
 
         LinearLayout statusCard = card();
         statusCard.addView(text("运行状态", 16, COLOR_ACCENT, Typeface.BOLD));
@@ -181,6 +221,41 @@ public class MainActivity extends Activity {
         bodyLp.topMargin = dp(10);
         statusCard.addView(statusView, bodyLp);
         root.addView(statusCard, cardLp());
+
+        LinearLayout rssiChartCard = card();
+        rssiChartCard.addView(text("蓝牙信号实时曲线", 16, COLOR_ACCENT, Typeface.BOLD));
+        rssiChartView = new RssiChartView(this);
+        LinearLayout.LayoutParams chartLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(220));
+        chartLp.topMargin = dp(8);
+        rssiChartCard.addView(rssiChartView, chartLp);
+        rssiChartSummaryView = text("等待服务绑定", 13, COLOR_TEXT, Typeface.NORMAL);
+        LinearLayout.LayoutParams chartSummaryLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        chartSummaryLp.topMargin = dp(8);
+        rssiChartCard.addView(rssiChartSummaryView, chartSummaryLp);
+        rssiChartCard.addView(text("蓝线：原始RSSI · 黄线：平滑RSSI · 绿/红虚线：当前解锁/上锁阈值；无信号处断开。",
+                12, COLOR_MUTED, Typeface.NORMAL), chartSummaryLp);
+        root.addView(rssiChartCard, cardLp());
+
+        LinearLayout vehicleParamCard = card();
+        vehicleParamCard.addView(text("车机参数（只读）", 16, COLOR_ACCENT, Typeface.BOLD));
+        vehicleParamView = text("等待读取银河官方AIDL...", 13, COLOR_TEXT, Typeface.NORMAL);
+        vehicleParamCard.addView(vehicleParamView, bodyLp);
+        Button refreshVehicleParamButton = button("重新读取车机参数（只读）");
+        refreshVehicleParamButton.setOnClickListener(v -> {
+            parameterProbe.queryReadOnly();
+            refreshUi();
+        });
+        vehicleParamCard.addView(refreshVehicleParamButton, buttonLp());
+        LinearLayout.LayoutParams vehicleParamHintLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        vehicleParamHintLp.topMargin = dp(8);
+        vehicleParamCard.addView(text(
+                "只发送0x0501原生PE状态查询、0x0121车况查询和0x0131标定读取请求；记录0x0132原始回执。"
+                        + "不修改PE开关、距离档位或任何车机参数。银河L6/DK1.5若不支持0x0131，会记录为无回执而不是猜值。",
+                12, COLOR_MUTED, Typeface.NORMAL), vehicleParamHintLp);
+        root.addView(vehicleParamCard, cardLp());
 
         LinearLayout manualCard = card();
         manualCard.addView(text("手动测试", 16, COLOR_ACCENT, Typeface.BOLD));
@@ -237,7 +312,7 @@ public class MainActivity extends Activity {
         LinearLayout switchCard = card();
         switchCard.addView(text("服务与自动动作", 16, COLOR_ACCENT, Typeface.BOLD));
         serviceMasterSwitch = switchRow("无感进出服务总开关", "关闭后立即停止扫描与一切解闭锁操作");
-        autoUnlockSwitch = switchRow("靠近自动解锁", "距离车辆约 3 米达到解锁阈值时，只解锁一次");
+        autoUnlockSwitch = switchRow("靠近自动解锁", "接近信号达到阈值时，只解锁一次");
         autoLockSwitch = switchRow("离开自动上锁", "持续远离达到确认秒数后上锁，断连不会误锁");
         blockChargingSwitch = switchRow("插数据线/充电线后禁止解闭锁", "USB/AC 有线充电时视为在车内或调试中，禁止自动与手动解闭锁");
         switchCard.addView(serviceMasterSwitch);
@@ -389,6 +464,7 @@ public class MainActivity extends Activity {
     private void refreshUi() {
         if (exportLogButton != null) exportLogButton.setEnabled(!LOG_EXPORT_BUSY.get());
         PassiveKeyService.Status status = service != null ? service.getStatus() : null;
+        updateRssiChart(status);
         refreshManualControls(status);
         boolean notificationAccess = KeyNotificationBridgeService.isNotificationListenerEnabled(this);
         boolean listenerConnected = KeyNotificationBridgeService.isListenerConnected();
@@ -414,15 +490,15 @@ public class MainActivity extends Activity {
                     + "银河 App：" + (geelyInstalled ? "已安装" : "未安装"));
             identityView.setText("等待服务启动");
             VehicleIdentityStore store = new VehicleIdentityStore(this);
-            thresholdView.setText(String.format(Locale.US,
-                    "当前阈值：靠近解锁 ≥ %.0f dBm (约3米) | 离开上锁 ≤ %.0f dBm (连续 %.1fs)",
-                    store.getUnlockDbm(), store.getLockDbm(), store.getLockDwellMs() / 1000.0f));
+            thresholdView.setText(ThresholdSettingsForm.configuredSummary(
+                    store.getUnlockDbm(), store.getLockDbm(), store.getLockDwellMs()));
         } else {
             statusView.setText(
                     "服务总开关：" + (status.serviceEnabled ? "开启 (运行中)" : "已关闭 (完全停止操作)") + "\n"
                             + "蓝牙：" + (status.bluetoothOn ? "已开启" : "未开启")
                             + (status.scanning ? " · 扫描中" : "") + "\n"
                             + "银河钥匙：" + (status.geelyConnected ? "已连接" : "未连接") + "\n"
+                            + "鉴权观察：" + status.authObserver + "\n"
                             + "连接态 RSSI：" + (status.gattConnected ? "已挂载" : "未挂载") + "\n"
                             + "有线充电：" + (status.wiredCharging
                                     ? (status.blockWhenCharging ? "已插线 (禁控保护中)" : "已插线 (未禁控)")
@@ -460,9 +536,8 @@ public class MainActivity extends Activity {
             blockChargingSwitch.setEnabled(status.serviceEnabled);
             settingSwitches = false;
 
-            thresholdView.setText(String.format(Locale.US,
-                    "当前阈值：靠近解锁 ≥ %.0f dBm (约3米) | 离开上锁 ≤ %.0f dBm (连续 %.1fs)",
-                    status.unlockDbm, status.lockDbm, status.lockDwellMs / 1000.0f));
+            thresholdView.setText(ThresholdSettingsForm.configuredSummary(
+                    status.unlockDbm, status.lockDbm, status.lockDwellMs));
             logView.setText(service.getLogText());
         }
 
@@ -476,6 +551,32 @@ public class MainActivity extends Activity {
                         + "电池白名单：" + yesNo(batteryWhitelisted) + "\n"
                         + "银河 App：" + (geelyInstalled ? "已安装" : "未安装")
         );
+        if (vehicleParamView != null) vehicleParamView.setText(VehicleParameterProbe.loadDisplay(this));
+    }
+
+    /** 每次界面刷新采样运行态原始/平滑RSSI；失效时绘制断点，阈值随用户配置实时更新。 */
+    private void updateRssiChart(PassiveKeyService.Status status) {
+        if (rssiChartView == null || rssiChartSummaryView == null) return;
+        long now = android.os.SystemClock.elapsedRealtime();
+        float unlock = status != null ? status.unlockDbm : new VehicleIdentityStore(this).getUnlockDbm();
+        float lock = status != null ? status.lockDbm : new VehicleIdentityStore(this).getLockDbm();
+        rssiChartView.setThresholds(unlock, lock);
+        boolean fresh = status != null && status.rssi > -105 && status.rssi < 0
+                && status.lastSampleAgeMs >= 0L && status.lastSampleAgeMs <= 3000L;
+        if (fresh) {
+            rssiChartView.addSample(now, status.rssi, status.smoothRssi);
+            String smooth = Float.isFinite(status.smoothRssi)
+                    ? String.format(Locale.ROOT, "%.1f", status.smoothRssi) : "--";
+            rssiChartSummaryView.setText(String.format(Locale.ROOT,
+                    "当前：原始%d dBm · 平滑%s dBm · %s\n%s · 来源：%s · 样本年龄%dms",
+                    status.rssi, smooth, status.zone, rssiChartView.summary(now),
+                    status.source == null || status.source.isEmpty() ? "未知" : status.source,
+                    status.lastSampleAgeMs));
+        } else {
+            rssiChartView.addGap(now);
+            rssiChartSummaryView.setText("当前无新鲜RSSI信号 · " + rssiChartView.summary(now)
+                    + (status == null ? "\n等待服务绑定" : "\n" + status.zone));
+        }
     }
 
     /** 根据总开关、插线、行驶及防连点状态刷新测试按钮，不主动执行车控。 */
@@ -772,81 +873,24 @@ public class MainActivity extends Activity {
 
     /**
      * 弹出自定义信号阈值设置框：允许自定义靠近解锁阈值(dBm)、离开上锁阈值(dBm)与离开确认秒数。
+     * 独立弹窗固定展示字段含义、范围与推荐值；只在用户保存且三项校验通过后写配置。
      */
     private void promptCustomThresholds() {
+        if (thresholdSettingsDialog != null && thresholdSettingsDialog.isShowing()) return;
         VehicleIdentityStore store = new VehicleIdentityStore(this);
-        float curUnlock = service != null ? service.getStatus().unlockDbm : store.getUnlockDbm();
-        float curLock = service != null ? service.getStatus().lockDbm : store.getLockDbm();
-        float curDwellSec = (service != null ? service.getStatus().lockDwellMs : store.getLockDwellMs()) / 1000.0f;
-
-        LinearLayout box = new LinearLayout(this);
-        box.setOrientation(LinearLayout.VERTICAL);
-        box.setPadding(dp(20), dp(12), dp(20), dp(4));
-
-        TextView tip = new TextView(this);
-        tip.setText("信号越接近 0 表示距离越近：\n• -63 dBm ≈ 1.5米 (主驾门边)\n• -70 dBm ≈ 3.0米\n• -75 dBm ≈ 3.5~4.5米 (默认推荐提前解锁)\n• -82 dBm ≈ 7.0~8.0米 (默认推荐离开上锁)");
-        tip.setTextSize(12);
-        box.addView(tip);
-
-        final EditText unlockInput = new EditText(this);
-        unlockInput.setHint("靠近解锁阈值 dBm (默认 -75)");
-        unlockInput.setText(String.format(Locale.US, "%.0f", curUnlock));
-        unlockInput.setSingleLine(true);
-        box.addView(unlockInput);
-
-        final EditText lockInput = new EditText(this);
-        lockInput.setHint("离开上锁阈值 dBm (例如 -82)");
-        lockInput.setText(String.format(Locale.US, "%.0f", curLock));
-        lockInput.setSingleLine(true);
-        box.addView(lockInput);
-
-        final EditText dwellInput = new EditText(this);
-        dwellInput.setHint("离开持续确认秒数 (例如 4.5)");
-        dwellInput.setText(String.format(Locale.US, "%.1f", curDwellSec));
-        dwellInput.setSingleLine(true);
-        box.addView(dwellInput);
-
-        new AlertDialog.Builder(this)
-                .setTitle("自定义靠近/离开信号阈值")
-                .setView(box)
-                .setNeutralButton("恢复默认(-75/-82)", (dialog, which) -> {
-                    if (service != null) {
-                        service.updateThresholds(
-                                VehicleIdentityStore.DEFAULT_UNLOCK_DBM,
-                                VehicleIdentityStore.DEFAULT_LOCK_DBM,
-                                VehicleIdentityStore.DEFAULT_LOCK_DWELL_MS
-                        );
-                    } else {
-                        store.saveThresholds(
-                                VehicleIdentityStore.DEFAULT_UNLOCK_DBM,
-                                VehicleIdentityStore.DEFAULT_LOCK_DBM,
-                                VehicleIdentityStore.DEFAULT_LOCK_DWELL_MS
-                        );
-                    }
-                    Toast.makeText(this, "已恢复默认阈值 (-75dBm 解锁 / -82dBm 上锁 / 4.5s)", Toast.LENGTH_SHORT).show();
-                    refreshUi();
-                })
-                .setNegativeButton("取消", null)
-                .setPositiveButton("保存生效", (dialog, which) -> {
-                    try {
-                        float u = Float.parseFloat(unlockInput.getText().toString().trim());
-                        float l = Float.parseFloat(lockInput.getText().toString().trim());
-                        float dSec = Float.parseFloat(dwellInput.getText().toString().trim());
-                        if (u > 0) u = -u; // 兼容用户输入正数 70 自动转为 -70
-                        if (l > 0) l = -l;
-                        long dMs = Math.round(dSec * 1000.0f);
-                        if (service != null) {
-                            service.updateThresholds(u, l, dMs);
-                        } else {
-                            store.saveThresholds(u, l, dMs);
-                        }
-                        Toast.makeText(this, "自定义阈值已保存并立即生效", Toast.LENGTH_SHORT).show();
-                        refreshUi();
-                    } catch (Throwable e) {
-                        Toast.makeText(this, "请输入有效数字，例如 -75、-82、4.5", Toast.LENGTH_SHORT).show();
-                    }
-                })
-                .show();
+        PassiveKeyService.Status status = service != null ? service.getStatus() : null;
+        float unlockDbm = status != null ? status.unlockDbm : store.getUnlockDbm();
+        float lockDbm = status != null ? status.lockDbm : store.getLockDbm();
+        long dwellMs = status != null ? status.lockDwellMs : store.getLockDwellMs();
+        thresholdSettingsDialog = ThresholdSettingsDialog.show(this, unlockDbm, lockDbm, dwellMs, (unlock, lock, dwell) -> {
+            if (service != null) {
+                service.updateThresholds(unlock, lock, dwell);
+            } else {
+                store.saveThresholds(unlock, lock, dwell);
+            }
+            Toast.makeText(this, "自定义阈值已保存并立即生效", Toast.LENGTH_SHORT).show();
+            refreshUi();
+        });
     }
 
     /** 重学先检查两类权限，缺失时给出实际入口，避免清空后看起来毫无反应。 */

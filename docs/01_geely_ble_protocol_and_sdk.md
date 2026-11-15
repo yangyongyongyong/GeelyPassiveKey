@@ -142,8 +142,8 @@ $$\text{lockRange} = \text{unlockInterval} + \text{lockInterval} - \text{rssiAdj
 | Feature 常量 | Action ID (`int`) | 十六进制 | 含义与作用 |
 | :--- | :---: | :---: | :--- |
 | `"feat_dk_fast_ctrl"` | `272` | `0x0110` | **本地蓝牙快速车控 (`CMD_A2V_CONTROL`)**：`CTRL_UNLOCK = 1`（解锁）、`CTRL_LOCK = 2`（闭锁）、`CTRL_CAR_LOCATOR = 3`、`CTRL_TRUNK_UNLOCK = 6`、`CTRL_WINDOW_UP = 12`、`CTRL_WINDOW_DOWN = 13` |
-| `"feat_calibration"` | `305` | `0x0131` | 请求读取车机当前 BLE 标定参数 (`CMD_A2V_CALIB_REQ`) |
-| `"feat_calibration"` | `368` | `0x0170` | 设置车机迎宾/闭锁距离档位 (`CMD_A2V_CALIBRATION_GEAR`：`1`=紧凑近距, `2`=标准推荐, `3`=宽容远距) |
+| `"feat_calibration"` | `305` | `0x0131` | 历史协议名称为`CMD_A2V_CALIB_REQ`；当前分析的`DkBleCalibrationImpl.doAction`未见到305分发，不能假定L6/DK1.5会返回 |
+| `"feat_calibration"` | `368` | `0x0170` | 设置DK2迎宾/闭锁距离档位；银河L6/DK1.5入口不执行，不应在L6上恢复写入UI |
 | `"feat_pair_coef"` | `370` | `0x0172` | 手机型号射频衰减补偿系数 (`ACT_PHONECOEF`) |
 | `"feat_calibration"` | `400` | `0x0190` | 启动车机蓝牙自标定 (`CMD_A2V_CALIBRATION_START`) |
 | `"feat_calibration"` | `405` | `0x0195` | 向车机发送底层 RSSI 标定字节帧 (`CMD_A2V_SEND_CALIBRATION`) |

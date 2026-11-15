@@ -2,9 +2,11 @@ package com.luca.geelykeyradar;
 
 import java.util.Collection;
 import java.util.Locale;
+import java.util.regex.Pattern;
 
 /** 本车学习的资格和可见状态，区分尾号提示、已有配置与真实蓝牙地址。 */
 final class VehicleLearningState {
+    private static final Pattern ADDRESS_PATTERN = Pattern.compile("(?:[0-9a-f]{2}:){5}[0-9a-f]{2}", Pattern.CASE_INSENSITIVE);
     static final String UNKNOWN = "unknown";
     static final String LEGACY = "legacy_migration";
     static final String MANUAL = "manual_suffix";
@@ -15,7 +17,7 @@ final class VehicleLearningState {
 
     /** 只有实际获得合法蓝牙地址，才算完成地址学习；尾号或设备名不能推算MAC。 */
     static boolean hasAddress(String address) {
-        return address != null && address.matches("(?i)(?:[0-9a-f]{2}:){5}[0-9a-f]{2}");
+        return address != null && ADDRESS_PATTERN.matcher(address).matches();
     }
 
     /** 等待新连接只限制猜测路径，不能挡住当前真实且可验证的已连接设备。 */
@@ -46,7 +48,7 @@ final class VehicleLearningState {
             return "银河已连接，但系统未提供可识别的本车地址；请在银河先断开蓝牙钥匙再连接，保持本应用运行";
         }
         return hasHint ? "仅设置了匹配特征，尚未获取蓝牙地址；等待本车广播或连接事件"
-                : "等待本车广播或连接事件；请保持本应用运行，再用银河连接车辆";
+                : "正在观察车辆广播；请保持本应用运行，再用银河连接车辆，连接验证后才会学习地址";
     }
 
     /** 旧配置和手填提示明确标明来源，不将它们冒充首次自动识别验证。 */

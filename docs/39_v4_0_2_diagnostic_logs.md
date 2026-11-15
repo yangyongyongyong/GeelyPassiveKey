@@ -61,11 +61,12 @@
 
 | 范围 | 事件/字段 | 可以回答的问题 |
 | --- | --- | --- |
-| 扫描 | `SCAN_START/SCAN_CALLBACK_ERROR/TARGET_FIRST_SEEN`，`scan_callbacks/scan_not_geely/scan_stale/scan_duplicate/scan_other_vehicle/scan_non_primary/scan_accepted` | 没收到回调，还是回调被过滤？ |
+| 扫描 | `SCAN_START/SCAN_CALLBACK_ERROR/CANDIDATE_FIRST_SEEN/TARGET_FIRST_SEEN`，`scan_callbacks/scan_not_geely/scan_stale/scan_duplicate/scan_other_vehicle/scan_non_primary/scan_accepted` | 没收到回调，还是回调被过滤？ |
 | 原始信号 | `RSSI_SAMPLE`，`raw/smooth/approach/pocket/age/source` | 是原始弱信号、滤波、口袋补偿还是旧样本？ |
 | GATT | `CONNECT_START/STATE_CALLBACK/CONNECT_TIMEOUT/CLOSE`，`gatt_attempt/gatt_addr_id/read_pending/read_request_age_ms/read_success_age_ms/read_status` | 通道没有连上，还是读取请求被拒绝/回调停更？ |
-| 官方通知 | `LISTENER_CONNECTED/LISTENER_DISCONNECTED/REMOVED/PARSED/STATE_CLEARED` | 监听掉线、通知移除、解析失败或按钮不可用？ |
-| 唤醒官方 | `WAKE_REQUEST/WAKE_BEGIN/WAKE_SERVICE_RETURN/WAKE_SERVICE_ERROR/WAKE_BROADCAST_SENT` | 哪个入口被系统接纳或拒绝？ |
+| 官方通知 | `LISTENER_CONNECTED/LISTENER_DISCONNECTED/REMOVED/PARSED/STATE_CLEARED`，`FAST_RESCAN_START/EXTEND/STOP`，`PI_CACHE_WRITTEN/RESTORED/ERROR` | 监听是否掉线、锁屏刷新是否慢、快速补扫为何结束、官方按钮是否已缓存？ |
+| 唤醒官方 | `WAKE_REQUEST/WAKE_BEGIN/WAKE_SERVICE_RETURN/WAKE_SERVICE_ERROR/WAKE_BROADCAST_SENT/WAKE_FALLBACK_DUE` | 哪个入口被系统接纳或拒绝，1200ms无ACL后是否补发兼容入口？ |
+| 鉴权观察 | `AUTH_OBSERVE_START/AUTH_OBSERVE_CONNECTED/AUTH_OBSERVER_READY/AUTH_FRAME/AUTH_SUCCESS_OBSERVED/AUTH_OBSERVE_TIMEOUT` | 只读GATT是否观察到最后一条DK1.5鉴权帧，何时提前确认官方鉴权完成？ |
 | 车控 | `REQUEST_CREATED/REQUEST_WAIT/SEND_ATTEMPT/SEND_RESULT/REQUEST_CANCELLED` | 是否生成请求、等待什么、何时取消、通过哪条路径发送？ |
 | 运行 | `PROCESS_START/SERVICE_BEGIN/SERVICE_START_COMMAND/SERVICE_END/PREVIOUS_PROCESS_EXIT/TICK_GAP/HEARTBEAT` | 应用重启、内存压力、调度长间隔或权限/省电变化？ |
 
@@ -101,7 +102,7 @@ v4.0.3新增`departure_armed/early_unlock_age_ms/early_peak_dbm/departure_drop_d
 
 ## 6. 证据边界与复盘顺序
 
-先按大概时间找到`TARGET_FIRST_SEEN`，再看`WAKE_* → Official CONNECTED → REQUEST_* → SEND_*`；离开问题结合`RSSI_SAMPLE`和`sample_reason`查看驻留是否成立。
+v4.1.4先按大概时间找到`CANDIDATE_FIRST_SEEN`（普通选择前），再对照`WAKE_REQUEST → ACL_CONNECTED → Official CONNECTED → REQUEST_* → SEND_*`；旧版只有`TARGET_FIRST_SEEN`，该事件可能晚于最早候选出现；离开问题结合`RSSI_SAMPLE`和`sample_reason`查看驻留是否成立。
 
 - 官方服务调用返回`accepted=true`只表示系统接纳启动请求，广播也没有鉴权回执。
 - `SENT`表示本应用已通过通知按钮交给银河；本版本没有车锁执行回执。`UNKNOWN`不能当作发送成功或确定失败。
@@ -122,3 +123,86 @@ Android系统文件选择器与厂商后台行为需要真机验证；自动测�
 - 安装前后对照偏好，车辆身份、两个自动开关和`-75/-82/4500ms`参数保持一致。
 - 手机处于USB供电且插线禁控开启；启动后确认两组日志文件及服务运行标记已生成。
 - ZIP一致性、白名单、容量和脱敏经离线测试验证。随后ADB连接中断，尚未完成系统文件选择器保存ZIP的真机操作验证。
+
+## v4.1.1 多车排查新增字段
+
+当前构建运行11组测试；本页上方的六组测试/安装结果属于2026-11-07历史版本。
+
+- `FILTER_RECONFIGURE` 与 `filter_mode=LEARNING/HINT_DISCOVERY/TRACKING`：确认是否真正从协议广扫切换为本车窄过滤；`scan_start_budget_wait` 表示主动限频，不是已停止工作的证据。
+- `MATCH_RESULT`：`match_reason`、广告 `addr_id/name_id/prefix_id`、`company`、`sampled_mono_ms` 和 `scan_age_ms`，每5秒最多一条，不记录原始广播或VIN全文。
+- `TARGET_SWITCH`：目标地址指纹及原因；`target_age_ms` 从选择时刻起算，未知候选12秒预算不会被持续广播续期。`candidates` 是近期物理MAC候选数（最大32），仍不能简单等同实际车辆数。
+- `IDENTITY_UPDATED/CONNECTED_IDENTITY`：地址变化是否来自 `ADDRESS` 同MAC补全或唯一可验证的连接；跨地址 `NAME/HINT` 都不得直接合并身份。
+- `scan_discovery_only`：只尝试官方鉴权，未用于RSSI/自动车控；`max_scan_age_ms` 可帮助识别回调排队；`rssi_stale_or_duplicate` 表示迟到/重复样本未计入驻留。
+- `MEASUREMENT_TARGET_CHANGED`：物理测距目标切换，旧距离与驻留已撤销，但已发送/手动上锁锁存仍保留。
+
+`scan_accepted` 从v4.1.1起仅统计可信单目标广告；候选发现包单独记录，不能直接与旧版未学习期间的接受率比较。详细规则与实车验收见 [47_v4_1_1_multicar_filter_and_identity.md](47_v4_1_1_multicar_filter_and_identity.md)。
+
+
+## v4.1.4 预连接分段字段
+
+- `CANDIDATE_FIRST_SEEN`：每个物理候选首次出现（先于普通主目标选择），记录`match_reason/sampled_mono_ms/scan_age_ms/rssi/advertised_name/early_reason`；匿名提示首见最多每秒一条，其余计入`suppressed`，不全面逐包刷日志。
+- `advertised_name=true`表示当前`ScanRecord`携带精确名称；系统缓存设备名仍可以参与原普通发现，但不冒充新鲜命名广播首包资格。
+- `early_reason=FULL_NAME_VENDOR_TAIL`仅代表可提前交给官方的公开线索，不代表真实地址已学、RSSI可信或已鉴权。`NO_LEARNED_ADDRESS/NO_FRESH_FULL_NAME/VENDOR_OR_TAIL_MISMATCH/LEARNED_ADDRESS_FRESH`说明不能走首包路径。
+- `candidate_age_ms/sightings/named_sightings/named_span_ms/name_reset`附在候选、匹配与实际唤醒事件中；`NAME_GAP`为命名间隔超过3秒重置，`NAME_CHANGED`为同MAC车名变化，跨度取实际命名采集时间，不是Handler等待时间。
+- `WAKE_REQUEST phase=SEND_EARLY_NAME`为普通名称确认前的请求，`SEND_SELECTED`为原主目标路径。`since_first_ad_ms`从实际尝试地址的首候选采集时间算，稍后名称确认不覆盖起点；后续`WAKE_BEGIN`仍是实际桥接调用阶段。
+- `WAKE_WAIT reason=WAIT_ACL_AUTH`表示同MAC/当前在途目标已有真实ACL，五秒内不再注入；**不是鉴权完成**。`CANDIDATE_IN_FLIGHT/CANDIDATE_COOLDOWN`分别是单目标占用和失败冷却。
+- `WAKE_BUDGET_EXPIRED`为未验证预连接十二秒预算结束，进入三十秒候选冷却；不结束全局扫描或已验证GATT监测。
+- 心跳/导出增加`wake_target_id/wake_reason/early_reason/wake_attempts/wake_attempt_age_ms/wake_last_age_ms/wake_wait_verified_peer`；官方边沿增加`wake_session_id`。所有地址仍只记录指纹。
+- `wake_wait_verified_peer=true`仅表示新增首包会话的实际物理地址待验证，旧保存MAC完整不绕过；`REQUEST_WAIT reason=WAIT_VERIFIED_PEER`说明等待这一证据，不是RSSI阈值慢。真实连接验证采用后继续，官方断连/服务重置清理。
+- `wake_early_name`统计提前请求，`wake_wait_acl_auth`统计握手等待。`TARGET_FIRST_SEEN`仍表示进入普通主目标处理，不得用它替代首候选事件计算预连接等待。
+
+复盘需区分“首候选→本App注入”“底层ACL→官方就绪”“官方就绪→通知交付”。ACL没有发起进程身份、公开字段不是唯一车辆凭证，通知交付也不是车锁执行回执；缺失逐包/站位标记时不能宣称精确还原广播或RSSI米数。详见文档50。
+
+## v4.1.5 稳定掩码发现排查
+
+v4.1.5没有新增日志字段，但`TRACKING`的厂商过滤从六字节全等改为两个稳定掩码：`FF 00 FF 00 FF FF`优先、`FF 00 00 00 FF FF`兜底antenna变化。日志解释应同步调整：
+
+- `FILTER_RECONFIGURE filter_mode=TRACKING`仍表示已学习窄过滤；不再从“六字节前缀是否完全相同”判断同车。相同尾号但version/devices变化可通过优先掩码，antenna变化可通过兜底掩码。
+- `MATCH_RESULT match_reason=HINT`可能来自地址轮换的稳定掩码；`prefix_id`变化不等于另一辆车。只有Company ID、尾号、车名冲突或真实连接验证才能否定身份。
+- `scan_discovery_only`仍表示匿名HINT未用于RSSI；`scan_other_vehicle`减少不代表其他吉利消失，也可能只是未落入本车VIN掩码。
+- `WAKE_REQUEST phase=SEND_EARLY_NAME`仍要求当前`ScanRecord`完整本车名；匿名稳定掩码包只能走两条样本/1500ms后的`SEND_SELECTED`，不能因为过滤放行就提前连接。
+- `scan_stale/scan_duplicate/rssi_stale_or_duplicate`含义不变；HINT不能进入`RSSI_SAMPLE`，也不能修改已学MAC。若看到该现象应按身份隔离回归处理。
+
+复盘仍按`首候选 → WAKE_REQUEST → WAKE_BEGIN → ACL → Official CONNECTED → REQUEST_* → SEND_*`分层，详见 [52_v4_1_5_stable_mask_discovery.md](52_v4_1_5_stable_mask_discovery.md)。
+
+## v4.1.6 车机参数只读探针
+
+新日志源`VehicleParam`只记录只读AIDL查询和原始回执摘要，不参与解锁/上锁判定：
+
+- `READ_REQUEST`：一次查询同时发送`5392=2` PE状态、`272=0`车况、`305=0`标定读取请求；字段`write_actions=none`明确表示没有写操作。
+- `PE_SWITCH_RESULT`：`0x0501`回执的request/state/result/platform与最多64字节raw摘要。state=1开启、0关闭，**不是RSSI或距离阈值**。
+- `CALIBRATION_RESULT`：收到`0x0132`时记录原始回执摘要；若5秒内没有回执，记录`READ_TIMEOUT`并在界面显示L6/DK1.5可能不支持`0x0131`读取。
+- `VEHICLE_STATUS_RESULT`：`0x0121`车况原始帧摘要；仍以现有通知/逻辑判断为准，不因该帧到达放行车控。
+- `APPROACH_LOCK_EVENT`：若车机主动上报`0x0159`，记录原始摘要，不据此发送上锁或改变状态机。
+- `AIDL_CONNECTED/AIDL_DISCONNECTED/AIDL_BINDING_DIED`：只表示官方`DigitalKeyBgService`绑定状态，不等于蓝牙钥匙已鉴权或车辆可控。
+
+持久化位置为应用私有`SharedPreferences("vehicle_param_readonly_prefs")`，界面卡片“车机参数（只读）”展示最近值与时间；导出ZIP仍按原有脱敏规则处理。不要根据`PE_SWITCH_RESULT`推断距离阈值，也不要在未备份原值与验证回滚前尝试任何写入。详见 [53_v4_1_6_readonly_vehicle_param_probe.md](53_v4_1_6_readonly_vehicle_param_probe.md)。
+
+## v4.1.7 实时曲线读数
+
+主页“蓝牙信号实时曲线”每500ms读取现有`Status.rssi / Status.smoothRssi / lastSampleAgeMs / source`，不新增日志事件，也不调用任何扫描或读取API。曲线蓝线是原始RSSI，黄线是`RssiFilter`平滑值，绿色/红色虚线是当前解锁/上锁阈值；无新鲜样本时曲线断开。
+
+对照日志时，曲线当前值应与最近一条`Signal`事件的`raw/smooth/approach`及样本年龄一致。曲线尖峰不等于车机实际距离变化，必须结合`source=广播/GATT`、遮挡、手机姿态和官方就绪阶段判断。曲线本身不改变状态机，不能把“曲线已达到阈值”当作车控已发送或车锁已执行。详见 [54_v4_1_7_realtime_rssi_chart.md](54_v4_1_7_realtime_rssi_chart.md)。
+
+## v4.2.1 锁屏快速补扫与新日志
+
+- `FAST_RESCAN_START`：唤醒、ACL或`cmdId=5`后开始高频`getActiveNotifications()`，当前窗口为50ms一查、最长15秒。
+- `FAST_RESCAN_EXTEND`：新的唤醒/GATT事件延长已有窗口，不创建第二套按钮队列。
+- `FAST_RESCAN_STOP reason=official_control_ready`：通知存在、官方已连接且当前解锁/上锁按钮已经捕获，快速补扫真正完成。
+- `FAST_RESCAN_STOP reason=window_expired`：15秒内仍未满足上述条件，不能当作成功；要结合通知权限、银河通知是否被屏蔽和`AUTH_*`判断。
+- `WAKE_FALLBACK_DUE`：主`MiuiService`请求后1200ms仍没有同MAC ACL，才补发一次兼容action；已有ACL时不得出现该事件。
+- `AUTH_OBSERVE_START/AUTH_FRAME/AUTH_SUCCESS_OBSERVED`：ACL后只读附加GATT观察；`cmd_id=5`表示DK1.5 Session响应。`auth_cmd5_age_ms`是最近一次观察年龄。
+- `STABLE_HINT_HIGH_RSSI`：已学完整身份、强信号且稳定厂商/VIN尾号一致的首个匿名包提前交给官方；仍不是RSSI或车控资格。
+- `PI_CACHE_WRITTEN/RESTORED/RESTORE_ERROR`：官方PendingIntent是否写入私有缓存、进程/监听重建后是否恢复、格式失效是否清除。
+- 心跳/诊断快照增加`auth_observe`、`auth_cmd5_age_ms`、`gatt_auth_ready`、`cached_unlock`、`cached_lock`；`cached_*`表示上一次可复用按钮，不表示当前通知仍在。
+
+复盘锁屏慢解锁时，应优先确认：`FAST_RESCAN_START`是否存在、结束原因是什么、`AUTH_SUCCESS_OBSERVED`是否早于通知刷新，以及`SEND_RESULT`前是否出现`PI_CACHE_RESTORED`。如果用户从未授权通知使用权且没有历史缓存，仍不能凭空生成官方按钮token。
+
+## v4.2.2 长时无车弱信号连接日志
+
+- `WEAK_CANDIDATE`：低于常规-95连接门槛的包只记录漏斗，不进入RSSI或车控；关键字段`addr_id/match_reason/rssi/threshold_dbm/sampled_mono_ms`。
+- `WAKE_REQUEST threshold_dbm=-95|-102`：`-102`只在至少5分钟没有本车信号、首个已学MAC/完整名称强身份候选中使用一次。
+- `WAKE_ACL_WINDOW acl_seen=false`：第一次唤醒后1.2秒没有同MAC ACL，随后才补发兼容action；`true`表示首次已进入握手。
+- `since_first_wake_ms`：同一唤醒会话内第二次及后续尝试距第一次实际唤醒的时间。
+- 心跳/扫描快照新增`absence_age_ms/last_vehicle_age_ms/weak_candidate`，用于判断是没收到包还是被弱信号门槛拒绝。
+- 待发解锁处于`WAIT_OFFICIAL`时会刷新同一会话的重试预算，仍受请求12秒期限、插线/行驶保护和ACL 5秒保护。

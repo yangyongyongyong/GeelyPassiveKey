@@ -14,11 +14,13 @@ import android.os.Build;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
+import android.os.Parcel;
 import android.os.SystemClock;
 import android.provider.Settings;
 import android.service.notification.NotificationListenerService;
 import android.service.notification.StatusBarNotification;
 import android.util.Log;
+import android.util.Base64;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.FrameLayout;
@@ -67,6 +69,12 @@ public class KeyNotificationBridgeService extends NotificationListenerService {
     private static volatile PendingIntent cachedContentPi = null;
     private static volatile View cachedLockView = null;
     private static volatile View cachedUnlockView = null;
+    private static volatile PendingIntent lastKnownLockPi = null;
+    private static volatile PendingIntent lastKnownUnlockPi = null;
+    private static volatile View lastKnownLockView = null;
+    private static volatile View lastKnownUnlockView = null;
+    private static volatile boolean gattAuthReady = false;
+    private static volatile Context controlContext = null;
     private static volatile long lastUpdateTimestamp = 0L;
     private static volatile String lastObservedParkStatus = "";
     private static volatile long lastObservedParkStatusAtMs = 0L;
@@ -77,9 +85,15 @@ public class KeyNotificationBridgeService extends NotificationListenerService {
     private static volatile String lastParseDiagnostic = "NO_NOTIFICATION";
     private static final long REBIND_REQUEST_INTERVAL_MS = 2000L;
     private static final long MISSING_NOTIFICATION_RESCAN_MS = 1500L;
+    private static final long FAST_RESCAN_INTERVAL_MS = 50L;
+    public static final long FAST_RESCAN_WINDOW_MS = 15000L;
+    private static final String CONTROL_CACHE_PREFS = "control_pendingintent_cache";
+    private static final String KEY_UNLOCK_PI = "unlock_pi";
+    private static final String KEY_LOCK_PI = "lock_pi";
     private static long listenerDownSinceMs = 0L;
     private static long lastRebindRequestAtMs = 0L;
     private static long lastMissingRescanAtMs = 0L;
+    private static volatile long pendingFastRescanDurationMs = 0L;
     private static volatile String lastRecoveryDiagnostic = "listener_recovery=waiting";
 
     // 官方通知从未连接切换到已连接时通知主服务；待发动作统一由主服务管理，避免两套队列重复点击。
@@ -92,8 +106,24 @@ public class KeyNotificationBridgeService extends NotificationListenerService {
     private long lastSeenAtMs;
     private long lastParsedAtMs;
     private long lastNotificationLogAtMs;
+    private long fastRescanUntilMs = 0L;
     private volatile boolean listenerConnected = false;
     private Context geelyPkgContext = null;
+
+    private final Runnable fastRescanRunnable = new Runnable() {
+        /** 唤醒窗口内高频补扫当前通知，发现即停，不建立第二套按钮或发送队列。 */
+        @Override
+        public void run() {
+            long now = SystemClock.elapsedRealtime();
+            if (instance != KeyNotificationBridgeService.this || !listenerConnected
+                    || now > fastRescanUntilMs || fastRescanSatisfied()) {
+                stopFastRescan(fastRescanSatisfied() ? "official_control_ready" : "window_expired");
+                return;
+            }
+            scanExistingNotifications();
+            mainHandler.postDelayed(this, FAST_RESCAN_INTERVAL_MS);
+        }
+    };
 
     public static KeyNotificationBridgeService getInstance() {
         return instance;
@@ -103,6 +133,31 @@ public class KeyNotificationBridgeService extends NotificationListenerService {
     public static boolean isListenerConnected() {
         KeyNotificationBridgeService service = instance;
         return service != null && service.listenerConnected;
+    }
+
+    /** GATT观察到官方DK1.5鉴权完成时设置临时就绪，避免等待锁屏通知刷新。 */
+    public static void markGattAuthReady(boolean ready) {
+        boolean changed = gattAuthReady != ready;
+        gattAuthReady = ready;
+        if (changed) DiagnosticLog.event("Notification", ready ? "GATT_AUTH_READY" : "GATT_AUTH_CLEARED", "");
+    }
+
+    /** 返回是否已从官方GATT鉴权帧确认本次连接完成。 */
+    public static boolean isGattAuthReady() {
+        return gattAuthReady;
+    }
+
+    /** 主服务发起官方连接后请求高频补扫，抢占NotificationListener回调延迟。 */
+    public static void requestFastRescan(Context context, long durationMs) {
+        if (context == null) return;
+        DiagnosticLog.initialize(context);
+        KeyNotificationBridgeService service = instance;
+        if (service == null || !service.listenerConnected) {
+            pendingFastRescanDurationMs = Math.max(pendingFastRescanDurationMs, durationMs);
+            ensureRebound(context);
+            return;
+        }
+        service.startFastRescan(Math.max(500L, durationMs));
     }
 
     public static String getLastObservedParkStatus() {
@@ -142,6 +197,9 @@ public class KeyNotificationBridgeService extends NotificationListenerService {
                 + " notification_parse=" + lastParseDiagnostic
                 + " unlock_button=" + (cachedUnlockPi != null ? "PI" : cachedUnlockView != null ? "VIEW" : "NONE")
                 + " lock_button=" + (cachedLockPi != null ? "PI" : cachedLockView != null ? "VIEW" : "NONE")
+                + " cached_unlock=" + (lastKnownUnlockPi != null ? "PI" : lastKnownUnlockView != null ? "VIEW" : "NONE")
+                + " cached_lock=" + (lastKnownLockPi != null ? "PI" : lastKnownLockView != null ? "VIEW" : "NONE")
+                + " gatt_auth_ready=" + gattAuthReady
                 + " park=" + lastObservedParkStatus
                 + " park_age_ms=" + (lastObservedParkStatusAtMs == 0L ? -1L : nowMs - lastObservedParkStatusAtMs)
                 + " " + lastRecoveryDiagnostic
@@ -258,10 +316,25 @@ public class KeyNotificationBridgeService extends NotificationListenerService {
 
     /** 只要求当前动作对应的按钮可用，另一个按钮不可用不阻塞本次请求。 */
     static boolean hasControlIntent(PassiveKeyLogic.Action action) {
-        if (!geelyBleConnected || !geelyNotificationPresent) return false;
-        if (action == PassiveKeyLogic.Action.UNLOCK) return cachedUnlockPi != null || cachedUnlockView != null;
-        if (action == PassiveKeyLogic.Action.LOCK) return cachedLockPi != null || cachedLockView != null;
+        if (!gattAuthReady && (!geelyBleConnected || !geelyNotificationPresent)) return false;
+        if (action == PassiveKeyLogic.Action.UNLOCK) {
+            return cachedUnlockPi != null || cachedUnlockView != null
+                    || lastKnownUnlockPi != null || lastKnownUnlockView != null;
+        }
+        if (action == PassiveKeyLogic.Action.LOCK) {
+            return cachedLockPi != null || cachedLockView != null
+                    || lastKnownLockPi != null || lastKnownLockView != null;
+        }
         return false;
+    }
+
+    /** 无NotificationListener实例时保留应用上下文用于禁控检查，不用于伪造按钮。 */
+    public static void setControlContext(Context context) {
+        if (context != null) {
+            controlContext = context.getApplicationContext();
+            if (lastKnownUnlockPi == null) lastKnownUnlockPi = restorePendingIntent(KEY_UNLOCK_PI);
+            if (lastKnownLockPi == null) lastKnownLockPi = restorePendingIntent(KEY_LOCK_PI);
+        }
     }
 
     public static long getLastUpdateTimestamp() {
@@ -296,10 +369,13 @@ public class KeyNotificationBridgeService extends NotificationListenerService {
      */
     private static boolean isControlBlocked(boolean unlock, boolean manual) {
         KeyNotificationBridgeService svc = instance;
-        if (svc == null || !svc.listenerConnected || Looper.myLooper() != Looper.getMainLooper()
-                || !geelyBleConnected || !geelyNotificationPresent) return true;
+        Context context = svc != null ? svc : controlContext;
+        if (context == null || Looper.myLooper() != Looper.getMainLooper()) return true;
+        boolean notificationReady = svc != null && svc.listenerConnected
+                && geelyBleConnected && geelyNotificationPresent;
+        if (!notificationReady && !gattAuthReady) return true;
         try {
-            VehicleIdentityStore store = new VehicleIdentityStore(svc);
+            VehicleIdentityStore store = new VehicleIdentityStore(context);
             if (!store.isServiceEnabled()
                     || (!manual && (unlock ? !store.isAutoUnlockEnabled() : !store.isAutoLockEnabled()))) {
                 return true;
@@ -309,7 +385,7 @@ public class KeyNotificationBridgeService extends NotificationListenerService {
             if (!store.isBlockWhenChargingEnabled()) {
                 return false;
             }
-            Intent sticky = svc.registerReceiver(null, new IntentFilter(Intent.ACTION_BATTERY_CHANGED));
+            Intent sticky = context.registerReceiver(null, new IntentFilter(Intent.ACTION_BATTERY_CHANGED));
             if (sticky == null) return true;
             int plugged = sticky.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0);
             return (plugged & (BatteryManager.BATTERY_PLUGGED_AC | BatteryManager.BATTERY_PLUGGED_USB)) != 0;
@@ -324,7 +400,8 @@ public class KeyNotificationBridgeService extends NotificationListenerService {
      */
     public static ControlResult triggerUnlockViaNotification() {
         if (isControlBlocked(true, false)) return controlResult(ControlResult.NOT_SENT, "NONE", "BLOCKED", null);
-        return fireNotificationButton(cachedUnlockPi, cachedUnlockView, "解锁");
+        return fireNotificationButton(firstNonNull(cachedUnlockPi, lastKnownUnlockPi),
+                firstNonNull(cachedUnlockView, lastKnownUnlockView), "解锁");
     }
 
     /**
@@ -332,7 +409,8 @@ public class KeyNotificationBridgeService extends NotificationListenerService {
      */
     public static ControlResult triggerLockViaNotification() {
         if (isControlBlocked(false, false)) return controlResult(ControlResult.NOT_SENT, "NONE", "BLOCKED", null);
-        return fireNotificationButton(cachedLockPi, cachedLockView, "上锁");
+        return fireNotificationButton(firstNonNull(cachedLockPi, lastKnownLockPi),
+                firstNonNull(cachedLockView, lastKnownLockView), "上锁");
     }
 
     /** 手动测试复用同一个通知按钮发送通道，保留禁控检查且不创建延迟或重发任务。 */
@@ -344,8 +422,10 @@ public class KeyNotificationBridgeService extends NotificationListenerService {
         if (isControlBlocked(unlock, true)) {
             return controlResult(ControlResult.NOT_SENT, "NONE", "MANUAL_BLOCKED", null);
         }
-        return unlock ? fireNotificationButton(cachedUnlockPi, cachedUnlockView, "手动解锁")
-                : fireNotificationButton(cachedLockPi, cachedLockView, "手动上锁");
+        return unlock ? fireNotificationButton(firstNonNull(cachedUnlockPi, lastKnownUnlockPi),
+                        firstNonNull(cachedUnlockView, lastKnownUnlockView), "手动解锁")
+                : fireNotificationButton(firstNonNull(cachedLockPi, lastKnownLockPi),
+                        firstNonNull(cachedLockView, lastKnownLockView), "手动上锁");
     }
 
     /** 一次尝试只选 PI 或 View；出现不确定异常时停止，不冒险重复执行车控。 */
@@ -396,6 +476,53 @@ public class KeyNotificationBridgeService extends NotificationListenerService {
         return result;
     }
 
+    /** 当前通知按钮优先，失去通知实例时复用上次同token按钮。 */
+    private static <T> T firstNonNull(T current, T lastKnown) {
+        return current != null ? current : lastKnown;
+    }
+
+    /** 将官方PendingIntent token序列化到应用私有缓存，供进程重启后仍能复用。 */
+    private static void persistPendingIntent(String key, PendingIntent pendingIntent) {
+        Context context = controlContext != null ? controlContext : instance;
+        if (context == null || pendingIntent == null) return;
+        Parcel parcel = Parcel.obtain();
+        try {
+            pendingIntent.writeToParcel(parcel, 0);
+            String encoded = Base64.encodeToString(parcel.marshall(), Base64.NO_WRAP);
+            context.getSharedPreferences(CONTROL_CACHE_PREFS, Context.MODE_PRIVATE)
+                    .edit().putString(key, encoded).apply();
+            DiagnosticLog.event("Notification", "PI_CACHE_WRITTEN", "key=" + key);
+        } catch (Throwable error) {
+            DiagnosticLog.bridgeError("Notification", "PI_CACHE_WRITE_ERROR", error);
+        } finally {
+            parcel.recycle();
+        }
+    }
+
+    /** 恢复私有PendingIntent；格式损坏或系统拒绝时删除缓存并退回实时通知。 */
+    private static PendingIntent restorePendingIntent(String key) {
+        Context context = controlContext;
+        if (context == null) return null;
+        String encoded = context.getSharedPreferences(CONTROL_CACHE_PREFS, Context.MODE_PRIVATE)
+                .getString(key, "");
+        if (encoded == null || encoded.isEmpty()) return null;
+        Parcel parcel = Parcel.obtain();
+        try {
+            byte[] data = Base64.decode(encoded, Base64.NO_WRAP);
+            parcel.unmarshall(data, 0, data.length);
+            parcel.setDataPosition(0);
+            PendingIntent pendingIntent = PendingIntent.CREATOR.createFromParcel(parcel);
+            DiagnosticLog.event("Notification", "PI_CACHE_RESTORED", "key=" + key);
+            return pendingIntent;
+        } catch (Throwable error) {
+            context.getSharedPreferences(CONTROL_CACHE_PREFS, Context.MODE_PRIVATE).edit().remove(key).apply();
+            DiagnosticLog.bridgeError("Notification", "PI_CACHE_RESTORE_ERROR", error);
+            return null;
+        } finally {
+            parcel.recycle();
+        }
+    }
+
     public static boolean triggerContentIntentWakeup() {
         PendingIntent pi = cachedContentPi;
         if (pi != null) {
@@ -423,6 +550,7 @@ public class KeyNotificationBridgeService extends NotificationListenerService {
     @Override
     public void onDestroy() {
         DiagnosticLog.event("Notification", "LISTENER_DESTROY", "current_instance=" + (instance == this));
+        stopFastRescan("listener_destroy");
         notificationEpoch.invalidate();
         listenerConnected = false;
         if (instance == this) {
@@ -451,6 +579,14 @@ public class KeyNotificationBridgeService extends NotificationListenerService {
         ensureRadarServiceRunning();
         scanExistingNotifications();
         mainHandler.postDelayed(this::scanExistingNotifications, 800L);
+        if (pendingFastRescanDurationMs > 0L) {
+            long duration = pendingFastRescanDurationMs;
+            pendingFastRescanDurationMs = 0L;
+            startFastRescan(duration);
+        }
+        if (fastRescanUntilMs > SystemClock.elapsedRealtime()) {
+            startFastRescan(fastRescanUntilMs - SystemClock.elapsedRealtime());
+        }
     }
 
     /** 监听失联时立即清理就绪状态，并请求系统重新绑定。 */
@@ -501,6 +637,36 @@ public class KeyNotificationBridgeService extends NotificationListenerService {
             } catch (Throwable ignored) {
             }
         }
+    }
+
+    /** 只有官方已连接且当前按钮已捕获才停止；单纯出现“未连接”通知不能结束补扫。 */
+    private boolean fastRescanSatisfied() {
+        return geelyNotificationPresent && geelyBleConnected
+                && (cachedUnlockPi != null || cachedLockPi != null
+                || cachedUnlockView != null || cachedLockView != null);
+    }
+
+    /** 启动或续期高频补扫窗口；同一时间只保留一个Runnable。 */
+    private void startFastRescan(long durationMs) {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            mainHandler.post(() -> startFastRescan(durationMs));
+            return;
+        }
+        long until = SystemClock.elapsedRealtime() + Math.max(500L, durationMs);
+        boolean extending = fastRescanUntilMs > 0L;
+        fastRescanUntilMs = Math.max(fastRescanUntilMs, until);
+        mainHandler.removeCallbacks(fastRescanRunnable);
+        mainHandler.post(fastRescanRunnable);
+        DiagnosticLog.event("Notification", extending ? "FAST_RESCAN_EXTEND" : "FAST_RESCAN_START",
+                "duration_ms=" + durationMs + " interval_ms=" + FAST_RESCAN_INTERVAL_MS);
+    }
+
+    /** 结束补扫窗口，不影响正式通知监听、按钮状态或主服务等待。 */
+    private void stopFastRescan(String reason) {
+        if (fastRescanUntilMs == 0L) return;
+        fastRescanUntilMs = 0L;
+        mainHandler.removeCallbacks(fastRescanRunnable);
+        DiagnosticLog.event("Notification", "FAST_RESCAN_STOP", "reason=" + reason);
     }
 
     /** 聚合通知移除不代表钥匙断连，只处理真正的钥匙通知。 */
@@ -568,7 +734,8 @@ public class KeyNotificationBridgeService extends NotificationListenerService {
         cachedUnlockView = null;
         cachedLockView = null;
         cachedContentPi = null;
-        lastButtonCaptureDiag = "官方钥匙通知未就绪";
+        lastButtonCaptureDiag = lastKnownUnlockPi != null || lastKnownUnlockView != null
+                ? "当前通知未就绪（缓存官方按钮可用）" : "官方钥匙通知未就绪";
         lastParseDiagnostic = "CLEARED";
         if (changed) DiagnosticLog.event("Notification", "STATE_CLEARED", diagnosticSnapshot(SystemClock.elapsedRealtime()));
         if (changed) notifyStateListener();
@@ -713,10 +880,13 @@ public class KeyNotificationBridgeService extends NotificationListenerService {
                     PendingIntent pi = extractPendingIntentFromInflatedView(unlockView);
                     if (pi != null) {
                         cachedUnlockPi = pi;
+                        lastKnownUnlockPi = pi;
+                        persistPendingIntent(KEY_UNLOCK_PI, pi);
                         foundUnlockBtn = true;
                     }
                     if (unlockView.hasOnClickListeners() || pi != null) {
                         cachedUnlockView = unlockView;
+                        lastKnownUnlockView = unlockView;
                         foundUnlockBtn = true;
                     }
                 }
@@ -725,10 +895,13 @@ public class KeyNotificationBridgeService extends NotificationListenerService {
                     PendingIntent pi = extractPendingIntentFromInflatedView(lockView);
                     if (pi != null) {
                         cachedLockPi = pi;
+                        lastKnownLockPi = pi;
+                        persistPendingIntent(KEY_LOCK_PI, pi);
                         foundLockBtn = true;
                     }
                     if (lockView.hasOnClickListeners() || pi != null) {
                         cachedLockView = lockView;
+                        lastKnownLockView = lockView;
                         foundLockBtn = true;
                     }
                 }
@@ -770,9 +943,13 @@ public class KeyNotificationBridgeService extends NotificationListenerService {
                         if (pi != null) {
                             if (viewId == ID_NOTIF_TV_LOCK) {
                                 cachedLockPi = pi;
+                                lastKnownLockPi = pi;
+                                persistPendingIntent(KEY_LOCK_PI, pi);
                                 foundLockBtn = true;
                             } else if (viewId == ID_NOTIF_TV_UNLOCK) {
                                 cachedUnlockPi = pi;
+                                lastKnownUnlockPi = pi;
+                                persistPendingIntent(KEY_UNLOCK_PI, pi);
                                 foundUnlockBtn = true;
                             }
                         }
@@ -796,13 +973,17 @@ public class KeyNotificationBridgeService extends NotificationListenerService {
             cachedLockPi = null;
             cachedUnlockView = null;
             cachedLockView = null;
+        } else if (foundUnlockBtn || foundLockBtn) {
+            stopFastRescan("notification_control_ready");
         }
 
         lastButtonCaptureDiag = String.format(
                 "通知栏状态=%s | 解锁按钮=%s | 上锁按钮=%s",
                 geelyBleConnected ? "已连接" : "未连接",
-                (cachedUnlockPi != null ? "PI已捕获" : (cachedUnlockView != null ? "View已就绪" : "待连接捕获")),
-                (cachedLockPi != null ? "PI已捕获" : (cachedLockView != null ? "View已就绪" : "待连接捕获"))
+                (cachedUnlockPi != null ? "PI已捕获" : (cachedUnlockView != null ? "View已就绪"
+                        : (lastKnownUnlockPi != null || lastKnownUnlockView != null ? "缓存可用" : "待连接捕获"))),
+                (cachedLockPi != null ? "PI已捕获" : (cachedLockView != null ? "View已就绪"
+                        : (lastKnownLockPi != null || lastKnownLockView != null ? "缓存可用" : "待连接捕获")))
         );
         lastParsedAtMs = SystemClock.elapsedRealtime();
         lastParseDiagnostic = parsePath + "_" + (connVisible == null ? "CONNECTION_UNKNOWN" : "OK");

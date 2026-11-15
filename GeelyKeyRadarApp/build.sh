@@ -16,7 +16,40 @@ GEN_DIR="$BUILD_DIR/gen"
 CLASSES_DIR="$BUILD_DIR/classes"
 DEX_DIR="$BUILD_DIR/dex"
 TEST_DIR="$BUILD_DIR/test-classes"
-APK="$APP_DIR/GeelyPassiveKey.apk"
+XMLLINT="${XMLLINT:-$(command -v xmllint || true)}"
+if [ -z "$XMLLINT" ] || ! command -v "$XMLLINT" >/dev/null 2>&1; then
+    echo "缺少 xmllint，无法从 AndroidManifest.xml 读取版本；可设置 XMLLINT 指定可执行文件" >&2
+    exit 1
+fi
+
+# 按XML属性读取版本，避免靠文本行号或正则碰巧匹配到注释中的旧版本。
+read_manifest_version() {
+    "$XMLLINT" --nonet --xpath "string(/*[local-name()='manifest']/@*[local-name()='$1'])" \
+        "$APP_DIR/AndroidManifest.xml"
+}
+
+VERSION_NAME="$(read_manifest_version versionName)"
+VERSION_CODE="$(read_manifest_version versionCode)"
+if [ -z "$VERSION_NAME" ] || [[ ! "$VERSION_CODE" =~ ^[0-9]+$ ]]; then
+    echo "AndroidManifest.xml 必须提供非空 versionName 和数字 versionCode" >&2
+    exit 1
+fi
+# 保留版本名常用字符，斜杠、空白等替换为短横线，防止文件名生成额外目录。
+SAFE_VERSION_NAME="$(printf '%s' "$VERSION_NAME" | LC_ALL=C tr -c 'A-Za-z0-9._-' '-')"
+APK_NAME="GeelyPassiveKey-v${SAFE_VERSION_NAME}-${VERSION_CODE}.apk"
+APK="$APP_DIR/$APK_NAME"
+REMOTE_APK="/data/local/tmp/$APK_NAME"
+
+# 只打印预期产物路径，便于发布脚本和命名回归检查，不编译、不接触手机。
+if [ "${1:-}" = "--print-apk-path" ] && [ "$#" -eq 1 ]; then
+    printf '%s\n' "$APK"
+    exit 0
+elif [ "$#" -gt 0 ]; then
+    echo "用法: bash build.sh [--print-apk-path]；仅构建请设置 SKIP_INSTALL=1" >&2
+    exit 1
+fi
+
+echo "版本: $VERSION_NAME (versionCode=$VERSION_CODE)"
 
 mkdir -p "$GEN_DIR" "$CLASSES_DIR" "$DEX_DIR" "$TEST_DIR"
 find "$GEN_DIR" -type f -delete 2>/dev/null || true
@@ -28,6 +61,8 @@ echo "[1/6] 纯逻辑单测"
 javac -source 11 -target 11 -d "$TEST_DIR" \
     "$APP_DIR/src/com/luca/geelykeyradar/PassiveKeyLogic.java" \
     "$APP_DIR/src/com/luca/geelykeyradar/RssiFilter.java" \
+    "$APP_DIR/src/com/luca/geelykeyradar/RssiChartSeries.java" \
+    "$APP_DIR/src/com/luca/geelykeyradar/GattAuthFrameParser.java" \
     "$APP_DIR/src/com/luca/geelykeyradar/PendingControl.java" \
     "$APP_DIR/src/com/luca/geelykeyradar/NotificationEpoch.java" \
     "$APP_DIR/src/com/luca/geelykeyradar/RotatingFileLog.java" \
@@ -35,10 +70,21 @@ javac -source 11 -target 11 -d "$TEST_DIR" \
     "$APP_DIR/src/com/luca/geelykeyradar/DiagnosticCounters.java" \
     "$APP_DIR/src/com/luca/geelykeyradar/DiagnosticLogStore.java" \
     "$APP_DIR/src/com/luca/geelykeyradar/VehicleLearningState.java" \
+    "$APP_DIR/src/com/luca/geelykeyradar/VehicleBeacon.java" \
+    "$APP_DIR/src/com/luca/geelykeyradar/VehicleDiscoverySignature.java" \
+    "$APP_DIR/src/com/luca/geelykeyradar/VehicleParamCodec.java" \
+    "$APP_DIR/src/com/luca/geelykeyradar/VehicleIdentity.java" \
+    "$APP_DIR/src/com/luca/geelykeyradar/VehicleTargetSelector.java" \
+    "$APP_DIR/src/com/luca/geelykeyradar/VehicleWakeGate.java" \
+    "$APP_DIR/src/com/luca/geelykeyradar/VehicleScanPolicy.java" \
+    "$APP_DIR/src/com/luca/geelykeyradar/OfficialReadyGate.java" \
+    "$APP_DIR/src/com/luca/geelykeyradar/ThresholdSettingsForm.java" \
     "$APP_DIR/tests/com/luca/geelykeyradar/"*Test.java
-for TEST_CLASS in PassiveKeyLogicTest RssiPipelineTest PendingControlTest NotificationEpochTest RotatingFileLogTest DiagnosticsTest VehicleLearningStateTest; do
+for TEST_CLASS in PassiveKeyLogicTest RssiPipelineTest RssiChartSeriesTest GattAuthFrameParserTest PendingControlTest NotificationEpochTest RotatingFileLogTest DiagnosticsTest VehicleLearningStateTest VehicleIdentityTest VehicleTargetSelectorTest VehicleWakeGateTest VehicleScanPolicyTest OfficialReadyGateTest ThresholdSettingsFormTest VehicleParamCodecTest; do
     java -ea -cp "$TEST_DIR" "com.luca.geelykeyradar.$TEST_CLASS"
 done
+
+bash "$APP_DIR/tests/version_naming_test.sh"
 
 echo "[2/6] 编译资源"
 "$BUILD_TOOLS/aapt2" compile --dir "$APP_DIR/res" -o "$BUILD_DIR/res.zip"
@@ -94,8 +140,8 @@ fi
 if "$ADB" "${ADB_ARGS[@]}" get-state >/dev/null 2>&1; then
     "$ADB" "${ADB_ARGS[@]}" shell input keyevent KEYCODE_WAKEUP >/dev/null 2>&1 || true
     "$ADB" "${ADB_ARGS[@]}" shell wm dismiss-keyguard >/dev/null 2>&1 || true
-    "$ADB" "${ADB_ARGS[@]}" push "$APK" /data/local/tmp/GeelyPassiveKey.apk >/dev/null
-    ("$ADB" "${ADB_ARGS[@]}" shell pm install -r -g /data/local/tmp/GeelyPassiveKey.apk) &
+    "$ADB" "${ADB_ARGS[@]}" push "$APK" "$REMOTE_APK" >/dev/null
+    ("$ADB" "${ADB_ARGS[@]}" shell pm install -r -g "$REMOTE_APK") &
     PM_PID=$!
     # vivo/OriginOS 外部来源安装确认页（1260x2800）
     sleep 4.2
