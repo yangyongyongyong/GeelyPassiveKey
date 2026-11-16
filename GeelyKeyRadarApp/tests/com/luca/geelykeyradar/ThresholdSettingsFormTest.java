@@ -13,18 +13,18 @@ public final class ThresholdSettingsFormTest {
 
     /** 旧版正数自动取负兼容仍在，预览与保存值使用同一个校验结果。 */
     private static void defaultsAndPositiveCompatibility() {
-        ThresholdSettingsForm.Result defaults = ThresholdSettingsForm.validate("-79", "-85", "2", "-95");
-        check(defaults.isValid() && defaults.unlockDbm == -79 && defaults.lockDbm == -85
+        ThresholdSettingsForm.Result defaults = ThresholdSettingsForm.validate("-75", "-85", "2", "-95");
+        check(defaults.isValid() && defaults.unlockDbm == -75 && defaults.lockDbm == -85
                 && defaults.dwellMs == 2000 && defaults.connectDbm == -95,
                 "默认值与当前实车参数一致");
-        ThresholdSettingsForm.Result positive = ThresholdSettingsForm.validate("79", "85", "2", "95");
-        check(positive.isValid() && positive.unlockDbm == -79 && positive.lockDbm == -85
+        ThresholdSettingsForm.Result positive = ThresholdSettingsForm.validate("75", "85", "2", "95");
+        check(positive.isValid() && positive.unlockDbm == -75 && positive.lockDbm == -85
                 && positive.connectDbm == -95 && positive.normalizedPositiveSignal, "输入正数仍自动转为负dBm");
-        check(positive.summary().contains("-79") && positive.summary().contains("-85")
+        check(positive.summary().contains("-75") && positive.summary().contains("-85")
                 && positive.summary().contains("-95"), "预览显示实际负值");
         check(ThresholdSettingsForm.validate(" −79 ", "－85", "2", " −95 ").isValid(), "支持粘贴常见减号和空白");
         String defaultsHelp = ThresholdSettingsForm.defaultsSummary();
-        check(defaultsHelp.contains("-95") && defaultsHelp.contains("-79")
+        check(defaultsHelp.contains("-95") && defaultsHelp.contains("-75")
                 && defaultsHelp.contains("-85") && defaultsHelp.contains("2"),
                 "App内默认值辅助说明必须包含四项当前默认参数");
     }

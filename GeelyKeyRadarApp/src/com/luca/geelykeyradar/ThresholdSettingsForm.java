@@ -75,7 +75,7 @@ final class ThresholdSettingsForm {
         String lockError = "";
         String dwellError = "";
         if (!Double.isFinite(unlock)) {
-            unlockError = "请输入靠近信号，例如 -79";
+            unlockError = "请输入靠近信号，例如 -75";
         } else if (unlock < MIN_UNLOCK_DBM || unlock > MAX_UNLOCK_DBM) {
             unlockError = "靠近信号范围为 -90 至 -40 dBm";
         }

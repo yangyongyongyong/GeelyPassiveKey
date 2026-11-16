@@ -726,10 +726,10 @@ public final class PassiveKeyLogicTest {
                 "手动上锁锁存优先于车机落锁纠偏");
     }
 
-    /** 当前实车调好的默认值为 -79/-85/2.0s，运行时仍会被持久化配置覆盖。 */
+    /** 当前实车调好的默认值为 -75/-85/2.0s，运行时仍会被持久化配置覆盖。 */
     private static void projectDefaultsMatchAdjustedSettings() {
         PassiveKeyLogic logic = new PassiveKeyLogic();
-        check(logic.getUnlockDbm() == -79.0f, "项目默认解锁阈值应为 -79");
+        check(logic.getUnlockDbm() == -75.0f, "项目默认解锁阈值应为 -75");
         check(logic.getLockDbm() == -85.0f, "项目默认上锁阈值应为 -85");
         check(logic.getLockDwellMs() == 2000L, "项目默认上锁确认时长应为 2 秒");
         check(PassiveKeyDefaults.CONNECT_DBM == -95.0f, "项目默认连接触发应为 -95");

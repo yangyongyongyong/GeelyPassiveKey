@@ -6,9 +6,13 @@
 
 [⬇️ 下载 APK](https://github.com/yangyongyongyong/GeelyPassiveKey/releases/latest) · [v4.0 设计说明](docs/36_minimal_generic_passive_key.md) · [逆向知识库](docs/)
 
-当前源码版本为 **v4.5.7-min（构建 507）**：修复靠近时顶部长期停留在“未发现车辆”、随后突然解锁的问题；短阶段现在按“发现 → 唤醒银河 → 链路建立 → 鉴权就绪 → 发送动作”留存并显示最近轨迹，不再被页面 500ms 刷新漏掉。详见 [v4.5.7实时阶段轨迹](docs/70_live_activity_trace.md)、[v4.5.6动作日志快照](docs/69_action_log_snapshots.md)、[v4.5.5默认值辅助与配置保留](docs/67_v4_5_5_default_visibility_preservation.md)、[v4.5.4实时行为状态](docs/66_v4_5_4_live_activity_bar.md)、[v4.5.3连接触发与罚站修复](docs/65_v4_5_3_connect_threshold_pending_unlock.md)、[v4.5.2车旁重锁纠偏](docs/64_v4_5_2_native_relock_recovery.md)、[v4.5.1信号区修复](docs/63_v4_5_1_signal_zone_clip_fix.md)、[v4.5.0 Material 3 重构](docs/62_v4_5_0_material3_ui_refactor.md)、[v4.4.0自动更新](docs/61_v4_4_0_auto_update_and_release_ci.md) 与 [v4.3.0授权全检](docs/60_v4_3_0_permission_guide_and_listener_rebind.md)。
+[![靠近解锁时序](docs/diagrams/unlock_sequence.png)](docs/68_unlock_sequence_and_architecture.md)
 
-当前测试包 `v4.5.7-min` 继续使用稳定签名证书 `279948c5d7401188fb72c218e954fc088b8d9cd5eb1aece6dd077b19c08145c4`。本轮只做本地构建和逻辑回归，不自动截图或点击手机；APK 编译完成后由用户手动安装测试。未创建 GitHub Release，正式发布仍由 Actions 读取同一密钥和 `update.json`。v4.2.2 的单 MiuiService、15 秒通知补扫、GATT `cmdId=5` 提前就绪与 PendingIntent 回退继续保留，详见 [v4.2.2说明](docs/58_v4_2_2_long_absence_weak_connect.md)、[v4.2.1说明](docs/57_v4_2_1_lockscreen_fast_rescan.md) 和 [v4.2.0说明](docs/56_v4_2_0_fast_auth_and_notification_fallback.md)。
+> 一张图看懂：扫描本车 → 连接触发 → 银河鉴权 → 靠近解锁 → 离开确认上锁。连接触发阈值不等于靠近解锁阈值。
+
+当前源码版本为 **v4.5.8-min（构建 508）**：新安装默认参数调整为连接 `≥ -95 dBm`、靠近解锁 `≥ -75 dBm`、离开上锁 `≤ -85 dBm`、离开确认 `2.0 秒`；README 顶部加入靠近解锁时序图。升级/覆盖安装和点击“填入默认值”都不会自动覆盖用户已保存的四项配置。详见 [v4.5.8默认参数与图示](docs/71_v4_5_8_default_threshold_and_readme_sequence.md)、[v4.5.7实时阶段轨迹](docs/70_live_activity_trace.md)、[v4.5.6动作日志快照](docs/69_action_log_snapshots.md)、[v4.5.5默认值辅助与配置保留](docs/67_v4_5_5_default_visibility_preservation.md)、[v4.5.3连接触发与罚站修复](docs/65_v4_5_3_connect_threshold_pending_unlock.md)、[v4.5.0 Material 3 重构](docs/62_v4_5_0_material3_ui_refactor.md) 与 [v4.4.0自动更新](docs/61_v4_4_0_auto_update_and_release_ci.md)。
+
+当前源码 `v4.5.8-min` 继续使用稳定签名证书 `279948c5d7401188fb72c218e954fc088b8d9cd5eb1aece6dd077b19c08145c4`。本轮只做本地构建和逻辑回归，不自动截图或点击手机；APK 编译完成后由用户手动安装测试。未创建 GitHub Release，正式发布仍由 Actions 读取同一密钥和 `update.json`。v4.2.2 的单 MiuiService、15 秒通知补扫、GATT `cmdId=5` 提前就绪与 PendingIntent 回退继续保留，详见 [v4.2.2说明](docs/58_v4_2_2_long_absence_weak_connect.md)、[v4.2.1说明](docs/57_v4_2_1_lockscreen_fast_rescan.md) 和 [v4.2.0说明](docs/56_v4_2_0_fast_auth_and_notification_fallback.md)。
 
 ---
 
@@ -59,7 +63,7 @@
 | 机制 | 作用 |
 | :--- | :--- |
 | **阈值解释清晰** | 每项有永久标签、作用说明、单位、范围与调节方向；非法输入就地提示，推荐值仅填草稿，保存后生效。 |
-| **版本可见** | 维护 → 关于中显示 `版本：v4.5.7-min（构建 507）`，从实际安装包读取，未来升级无需改界面字符串。 |
+| **版本可见** | 维护 → 关于中显示 `版本：v4.5.8-min（构建 508）`，从实际安装包读取，未来升级无需改界面字符串。 |
 | **首包提前连接** | 已学完整本车名＋一致厂商/VIN线索不必等第二条命名广播；只是交给官方鉴权，不提前保存MAC或计RSSI，同地址正在ACL握手时不重复注入。 |
 | **多车隔离** | 学习后替换协议宽过滤，明确身份冲突先拒绝；匿名弱线索只找车，不改MAC/混RSSI。 |
 | **官方就绪即处理** | 官方钥匙通知变成「已连接」立即处理一次接近机会，已有请求仅完成它。GATT 测距已连不会提前冒充官方鉴权就绪。 |
@@ -74,7 +78,7 @@
 | **行车不动作** | 银河通知明确显示「行驶中」时，不解锁也不上锁。 |
 | **插线禁控** | 手机插着有线充电（例如在车里用 USB 供电）时默认禁止自动与手动解闭锁。 |
 
-默认连接触发 `-95 dBm`、解锁阈值 `-79 dBm`、上锁阈值 `-85 dBm`、驻留 `2.0 s`，都能在 App 里改。连接阈值只提前唤醒银河蓝牙钥匙，不直接解锁；长时无车后的首个强身份广播会自动再放宽 7 dB。设置弹窗会说明“更负/更强”对触发时机的影响；RSSI 不对应固定米数。
+默认连接触发 `-95 dBm`、靠近解锁阈值 `-75 dBm`、离开上锁阈值 `-85 dBm`、离开确认 `2.0 s`，都能在 App 里改；这些默认值只用于新安装或“填入默认值”草稿，不会覆盖已保存配置。连接阈值只提前唤醒银河蓝牙钥匙，不直接解锁；长时无车后的首个强身份广播会自动再放宽 7 dB。设置弹窗会说明“更负/更强”对触发时机的影响；RSSI 不对应固定米数。
 
 手机遮挡稳定800ms后，接近信号补偿 `+8 dBm`，上锁信号不补偿。界面最多显示10条关键日志，后台轮转日志总容量上限 **4 MiB**。每次解锁或上锁成功交给银河后，还会自动保存动作前最近 **3 分钟**的独立 ZIP 快照；快照包含当时四项触发参数和脱敏日志，最多保留 **100 个**，超过后删除最老文件。维护页可查看数量和占用，并一键导出全部动作快照。显示“指令已交付”代表已交给银河，未取得车锁执行回执。
 
@@ -178,7 +182,7 @@ APK 不入库（`.gitignore` 排除 `*.apk`），从 [Releases](https://github.c
 
 ## 七、文档
 
-当前版本看 **67**；查协议看 **01**，查误锁根因看 **03**，查完整链路看 **18**。
+当前版本看 **71**；查协议看 **01**，查误锁根因看 **03**，查完整链路看 **18**。
 
 | 文档 | 内容 |
 | :--- | :--- |
@@ -217,8 +221,10 @@ APK 不入库（`.gitignore` 排除 `*.apk`），从 [Releases](https://github.c
 | [03](docs/03_root_causes_3m_lock_and_disconnect.md) | **3 米误锁、偶现不自动连蓝牙的源码级根因** |
 | [06](docs/06_real_car_field_test_and_v2_ble_findings.md) | 实车联调：V2 3.07s 鉴权窗口、单槽位 ACL、5 米信号阶梯 |
 | [18](docs/18_phone_key_workflow.md) | **手机钥匙完整链路图**（含 `docs/diagrams/` 流程图） |
-| [68](docs/68_unlock_sequence_and_architecture.md) | **当前v4.5.5图示**：靠近解锁时序图、系统架构图、连接阈值与解锁阈值边界 |
+| [68](docs/68_unlock_sequence_and_architecture.md) | **解锁时序与系统架构图**：连接阈值、靠近解锁阈值及官方桥接边界 |
 | [69](docs/69_action_log_snapshots.md) | **动作日志快照**：解锁/上锁自动保存前三分钟、四项配置、最多100个 |
+| [70](docs/70_live_activity_trace.md) | **实时阶段轨迹**：发现、唤醒、链路、鉴权、发送等短阶段留存 |
+| [71](docs/71_v4_5_8_default_threshold_and_readme_sequence.md) | **v4.5.8默认参数**：连接-95、解锁-75、上锁-85、确认2秒，README时序图与Release默认值 |
 | [07](docs/07_recent_reverse_findings_and_v2_2_features.md) | 逆向发现合集：DK1.5 枚举反转、车机 `0x0501` 开关真相、车辆状态枚举 |
 | [08](docs/08_threshold_dwell_and_screen_off.md) | 阈值 + 驻留状态机，锁屏失效根因与保活 |
 | [23](docs/23_v3_13_cabin_rssi_stabilizer.md) | 车内多径 RSSI 稳定化（Kalman / 中值 / 限速） |
@@ -235,7 +241,7 @@ APK 不入库（`.gitignore` 排除 `*.apk`），从 [Releases](https://github.c
 ANDROID_KEYSTORE=/path/to/existing.keystore SKIP_INSTALL=1 bash GeelyKeyRadarApp/build.sh
 ```
 
-先跑状态机、RSSI完整流程、曲线序列、GATT鉴权帧、待发请求、通知版本、日志轮转、诊断导出、学习资格、身份匹配、单目标选择、硬件过滤和官方就绪门控、预连接门控、阈值表单校验、车机只读回执、授权全检及更新策略 **19组Java测试＋1组APK命名回归**，再 `aapt2` → `javac` → `d8` → `apksigner`。上例仅构建，不操作手机；显式去掉 `SKIP_INSTALL=1` 才尝试原有安装流程。产物：`GeelyKeyRadarApp/GeelyPassiveKey-v4.5.7-min-507.apk`。后续命名统一为 `GeelyPassiveKey-v<versionName>-<versionCode>.apk`，不再生成无版本别名。
+先跑状态机、RSSI完整流程、曲线序列、GATT鉴权帧、待发请求、通知版本、日志轮转、诊断导出、学习资格、身份匹配、单目标选择、硬件过滤和官方就绪门控、预连接门控、阈值表单校验、车机只读回执、授权全检及更新策略 **19组Java测试＋1组APK命名回归**，再 `aapt2` → `javac` → `d8` → `apksigner`。上例仅构建，不操作手机；显式去掉 `SKIP_INSTALL=1` 才尝试原有安装流程。产物：`GeelyKeyRadarApp/GeelyPassiveKey-v4.5.8-min-508.apk`。后续命名统一为 `GeelyPassiveKey-v<versionName>-<versionCode>.apk`，不再生成无版本别名。
 
 仅查询本次版本的预期产物路径（不编译、不安装）：
 
@@ -247,16 +253,28 @@ bash GeelyKeyRadarApp/build.sh --print-apk-path
 
 ### GitHub Release 流水线
 
-推送与 Manifest 版本一致的标签即可触发签名构建和 Release 上传：
+支持两种发布方式：
 
 ```bash
-git tag v4.5.7-min
-git push origin v4.5.7-min
+# 方式一：推送与 Manifest 版本一致的标签
+git tag v4.5.8-min
+git push origin v4.5.8-min
 ```
 
-Actions 使用以下仓库 Secrets：`ANDROID_KEYSTORE_BASE64`、`ANDROID_KEYSTORE_PASS`、`ANDROID_KEY_ALIAS`、`ANDROID_KEY_PASS`；可选 `ANDROID_CERT_SHA256` 用于阻止换签名。标签不匹配、密钥缺失或证书不符时流水线失败，不会发布 APK。
+方式二：在 GitHub Actions 手动运行 `Android Release`。`tag` 输入可留空，workflow 会从 `AndroidManifest.xml` 自动生成 `v4.5.8-min` 并创建对应标签，不需要预先创建 tag；如果填写了不匹配的标签会明确失败。
 
-每次 Release 正文都会从 `PassiveKeyDefaults.java` 自动提取并写明四项默认触发参数：蓝牙连接触发、靠近解锁、离开上锁、离开确认。任一项缺失或解析失败时流水线直接失败，不允许发布缺少默认值说明的 Release。
+Actions 使用以下仓库 Secrets：`ANDROID_KEYSTORE_BASE64`、`ANDROID_KEYSTORE_PASS`、`ANDROID_KEY_ALIAS`、`ANDROID_KEY_PASS`；可选 `ANDROID_CERT_SHA256` 用于阻止换签名。版本、标签、密钥或证书不匹配时流水线失败，不会发布 APK。
+
+每次 Release 正文都会从 `PassiveKeyDefaults.java` 自动提取并写明四项默认触发参数：
+
+```text
+蓝牙连接触发：≥ -95 dBm
+靠近解锁：≥ -75 dBm
+离开上锁：≤ -85 dBm
+离开确认：2.0 秒
+```
+
+正文同时注明“仅新安装使用这些默认值，升级安装保留用户已保存配置”。任一项缺失或解析失败时流水线直接失败，不允许发布缺少默认值说明的 Release。
 
 当前手机安装包的签名基线是 `279948c5d7401188fb72c218e954fc088b8d9cd5eb1aece6dd077b19c08145c4`。Actions 必须使用与之相同的 keystore，否则 App 内更新会拒绝安装。
 

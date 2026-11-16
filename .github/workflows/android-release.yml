@@ -7,15 +7,16 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Existing tag to rebuild and publish, e.g. v4.4.0-min'
-        required: true
+        description: '可选：期望标签；留空则从 AndroidManifest.xml 自动生成'
+        required: false
+        default: ''
         type: string
 
 permissions:
   contents: write
 
 concurrency:
-  group: android-release-${{ github.event.inputs.tag || github.ref_name }}
+  group: android-release-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -27,7 +28,7 @@ jobs:
       - name: Checkout release ref
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.inputs.tag || github.ref }}
+          ref: ${{ github.ref }}
           fetch-depth: 0
 
       - name: Set up Java 17
@@ -51,9 +52,10 @@ jobs:
             "build-tools;36.0.0"
           echo "ANDROID_SDK_ROOT=${ANDROID_HOME}" >> "$GITHUB_ENV"
 
-      - name: Validate tag against AndroidManifest.xml
+      - name: Resolve and validate release version
+        id: release
         env:
-          RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+          EXPECTED_TAG: ${{ github.event.inputs.tag }}
         run: |
           if [ "${GITHUB_REPOSITORY}" != "yangyongyongyong/GeelyPassiveKey" ]; then
             echo "This workflow publishes the updater manifest for ${GITHUB_REPOSITORY}, but the App is pinned to yangyongyongyong/GeelyPassiveKey" >&2
@@ -65,15 +67,37 @@ jobs:
           VERSION_CODE="$(xmllint --nonet --xpath \
             "string(/*[local-name()='manifest']/@*[local-name()='versionCode'])" \
             GeelyKeyRadarApp/AndroidManifest.xml)"
-          if [ "${RELEASE_TAG}" != "v${VERSION_NAME}" ]; then
-            echo "Tag ${RELEASE_TAG} does not match AndroidManifest version v${VERSION_NAME}" >&2
-            exit 1
-          fi
           if [[ ! "${VERSION_CODE}" =~ ^[0-9]+$ ]]; then
             echo "Invalid versionCode: ${VERSION_CODE}" >&2
             exit 1
           fi
-          echo "Version: v${VERSION_NAME} (${VERSION_CODE})"
+
+          RELEASE_TAG="v${VERSION_NAME}"
+          if [ "${GITHUB_REF_TYPE}" = "tag" ] && [ "${GITHUB_REF_NAME}" != "${RELEASE_TAG}" ]; then
+            echo "Pushed tag ${GITHUB_REF_NAME} does not match AndroidManifest version ${RELEASE_TAG}" >&2
+            exit 1
+          fi
+          if [ "${GITHUB_REF_TYPE}" = "branch" ] && [ "${GITHUB_REF_NAME}" != "main" ]; then
+            echo "Release must run from main or a matching tag; got branch ${GITHUB_REF_NAME}" >&2
+            exit 1
+          fi
+          if [ -n "${EXPECTED_TAG}" ] && [ "${EXPECTED_TAG}" != "${RELEASE_TAG}" ]; then
+            echo "Requested tag ${EXPECTED_TAG} does not match AndroidManifest version ${RELEASE_TAG}" >&2
+            exit 1
+          fi
+          if git rev-parse --verify --quiet "refs/tags/${RELEASE_TAG}" >/dev/null; then
+            TAG_SHA="$(git rev-list -n 1 "refs/tags/${RELEASE_TAG}")"
+            if [ "${TAG_SHA}" != "${GITHUB_SHA}" ]; then
+              echo "Existing tag ${RELEASE_TAG} points to ${TAG_SHA}, not current commit ${GITHUB_SHA}" >&2
+              exit 1
+            fi
+          fi
+
+          echo "RELEASE_TAG=${RELEASE_TAG}" >> "$GITHUB_ENV"
+          echo "VERSION_NAME=${VERSION_NAME}" >> "$GITHUB_ENV"
+          echo "VERSION_CODE=${VERSION_CODE}" >> "$GITHUB_ENV"
+          echo "release_tag=${RELEASE_TAG}" >> "$GITHUB_OUTPUT"
+          echo "Version: ${RELEASE_TAG} (${VERSION_CODE}); matching tag will be created if absent"
 
       - name: Decode release keystore
         env:
@@ -95,7 +119,7 @@ jobs:
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           ANDROID_KEY_PASS: ${{ secrets.ANDROID_KEY_PASS }}
           EXPECTED_CERT_SHA256: ${{ secrets.ANDROID_CERT_SHA256 }}
-          RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+          RELEASE_TAG: ${{ env.RELEASE_TAG }}
           SKIP_INSTALL: '1'
         run: |
           if [ -z "${ANDROID_KEYSTORE_PASS:-}" ]; then
@@ -195,7 +219,8 @@ jobs:
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          tag_name: ${{ env.RELEASE_TAG }}
+          target_commitish: ${{ github.sha }}
           name: GeelyPassiveKey v${{ steps.build.outputs.version }}
           body_path: ${{ steps.build.outputs.defaults_markdown }}
           generate_release_notes: true

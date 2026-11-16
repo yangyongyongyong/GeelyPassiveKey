@@ -39,7 +39,7 @@ final class RssiChartView extends View {
     private final Paint unlockTextPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint lockTextPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private float connectDbm = -95f;
-    private float unlockDbm = -79f;
+    private float unlockDbm = -75f;
     private float lockDbm = -85f;
 
     /** 初始化固定样式，曲线颜色与电源状态卡保持一致。 */
