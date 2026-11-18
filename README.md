@@ -10,9 +10,9 @@
 
 > 一张图看懂：扫描本车 → 连接触发 → 银河鉴权 → 靠近解锁 → 离开确认上锁。连接触发阈值不等于靠近解锁阈值。
 
-当前源码版本为 **v4.5.8-min（构建 508）**：新安装默认参数调整为连接 `≥ -95 dBm`、靠近解锁 `≥ -75 dBm`、离开上锁 `≤ -85 dBm`、离开确认 `2.0 秒`；README 顶部加入靠近解锁时序图。升级/覆盖安装和点击“填入默认值”都不会自动覆盖用户已保存的四项配置。详见 [v4.5.8默认参数与图示](docs/71_v4_5_8_default_threshold_and_readme_sequence.md)、[v4.5.7实时阶段轨迹](docs/70_live_activity_trace.md)、[v4.5.6动作日志快照](docs/69_action_log_snapshots.md)、[v4.5.5默认值辅助与配置保留](docs/67_v4_5_5_default_visibility_preservation.md)、[v4.5.3连接触发与罚站修复](docs/65_v4_5_3_connect_threshold_pending_unlock.md)、[v4.5.0 Material 3 重构](docs/62_v4_5_0_material3_ui_refactor.md) 与 [v4.4.0自动更新](docs/61_v4_4_0_auto_update_and_release_ci.md)。
+当前源码版本为 **v4.6.1-min（构建 601）**：新增零 R2 费用的 Cloudflare 更新镜像 `https://geelyupdate.mq.lucadesign.uk`：Worker 代理 GitHub Release 并做边缘缓存。App 默认每 1 小时优先检查 Cloudflare `update.json`，自动下载并校验后再保留 GitHub Releases 兜底；普通手机仍由用户确认 Android 系统安装。日志上报继续使用固定 `GPK-...` UID 和必填异常现象。默认参数保持连接 `≥ -95 dBm`、靠近解锁 `≥ -75 dBm`、离开上锁 `≤ -85 dBm`、离开确认 `2.0 秒`，升级不会覆盖用户配置。详见 [v4.6.1 Cloudflare更新镜像](docs/73_v4_6_1_cloudflare_update_mirror.md)、[v4.5.9日志上报](docs/72_v4_5_9_cloudflare_log_upload.md)、[v4.5.8默认参数与图示](docs/71_v4_5_8_default_threshold_and_readme_sequence.md) 与 [v4.5.7实时阶段轨迹](docs/70_live_activity_trace.md)。
 
-当前源码 `v4.5.8-min` 继续使用稳定签名证书 `279948c5d7401188fb72c218e954fc088b8d9cd5eb1aece6dd077b19c08145c4`。本轮只做本地构建和逻辑回归，不自动截图或点击手机；APK 编译完成后由用户手动安装测试。未创建 GitHub Release，正式发布仍由 Actions 读取同一密钥和 `update.json`。v4.2.2 的单 MiuiService、15 秒通知补扫、GATT `cmdId=5` 提前就绪与 PendingIntent 回退继续保留，详见 [v4.2.2说明](docs/58_v4_2_2_long_absence_weak_connect.md)、[v4.2.1说明](docs/57_v4_2_1_lockscreen_fast_rescan.md) 和 [v4.2.0说明](docs/56_v4_2_0_fast_auth_and_notification_fallback.md)。
+当前源码 `v4.6.1-min` 继续使用稳定签名证书 `279948c5d7401188fb72c218e954fc088b8d9cd5eb1aece6dd077b19c08145c4`。本轮将发布 `v4.6.1-min`，由 Actions 使用同一稳定密钥构建签名包，并自动预热、校验 Cloudflare 更新镜像。v4.2.2 的单 MiuiService、15 秒通知补扫、GATT `cmdId=5` 提前就绪与 PendingIntent 回退继续保留，详见 [v4.2.2说明](docs/58_v4_2_2_long_absence_weak_connect.md)、[v4.2.1说明](docs/57_v4_2_1_lockscreen_fast_rescan.md) 和 [v4.2.0说明](docs/56_v4_2_0_fast_auth_and_notification_fallback.md)。
 
 ---
 
@@ -63,13 +63,13 @@
 | 机制 | 作用 |
 | :--- | :--- |
 | **阈值解释清晰** | 每项有永久标签、作用说明、单位、范围与调节方向；非法输入就地提示，推荐值仅填草稿，保存后生效。 |
-| **版本可见** | 维护 → 关于中显示 `版本：v4.5.8-min（构建 508）`，从实际安装包读取，未来升级无需改界面字符串。 |
+| **版本可见** | 维护 → 关于中显示 `版本：v4.6.1-min（构建 601）`，从实际安装包读取，未来升级无需改界面字符串。 |
 | **首包提前连接** | 已学完整本车名＋一致厂商/VIN线索不必等第二条命名广播；只是交给官方鉴权，不提前保存MAC或计RSSI，同地址正在ACL握手时不重复注入。 |
 | **多车隔离** | 学习后替换协议宽过滤，明确身份冲突先拒绝；匿名弱线索只找车，不改MAC/混RSSI。 |
 | **官方就绪即处理** | 官方钥匙通知变成「已连接」立即处理一次接近机会，已有请求仅完成它。GATT 测距已连不会提前冒充官方鉴权就绪。 |
 | **通知监听恢复** | 覆盖安装/强停后立即请求重绑；10 秒内明确显示“授权仍在、系统正在重连”，超过窗口才提示去系统页关闭再开启“银河无感钥匙通知桥接”。通知监听在线后继续补扫银河通知。 |
 | **授权与运行全检** | 一次处理一项：用途、系统路径、真实状态、主操作和恢复说明；从系统页返回自动复检，最后按必要项与保活建议汇总。 |
-| **自动更新** | 默认每 1 小时检查 GitHub latest Release 的 `update.json`；自动下载并校验 SHA-256/包名/构建号/签名，发通知后由用户确认系统安装。也可在“维护 → 应用更新”中手动检查。 |
+| **自动更新** | 默认每 1 小时优先检查 Cloudflare Worker 更新镜像，GitHub Release 自动兜底；自动下载并校验 SHA-256/包名/构建号/签名，发通知后由用户确认系统安装。 |
 | **一次接近只解锁一次** | 成功交付后不重复；锁后仍连着时须真实近场持续1秒才能再次解锁，口袋补偿与边界抖动不算返回。 |
 | **近场保护** | 最近6秒还在默认 `-78 dBm` 以上则禁止发送上锁；保护与远离计时同时进行。 |
 | **靠近阶段不反向锁车** | 官方连接可以提前解锁；实际进入过车旁后才按原阈值确认离开。没有走到车旁便转身时，需要同一采样来源的持续变弱证据，广播/GATT落差不算离开。 |
@@ -82,7 +82,7 @@
 
 手机遮挡稳定800ms后，接近信号补偿 `+8 dBm`，上锁信号不补偿。界面最多显示10条关键日志，后台轮转日志总容量上限 **4 MiB**。每次解锁或上锁成功交给银河后，还会自动保存动作前最近 **3 分钟**的独立 ZIP 快照；快照包含当时四项触发参数和脱敏日志，最多保留 **100 个**，超过后删除最老文件。维护页可查看数量和占用，并一键导出全部动作快照。显示“指令已交付”代表已交给银河，未取得车锁执行回执。
 
-遇到解锁慢或漏锁，先记下大概发生时间，再到 App 底部点 **“导出排查日志（ZIP）”** 保存文件。ZIP 包含版本、配置和完整保留日志；车辆地址和名称会替换为本机指纹，不自动上传。详见 [日志排查说明](docs/39_v4_0_2_diagnostic_logs.md)。
+遇到解锁慢或漏锁，先记下大概发生时间。维护页可直接点 **“上传排查日志给开发者”**，必须填写异常现象后上传；本车识别卡片还提供 **“上报车型兼容问题”**，用于星愿等未识别名称/协议格式的主动手动上报。成功会返回固定 `GPK-...` UID 和日志编号，也可继续点 **“导出排查日志（ZIP）”** 保存到本地。上传只由用户手动触发，ZIP 不含账号、VIN、蓝牙 MAC、钥匙密钥或通知正文；原始 Android ID 只参与本地哈希，不会写入或上传。详见 [v4.5.9日志上报](docs/72_v4_5_9_cloudflare_log_upload.md) 与 [日志排查说明](docs/39_v4_0_2_diagnostic_logs.md)。
 
 ---
 
@@ -167,7 +167,7 @@
 │   │   ├── PermissionStatus.java                # 权限、监听与保活事实读取
 │   │   ├── PermissionGuideActivity.java         # 逐项授权引导与结果汇总
 │   │   ├── UpdatePolicy.java                    # 一小时周期、版本与摘要纯逻辑
-│   │   ├── UpdateManager.java                   # GitHub检查、下载、校验、通知与安装
+│   │   ├── UpdateManager.java                   # Cloudflare主源/GitHub兜底、下载、校验与安装
 │   │   ├── UpdateApkProvider.java               # 私有 APK 只读交给系统安装器
 │   │   ├── MainActivity.java                   # Material 3 概览/控制/维护三页
 │   │   └── BootReceiver.java                   # 开机 / 更新自动拉起
@@ -182,7 +182,7 @@ APK 不入库（`.gitignore` 排除 `*.apk`），从 [Releases](https://github.c
 
 ## 七、文档
 
-当前版本看 **71**；查协议看 **01**，查误锁根因看 **03**，查完整链路看 **18**。
+当前版本看 **73**；查协议看 **01**，查误锁根因看 **03**，查完整链路看 **18**。
 
 | 文档 | 内容 |
 | :--- | :--- |
@@ -225,6 +225,8 @@ APK 不入库（`.gitignore` 排除 `*.apk`），从 [Releases](https://github.c
 | [69](docs/69_action_log_snapshots.md) | **动作日志快照**：解锁/上锁自动保存前三分钟、四项配置、最多100个 |
 | [70](docs/70_live_activity_trace.md) | **实时阶段轨迹**：发现、唤醒、链路、鉴权、发送等短阶段留存 |
 | [71](docs/71_v4_5_8_default_threshold_and_readme_sequence.md) | **v4.5.8默认参数**：连接-95、解锁-75、上锁-85、确认2秒，README时序图与Release默认值 |
+| [72](docs/72_v4_5_9_cloudflare_log_upload.md) | **v4.5.9日志上报**：Cloudflare Worker+D1、一键上传、日志编号、90天保留与隐私边界 |
+| [73](docs/73_v4_6_1_cloudflare_update_mirror.md) | **v4.6.1更新镜像**：Worker代理GitHub、边缘APK缓存、Cloudflare主源、GitHub兜底，无R2费用 |
 | [07](docs/07_recent_reverse_findings_and_v2_2_features.md) | 逆向发现合集：DK1.5 枚举反转、车机 `0x0501` 开关真相、车辆状态枚举 |
 | [08](docs/08_threshold_dwell_and_screen_off.md) | 阈值 + 驻留状态机，锁屏失效根因与保活 |
 | [23](docs/23_v3_13_cabin_rssi_stabilizer.md) | 车内多径 RSSI 稳定化（Kalman / 中值 / 限速） |
@@ -241,7 +243,7 @@ APK 不入库（`.gitignore` 排除 `*.apk`），从 [Releases](https://github.c
 ANDROID_KEYSTORE=/path/to/existing.keystore SKIP_INSTALL=1 bash GeelyKeyRadarApp/build.sh
 ```
 
-先跑状态机、RSSI完整流程、曲线序列、GATT鉴权帧、待发请求、通知版本、日志轮转、诊断导出、学习资格、身份匹配、单目标选择、硬件过滤和官方就绪门控、预连接门控、阈值表单校验、车机只读回执、授权全检及更新策略 **19组Java测试＋1组APK命名回归**，再 `aapt2` → `javac` → `d8` → `apksigner`。上例仅构建，不操作手机；显式去掉 `SKIP_INSTALL=1` 才尝试原有安装流程。产物：`GeelyKeyRadarApp/GeelyPassiveKey-v4.5.8-min-508.apk`。后续命名统一为 `GeelyPassiveKey-v<versionName>-<versionCode>.apk`，不再生成无版本别名。
+先跑状态机、RSSI完整流程、曲线序列、GATT鉴权帧、待发请求、通知版本、日志轮转、诊断导出、学习资格、身份匹配、单目标选择、硬件过滤和官方就绪门控、预连接门控、阈值表单校验、车机只读回执、授权全检及更新策略 **20组Java测试＋1组APK命名回归**，再 `aapt2` → `javac` → `d8` → `apksigner`。上例仅构建，不操作手机；显式去掉 `SKIP_INSTALL=1` 才尝试原有安装流程。产物：`GeelyKeyRadarApp/GeelyPassiveKey-v4.6.1-min-601.apk`。后续命名统一为 `GeelyPassiveKey-v<versionName>-<versionCode>.apk`，不再生成无版本别名。
 
 仅查询本次版本的预期产物路径（不编译、不安装）：
 
@@ -257,15 +259,15 @@ bash GeelyKeyRadarApp/build.sh --print-apk-path
 
 ```bash
 # 方式一：推送与 Manifest 版本一致的标签
-git tag v4.5.8-min
-git push origin v4.5.8-min
+git tag v4.6.1-min
+git push origin v4.6.1-min
 ```
 
-方式二：在 GitHub Actions 手动运行 `Android Release`。`tag` 输入可留空，workflow 会从 `AndroidManifest.xml` 自动生成 `v4.5.8-min` 并创建对应标签，不需要预先创建 tag；如果填写了不匹配的标签会明确失败。
+方式二：在 GitHub Actions 手动运行 `Android Release`。`tag` 输入可留空，workflow 会从 `AndroidManifest.xml` 自动生成 `v4.6.1-min` 并创建对应标签，不需要预先创建 tag；如果填写了不匹配的标签会明确失败。
 
-Actions 使用以下仓库 Secrets：`ANDROID_KEYSTORE_BASE64`、`ANDROID_KEYSTORE_PASS`、`ANDROID_KEY_ALIAS`、`ANDROID_KEY_PASS`；可选 `ANDROID_CERT_SHA256` 用于阻止换签名。版本、标签、密钥或证书不匹配时流水线失败，不会发布 APK。
+Actions 使用以下仓库 Secrets：`ANDROID_KEYSTORE_BASE64`、`ANDROID_KEYSTORE_PASS`、`ANDROID_KEY_ALIAS`、`ANDROID_KEY_PASS`；可选 `ANDROID_CERT_SHA256` 用于阻止换签名。版本、标签、密钥、证书或 Cloudflare 镜像预热校验失败时流水线失败。
 
-每次 Release 正文都会从 `PassiveKeyDefaults.java` 自动提取并写明四项默认触发参数：
+每次 Release 正文都会从 `PassiveKeyDefaults.java` 自动提取并写明四项默认触发参数；GitHub Release 发布后会自动预热并校验 Cloudflare 更新镜像：
 
 ```text
 蓝牙连接触发：≥ -95 dBm

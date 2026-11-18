@@ -21,3 +21,8 @@ GeelyKeyRadarApp/build/
 # Local machine config
 local.properties
 captures/
+
+# Cloudflare local state and secrets
+.wrangler/
+cloudflare/geelylog/node_modules/
+cloudflare/geelylog/.dev.vars

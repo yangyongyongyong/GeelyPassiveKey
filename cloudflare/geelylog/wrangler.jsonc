@@ -1,0 +1,43 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "geelypassivekey-log",
+  "main": "src/index.js",
+  "compatibility_date": "2026-11-18",
+  "workers_dev": false,
+  "preview_urls": false,
+  "routes": [
+    {
+      "pattern": "geelylog.mq.lucadesign.uk",
+      "custom_domain": true
+    }
+  ],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "geelypassivekey-logs",
+      "database_id": "0897e6f9-65d6-4084-be55-39b21df32eb8",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "vars": {
+    "MAX_ARCHIVE_BYTES": "1800000",
+    "DEVICE_DAILY_LIMIT": "10",
+    "IP_DAILY_LIMIT": "100",
+    "RETENTION_DAYS": "90"
+  },
+  "triggers": {
+    "crons": [
+      "17 3 * * *"
+    ]
+  },
+  "observability": {
+    "enabled": true,
+    "traces": {
+      "enabled": true,
+      "head_sampling_rate": 0.1
+    }
+  },
+  "placement": {
+    "mode": "smart"
+  }
+}

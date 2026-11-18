@@ -7,6 +7,12 @@ import java.util.regex.Pattern;
 final class UpdatePolicy {
     static final long CHECK_INTERVAL_MS = 60L * 60L * 1000L;
     static final int MAX_APK_BYTES = 50 * 1024 * 1024;
+    static final String CLOUDFLARE_ORIGIN = "https://geelyupdate.mq.lucadesign.uk";
+    static final String CLOUDFLARE_MANIFEST_URL = CLOUDFLARE_ORIGIN + "/update.json";
+    static final String GITHUB_MANIFEST_URL =
+            "https://github.com/yangyongyongyong/GeelyPassiveKey/releases/latest/download/update.json";
+    static final String GITHUB_APK_PREFIX =
+            "https://github.com/yangyongyongyong/GeelyPassiveKey/releases/download/";
 
     private static final Pattern VERSIONED_APK = Pattern.compile(
             "^GeelyPassiveKey-v(.+)-(\\d+)\\.apk$", Pattern.CASE_INSENSITIVE);
@@ -48,6 +54,18 @@ final class UpdatePolicy {
         if (versionName.isEmpty() || versionCode <= 0) return null;
         return new Asset(name.trim(), versionName, versionCode, downloadUrl.trim(),
                 digest == null ? "" : digest.trim(), Math.max(0L, size));
+    }
+
+    /** 只允许项目 Cloudflare 镜像和本项目 GitHub Release 的版本化 APK 地址。 */
+    static boolean isAllowedAssetLocation(Asset asset) {
+        if (asset == null) return false;
+        String cloudflare = CLOUDFLARE_ORIGIN + "/releases/" + asset.versionName + "/" + asset.name;
+        String github = GITHUB_APK_PREFIX + "v" + asset.versionName + "/" + asset.name;
+        return asset.downloadUrl.equals(cloudflare) || asset.downloadUrl.equals(github);
+    }
+
+    static boolean isAllowedManifestUrl(String url) {
+        return CLOUDFLARE_MANIFEST_URL.equals(url) || GITHUB_MANIFEST_URL.equals(url);
     }
 
     static boolean isNewer(int remoteVersionCode, int installedVersionCode) {

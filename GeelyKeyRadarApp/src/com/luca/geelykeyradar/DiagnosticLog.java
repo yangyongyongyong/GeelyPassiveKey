@@ -20,6 +20,7 @@ final class DiagnosticLog {
     private static volatile DiagnosticLogStore store;
     private static String environment = "environment=not_initialized";
     private static volatile String traceRun = "none";
+    private static volatile String deviceUid = "unavailable";
     private static long lastBridgeErrorAtMs;
 
     /** 每个进程初始化一次随机会话和本地脱敏盐，不写出偏好原文。 */
@@ -35,7 +36,9 @@ final class DiagnosticLog {
             }
             String session = UUID.randomUUID().toString().substring(0, 8);
             store = new DiagnosticLogStore(application.getFilesDir(), session, Process.myPid(), salt);
-            environment = "app=" + packageVersion(application, application.getPackageName())
+            deviceUid = DeviceUid.get(application);
+            environment = "device_uid=" + deviceUid
+                    + " app=" + packageVersion(application, application.getPackageName())
                     + " official_app=" + packageVersion(application, GeelyBridge.GEELY_PKG)
                     + " android=" + Build.VERSION.RELEASE + " sdk=" + Build.VERSION.SDK_INT
                     + " brand=" + Build.BRAND + " model=" + Build.MODEL;
@@ -73,7 +76,8 @@ final class DiagnosticLog {
         DiagnosticLogStore current = store;
         if (current == null) return;
         try {
-            String line = current.log(important, source, event, "trace_run=" + traceRun + " " + fields,
+            String line = current.log(important, source, event,
+                    "uid=" + deviceUid + " trace_run=" + traceRun + " " + fields,
                     System.currentTimeMillis(), SystemClock.elapsedRealtime());
             if (important) Log.i("PassiveDiagnostics", line);
             else Log.d("PassiveDiagnostics", line);
@@ -101,13 +105,20 @@ final class DiagnosticLog {
     /** 界面只显示最近十条脱敏关键事件。 */
     static String recentText() {
         DiagnosticLogStore current = store;
-        return current == null ? "暂无日志" : current.recentText();
+        if (current == null) return "暂无日志";
+        // UID已在维护页单独显示；日志正文仍保留，仅避免最近日志每行重复。
+        return current.recentText().replaceAll("uid=GPK-[0-9A-F-]+ ", "");
     }
 
     /** 返回日志队列、丢失计数和容量。 */
     static String health() {
         DiagnosticLogStore current = store;
         return current == null ? "logging=unavailable" : current.health();
+    }
+
+    /** 返回固定日志UID，供界面复制和上传元数据使用。 */
+    static String deviceUid() {
+        return deviceUid;
     }
 
     /** 返回仅供日志关联的本机短指纹。 */

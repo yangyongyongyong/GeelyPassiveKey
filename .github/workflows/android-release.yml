@@ -193,9 +193,9 @@ jobs:
           test -s "${RELEASE_DEFAULTS_MARKDOWN}"
           grep -q "蓝牙连接触发" "${RELEASE_DEFAULTS_MARKDOWN}"
           grep -q "离开确认" "${RELEASE_DEFAULTS_MARKDOWN}"
-          CHECKSUM="${RUNNER_TEMP}/$(basename "${APK}").sha256"
-          sha256sum "${APK}" > "${CHECKSUM}"
           APK_NAME="$(basename "${APK}")"
+          CHECKSUM="${RUNNER_TEMP}/${APK_NAME}.sha256"
+          (cd "$(dirname "${APK}")" && sha256sum "${APK_NAME}") > "${CHECKSUM}"
           SHA256="$(sha256sum "${APK}" | awk '{print $1}')"
           APK_SIZE="$(stat -c '%s' "${APK}")"
           APK_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}/${APK_NAME}"
@@ -213,6 +213,9 @@ jobs:
           echo "checksum=${CHECKSUM}" >> "$GITHUB_OUTPUT"
           echo "update_manifest=${UPDATE_MANIFEST}" >> "$GITHUB_OUTPUT"
           echo "version=${VERSION_NAME}" >> "$GITHUB_OUTPUT"
+          echo "version_code=${VERSION_CODE}" >> "$GITHUB_OUTPUT"
+          echo "apk_name=${APK_NAME}" >> "$GITHUB_OUTPUT"
+          echo "sha256=${SHA256}" >> "$GITHUB_OUTPUT"
           echo "signer=${SIGNER}" >> "$GITHUB_OUTPUT"
           echo "defaults_markdown=${RELEASE_DEFAULTS_MARKDOWN}" >> "$GITHUB_OUTPUT"
 
@@ -229,3 +232,28 @@ jobs:
             ${{ steps.build.outputs.apk }}
             ${{ steps.build.outputs.checksum }}
             ${{ steps.build.outputs.update_manifest }}
+
+      - name: Warm and verify Cloudflare update mirror
+        env:
+          APK_NAME: ${{ steps.build.outputs.apk_name }}
+          VERSION_NAME: ${{ steps.build.outputs.version }}
+          VERSION_CODE: ${{ steps.build.outputs.version_code }}
+          EXPECTED_SHA256: ${{ steps.build.outputs.sha256 }}
+        run: |
+          MANIFEST_URL="https://geelyupdate.mq.lucadesign.uk/update.json?refresh=1"
+          for attempt in 1 2 3 4 5; do
+            if MANIFEST="$(curl -fsS --max-time 30 -A "GeelyPassiveKey-release/${VERSION_NAME}" "$MANIFEST_URL")"; then
+              break
+            fi
+            sleep $((attempt * 5))
+          done
+          printf '%s\n' "$MANIFEST"
+          test "$(jq -r '.versionName' <<<"$MANIFEST")" = "$VERSION_NAME"
+          test "$(jq -r '.versionCode' <<<"$MANIFEST")" = "$VERSION_CODE"
+          test "$(jq -r '.apkName' <<<"$MANIFEST")" = "$APK_NAME"
+          MIRROR_URL="$(jq -r '.apkUrl' <<<"$MANIFEST")"
+          test "$MIRROR_URL" = "https://geelyupdate.mq.lucadesign.uk/releases/${VERSION_NAME}/${APK_NAME}"
+          curl -fsS --retry 3 --retry-delay 3 -A "GeelyPassiveKey-release/${VERSION_NAME}" "$MIRROR_URL" -o "${RUNNER_TEMP}/cloudflare-mirror.apk"
+          ACTUAL_SHA256="$(sha256sum "${RUNNER_TEMP}/cloudflare-mirror.apk" | awk '{print $1}')"
+          test "$ACTUAL_SHA256" = "$EXPECTED_SHA256"
+          echo "Cloudflare mirror verified: $MIRROR_URL"

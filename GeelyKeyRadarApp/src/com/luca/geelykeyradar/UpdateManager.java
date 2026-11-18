@@ -41,15 +41,17 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * GitHub Releases 自动更新。
+ * Cloudflare R2 主源、GitHub Releases 兜底的自动更新。
  *
  * 自动检查和下载在现有前台服务/界面后台线程执行；下载完成后发通知。
  * Android 不允许普通应用静默覆盖安装，最后一步始终由系统安装器确认。
  */
 final class UpdateManager {
     private static final String TAG = "GeelyUpdate";
-    private static final String UPDATE_MANIFEST_URL =
-            "https://github.com/yangyongyongyong/GeelyPassiveKey/releases/latest/download/update.json";
+    private static final String[] UPDATE_MANIFEST_URLS = {
+            UpdatePolicy.CLOUDFLARE_MANIFEST_URL,
+            UpdatePolicy.GITHUB_MANIFEST_URL
+    };
     private static final String PREFS = "app_update_prefs";
     private static final String UPDATE_DIR = "updates";
     private static final String KEY_AUTO_ENABLED = "auto_enabled";
@@ -163,7 +165,7 @@ final class UpdateManager {
         if (context == null) return false;
         Context app = context.getApplicationContext();
         if (!hasNetwork(app)) {
-            setStatus(app, "当前没有可用网络，无法检查 GitHub Releases");
+            setStatus(app, "当前没有可用网络，无法检查更新服务");
             return false;
         }
         return startCheck(app, manual);
@@ -222,7 +224,7 @@ final class UpdateManager {
         downloading = false;
         long now = System.currentTimeMillis();
         prefs(app).edit().putLong(KEY_LAST_ATTEMPT_MS, now).apply();
-        setStatus(app, manual ? "正在手动检查 GitHub Releases…" : "正在进行每小时自动检查…");
+        setStatus(app, manual ? "正在手动检查 Cloudflare 更新服务…" : "正在进行每小时自动检查…");
         DiagnosticLog.event("Update", "CHECK_START", "manual=" + manual);
         EXECUTOR.execute(() -> runCheck(app, manual));
         return true;
@@ -284,9 +286,32 @@ final class UpdateManager {
     }
 
     private static UpdatePolicy.Asset fetchLatestAsset(Context app) throws UpdateException {
+        UpdateException primary = null;
+        for (String manifestUrl : UPDATE_MANIFEST_URLS) {
+            try {
+                UpdatePolicy.Asset asset = fetchLatestAssetFrom(app, manifestUrl);
+                DiagnosticLog.event("Update", "MANIFEST_SOURCE_OK", "source="
+                        + (manifestUrl.startsWith(UpdatePolicy.CLOUDFLARE_ORIGIN) ? "cloudflare" : "github"));
+                return asset;
+            } catch (UpdateException error) {
+                if (primary == null) primary = error;
+                DiagnosticLog.event("Update", "MANIFEST_SOURCE_FAILED", "source="
+                        + (manifestUrl.startsWith(UpdatePolicy.CLOUDFLARE_ORIGIN) ? "cloudflare" : "github")
+                        + " reason=" + errorSummary(error));
+            }
+        }
+        throw new UpdateException("Cloudflare 与 GitHub 更新源均不可用"
+                + (primary == null ? "" : "：" + errorSummary(primary)), primary);
+    }
+
+    /** 单个清单源必须经过域名、文件名、版本和 SHA 字段校验。 */
+    private static UpdatePolicy.Asset fetchLatestAssetFrom(Context app, String manifestUrl) throws UpdateException {
+        if (!UpdatePolicy.isAllowedManifestUrl(manifestUrl)) {
+            throw new UpdateException("不支持的更新清单地址");
+        }
         HttpURLConnection connection = null;
         try {
-            URL url = new URL(UPDATE_MANIFEST_URL);
+            URL url = new URL(manifestUrl);
             connection = (HttpURLConnection) url.openConnection();
             connection.setConnectTimeout(10000);
             connection.setReadTimeout(20000);
@@ -296,7 +321,7 @@ final class UpdateManager {
             connection.setRequestProperty("User-Agent", "GeelyPassiveKey/" + installedVersionName(app));
             int code = connection.getResponseCode();
             if (code == 404) {
-                throw new UpdateException("最新 Release 尚未上传 update.json，请等待 CI 完成");
+                throw new UpdateException("更新源尚未上传 update.json，请等待发布完成");
             }
             if (code != 200) {
                 throw new UpdateException("更新清单返回 HTTP " + code);
@@ -316,9 +341,8 @@ final class UpdateManager {
             if (!asset.versionName.equals(manifestVersion) || asset.versionCode != manifestCode) {
                 throw new UpdateException("update.json 版本信息与 APK 文件名不一致");
             }
-            if (!asset.downloadUrl.startsWith(
-                    "https://github.com/yangyongyongyong/GeelyPassiveKey/releases/download/")) {
-                throw new UpdateException("update.json 下载地址不属于本项目 GitHub Release");
+            if (!UpdatePolicy.isAllowedAssetLocation(asset)) {
+                throw new UpdateException("update.json 下载地址不属于 Cloudflare 镜像或本项目 GitHub Release");
             }
             return asset;
         } catch (UpdateException error) {
@@ -377,7 +401,7 @@ final class UpdateManager {
             }
             String digest = toHex(sha256.digest());
             if (!UpdatePolicy.digestMatches(asset.digest, digest)) {
-                throw new UpdateException("APK SHA-256 与 GitHub Release 不一致");
+                throw new UpdateException("APK SHA-256 与 update.json 不一致");
             }
             if (target.exists() && !target.delete()) throw new UpdateException("无法替换旧更新文件");
             if (!part.renameTo(target)) throw new UpdateException("无法保存下载的 APK");
@@ -440,7 +464,7 @@ final class UpdateManager {
     }
 
     private static String statusText(Context app, boolean ready, String downloadedName, int downloadedCode) {
-        if (checking) return runtimeStatus.isEmpty() ? "正在检查 GitHub Releases…" : runtimeStatus;
+        if (checking) return runtimeStatus.isEmpty() ? "正在检查 Cloudflare / GitHub 更新源…" : runtimeStatus;
         if (downloading) return runtimeStatus.isEmpty() ? "正在下载更新…" : runtimeStatus;
         if (ready) return "新版本 v" + downloadedName + "（构建 " + downloadedCode
                 + "）已下载，等待系统安装确认";
@@ -529,7 +553,7 @@ final class UpdateManager {
             byte[] buffer = new byte[8192];
             int count;
             while ((count = stream.read(buffer)) != -1) {
-                if (output.size() + count > limit) throw new IOException("GitHub 响应过大");
+                if (output.size() + count > limit) throw new IOException("更新响应过大");
                 output.write(buffer, 0, count);
             }
             return output.toString(StandardCharsets.UTF_8.name());
@@ -546,7 +570,7 @@ final class UpdateManager {
         String message = error == null ? "" : error.getMessage();
         if (message == null || message.trim().isEmpty()) message = errorSummary(error);
         if (message.contains("UnknownHost") || message.contains("Unable to resolve host")) {
-            return "无法连接 GitHub，请检查网络后重试";
+            return "无法连接更新服务，请检查网络后重试";
         }
         return message.length() > 180 ? message.substring(0, 180) : message;
     }

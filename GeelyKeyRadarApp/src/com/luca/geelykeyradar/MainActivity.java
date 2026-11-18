@@ -4,6 +4,8 @@ import android.Manifest;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.app.Dialog;
+import android.content.ClipData;
+import android.content.ClipboardManager;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
@@ -62,7 +64,9 @@ public class MainActivity extends Activity {
     private static final int REQUEST_ACTION_SNAPSHOT_EXPORT = 1004;
     private static final int REQUEST_NOTIFICATION_PERMISSION = 1003;
     private static final ExecutorService LOG_EXPORT_EXECUTOR = Executors.newSingleThreadExecutor();
+    private static final ExecutorService LOG_UPLOAD_EXECUTOR = Executors.newSingleThreadExecutor();
     private static final AtomicBoolean LOG_EXPORT_BUSY = new AtomicBoolean();
+    private static final AtomicBoolean LOG_UPLOAD_BUSY = new AtomicBoolean();
     private static final int TAB_OVERVIEW = 0;
     private static final int TAB_CONTROLS = 1;
     private static final int TAB_MAINTENANCE = 2;
@@ -134,6 +138,9 @@ public class MainActivity extends Activity {
     private Button manualLockButton;
     private TextView manualControlView;
     private Button exportLogButton;
+    private Button uploadLogButton;
+    private TextView uploadLogStatusView;
+    private TextView deviceUidView;
     private Button exportActionSnapshotsButton;
     private TextView actionSnapshotStatusView;
     private Button permissionGuideButton;
@@ -659,6 +666,10 @@ public class MainActivity extends Activity {
         Button bindSuffixButton = outlinedButton("设置本车尾号匹配（可选）");
         bindSuffixButton.setOnClickListener(v -> promptBindByVinSuffix());
         identityCard.addView(bindSuffixButton, buttonLp());
+        Button compatibilityButton = tonalButton("上报车型兼容问题");
+        compatibilityButton.setContentDescription("手动上传车型或蓝牙钥匙格式不兼容的脱敏日志，需填写具体异常");
+        compatibilityButton.setOnClickListener(v -> promptLogUpload(true));
+        identityCard.addView(compatibilityButton, buttonLp());
         Button resetButton = dangerOutlinedButton("重新学习本车");
         resetButton.setOnClickListener(v -> confirmResetIdentity());
         identityCard.addView(resetButton, buttonLp());
@@ -686,7 +697,7 @@ public class MainActivity extends Activity {
         updateActionButton.setOnClickListener(v -> handleUpdateAction());
         updateCard.addView(updateActionButton, buttonLp());
         updateCard.addView(text(
-                "只从 GitHub Releases 下载。安装前校验 SHA-256、包名、构建号和当前签名。",
+                "优先从 Cloudflare R2 更新镜像下载，GitHub Release 作为兜底。安装前校验 SHA-256、包名、构建号和当前签名。",
                 12, COLOR_MUTED, Typeface.NORMAL), supportLp());
         maintenancePage.addView(updateCard, cardLp());
 
@@ -735,6 +746,18 @@ public class MainActivity extends Activity {
         logView.setLineSpacing(0f, 1.18f);
         logView.setMaxLines(12);
         logCard.addView(logView, supportLp());
+        deviceUidView = text("本机日志UID：" + DeviceUid.get(this), 12, COLOR_TEXT, Typeface.BOLD);
+        deviceUidView.setTextIsSelectable(true);
+        logCard.addView(deviceUidView, supportLp());
+        uploadLogStatusView = text("日志上传：仅点击后上传，服务端保留90天", 12, COLOR_MUTED, Typeface.NORMAL);
+        uploadLogStatusView.setTextIsSelectable(true);
+        logCard.addView(uploadLogStatusView, supportLp());
+        uploadLogButton = filledButton("上传排查日志给开发者");
+        uploadLogButton.setContentDescription("手动生成脱敏日志并上传到 geelylog 服务，便于开发者排查");
+        uploadLogButton.setOnClickListener(view -> promptLogUpload(false));
+        logCard.addView(uploadLogButton, buttonLp());
+        logCard.addView(text("只上传当前诊断ZIP、版本与机型；不含账号、VIN、蓝牙MAC或钥匙密钥。可附问题描述。",
+                11, COLOR_MUTED, Typeface.NORMAL), supportLp());
         exportLogButton = tonalButton("导出排查日志（ZIP）");
         exportLogButton.setContentDescription("手动导出当前完整日志；解锁和上锁还会自动保存最近三分钟快照");
         exportLogButton.setOnClickListener(view -> chooseLogExportDestination());
@@ -754,6 +777,7 @@ public class MainActivity extends Activity {
         });
         logCard.addView(clearLogBtn, buttonLp());
         maintenancePage.addView(logCard, cardLp());
+        refreshUploadStatus();
 
         addSection(maintenancePage, "关于");
         LinearLayout aboutCard = card();
@@ -895,7 +919,9 @@ public class MainActivity extends Activity {
 
     /** 刷新独立的官方连接、测距状态和已交付次数，不把尝试次数当作锁车成功。 */
     private void refreshUi() {
-        if (exportLogButton != null) exportLogButton.setEnabled(!LOG_EXPORT_BUSY.get());
+        boolean logBusy = logOperationBusy();
+        if (exportLogButton != null) exportLogButton.setEnabled(!logBusy);
+        if (uploadLogButton != null) uploadLogButton.setEnabled(!logBusy);
         PassiveKeyService.Status status = service != null ? service.getStatus() : null;
         updateRssiChart(status);
         refreshManualControls(status);
@@ -1250,7 +1276,7 @@ public class MainActivity extends Activity {
             return;
         }
         if (UpdateManager.checkNow(this, true)) {
-            Toast.makeText(this, "正在检查 GitHub Releases…", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, "正在检查 Cloudflare 更新服务…", Toast.LENGTH_SHORT).show();
         } else {
             Toast.makeText(this, UpdateManager.snapshot(this).status, Toast.LENGTH_LONG).show();
         }
@@ -1398,6 +1424,146 @@ public class MainActivity extends Activity {
                 ? "已授权 · 正在重连" : "已授权 · 监听未绑定";
     }
 
+    private boolean logOperationBusy() {
+        return LOG_EXPORT_BUSY.get() || LOG_UPLOAD_BUSY.get();
+    }
+
+    /** 上传是显式用户操作：普通排查和车型兼容上报都必须填写异常现象。 */
+    private void promptLogUpload(boolean compatibilityReport) {
+        if (logOperationBusy()) {
+            Toast.makeText(this, "日志导出或上传正在进行，请稍候", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        LinearLayout content = new LinearLayout(this);
+        content.setOrientation(LinearLayout.VERTICAL);
+        int padding = dp(20);
+        content.setPadding(padding, dp(4), padding, 0);
+        TextView description = text(
+                compatibilityReport
+                        ? "用于上报未识别的车型或蓝牙钥匙格式。将上传当前脱敏诊断ZIP、固定日志UID和必填异常现象；不会自动上传。请写明车型、手机型号、看到的现象及蓝牙设备名（如有）。"
+                        : "将生成当前完整诊断ZIP并上传到 geelylog 服务。日志已脱敏，包含固定日志UID，不包含账号、VIN、蓝牙MAC或钥匙密钥；服务端默认保留90天。异常现象为必填项。",
+                13, COLOR_MUTED, Typeface.NORMAL);
+        content.addView(description);
+        EditText note = new EditText(this);
+        note.setHint(compatibilityReport
+                ? "必填，例如：吉利星愿，手机扫描不到 Geely_Auto 蓝牙钥匙，银河也无法连接"
+                : "必填，例如：靠近未解锁，打开银河后约20秒才连接");
+        note.setTextSize(14);
+        note.setMinLines(3);
+        note.setMaxLines(6);
+        note.setGravity(Gravity.TOP | Gravity.START);
+        note.setSingleLine(false);
+        note.setTextColor(COLOR_TEXT);
+        note.setHintTextColor(COLOR_MUTED);
+        LinearLayout.LayoutParams noteLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        noteLp.topMargin = dp(14);
+        content.addView(note, noteLp);
+
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle("上传排查日志")
+                .setView(content)
+                .setNegativeButton("取消", null)
+                .setPositiveButton("上传", null)
+                .create();
+        dialog.setOnShowListener(ignored -> dialog.getButton(AlertDialog.BUTTON_POSITIVE)
+                .setOnClickListener(view -> {
+                    String noteText = LogUploadPolicy.sanitizeNote(note.getText().toString());
+                    if (!LogUploadPolicy.validIssueDescription(noteText)) {
+                        note.setError("请填写至少" + LogUploadPolicy.MIN_NOTE_CHARS + "个字符的异常现象");
+                        return;
+                    }
+                    dialog.dismiss();
+                    startLogUpload(noteText, compatibilityReport);
+                }));
+        dialog.show();
+    }
+
+    /** 后台生成现有脱敏ZIP并上传；UI只显示服务返回编号或简短错误。 */
+    private void startLogUpload(String note, boolean compatibilityReport) {
+        if (logOperationBusy() || !LOG_UPLOAD_BUSY.compareAndSet(false, true)) {
+            Toast.makeText(this, "日志导出或上传正在进行，请稍候", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        String snapshot = "snapshot_captured_mono_ms=" + android.os.SystemClock.elapsedRealtime()
+                + "\nupload_requested_wall_ms=" + System.currentTimeMillis()
+                + "\n" + (service == null ? "service_snapshot=unavailable" : service.getDiagnosticSnapshot());
+        String reportNote = compatibilityReport ? "【车型兼容】" + note : note;
+        Context appContext = getApplicationContext();
+        uploadLogButton.setText(compatibilityReport ? "正在上报车型兼容日志…" : "正在生成并上传日志…");
+        uploadLogStatusView.setText(compatibilityReport
+                ? "车型兼容上报：正在生成脱敏ZIP并上传，请保持网络连接"
+                : "日志上传：正在生成脱敏ZIP并上传，请保持网络连接");
+        DiagnosticLog.event("Upload", "UPLOAD_REQUEST", "type="
+                + (compatibilityReport ? "compatibility" : "diagnostic")
+                + " note_chars=" + note.length());
+        refreshUi();
+        LOG_UPLOAD_EXECUTOR.execute(() -> {
+            File temporary = null;
+            LogUploadClient.Result result;
+            try {
+                temporary = File.createTempFile("passive-key-upload-", ".zip", appContext.getCacheDir());
+                Future<File> archive = DiagnosticLog.export(temporary, snapshot);
+                File ready = archive.get();
+                result = LogUploadClient.upload(appContext, ready, reportNote);
+            } catch (Exception error) {
+                DiagnosticLog.bridgeError("Upload", "UPLOAD_ARCHIVE_FAILED", error);
+                result = new LogUploadClient.Result(false, "",
+                        "生成日志包失败，请先清理旧日志后重试", 0);
+            } finally {
+                if (temporary != null && temporary.exists() && !temporary.delete()) {
+                    DiagnosticLog.detail("Upload", "CACHE_CLEANUP_FAILED", "temporary_archive=true");
+                }
+                LOG_UPLOAD_BUSY.set(false);
+            }
+            LogUploadClient.Result finalResult = result;
+            new Handler(Looper.getMainLooper()).post(() -> {
+                if (uploadLogButton != null) uploadLogButton.setText("上传排查日志给开发者");
+                refreshUploadStatus();
+                refreshUi();
+                if (finalResult.ok) {
+                    showUploadSuccess(finalResult.logId, finalResult.message);
+                } else {
+                    String firstLine = finalResult.message == null ? "上传失败" : finalResult.message.split("\n", 2)[0];
+                    Toast.makeText(appContext, firstLine, Toast.LENGTH_LONG).show();
+                }
+            });
+        });
+    }
+
+    /** 上传成功后显示可复制编号，后续排查只凭编号即可定位D1日志包。 */
+    private void showUploadSuccess(String logId, String message) {
+        new AlertDialog.Builder(this)
+                .setTitle("日志已上传")
+                .setMessage(message + "\n\n排查时提供上面的编号即可。")
+                .setNegativeButton("关闭", null)
+                .setPositiveButton("复制编号", (dialog, which) -> copyToClipboard(logId))
+                .show();
+    }
+
+    private void copyToClipboard(String value) {
+        ClipboardManager clipboard = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
+        if (clipboard != null) {
+            clipboard.setPrimaryClip(ClipData.newPlainText("日志排查编号", value));
+            Toast.makeText(this, "日志编号已复制", Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    private void refreshUploadStatus() {
+        if (uploadLogStatusView == null) return;
+        String id = LogUploadClient.lastLogId(this);
+        long at = LogUploadClient.lastUploadAt(this);
+        if (!id.isEmpty() && at > 0L) {
+            String time = new SimpleDateFormat("MM-dd HH:mm", Locale.ROOT).format(new Date(at));
+            uploadLogStatusView.setText("上次上传成功 · " + time + " · 编号 " + id);
+            return;
+        }
+        String last = LogUploadClient.lastStatus(this);
+        uploadLogStatusView.setText(last == null || last.isEmpty()
+                ? "日志上传：仅点击后上传，服务端保留90天"
+                : last);
+    }
+
     /** 展示最多100个自动动作快照的当前数量与占用，不读取ZIP正文。 */
     private void refreshActionSnapshotUi() {
         if (actionSnapshotStatusView == null) return;
@@ -1409,7 +1575,7 @@ public class MainActivity extends Activity {
         String health = service.getActionSnapshotHealth();
         actionSnapshotStatusView.setText("自动动作快照：" + formatActionSnapshotHealth(health));
         if (exportActionSnapshotsButton != null) {
-            exportActionSnapshotsButton.setEnabled(!LOG_EXPORT_BUSY.get());
+            exportActionSnapshotsButton.setEnabled(!logOperationBusy());
         }
     }
 
@@ -1435,7 +1601,7 @@ public class MainActivity extends Activity {
 
     /** 选择动作快照合集导出目标；每个内层ZIP对应一次解锁或上锁。 */
     private void chooseActionSnapshotExportDestination() {
-        if (LOG_EXPORT_BUSY.get()) return;
+        if (logOperationBusy()) return;
         actionSnapshotExportSnapshot = "snapshot_captured_mono_ms="
                 + android.os.SystemClock.elapsedRealtime() + "\n"
                 + (service == null ? "service_snapshot=unavailable" : service.getDiagnosticSnapshot());
@@ -1490,7 +1656,7 @@ public class MainActivity extends Activity {
 
     /** 用户点击后通过系统文件选择器选择本地保存位置，无需存储权限，也不自动发送给他人。 */
     private void chooseLogExportDestination() {
-        if (LOG_EXPORT_BUSY.get()) return;
+        if (logOperationBusy()) return;
         exportSnapshot = "snapshot_captured_mono_ms=" + android.os.SystemClock.elapsedRealtime() + "\n"
                 + (service == null ? "service_snapshot=unavailable" : service.getDiagnosticSnapshot());
         Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);

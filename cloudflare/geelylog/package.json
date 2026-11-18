@@ -1,0 +1,17 @@
+{
+  "name": "geelypassivekey-log",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "node --check src/index.js && node --check src/validation.js && node --test test/*.test.mjs",
+    "dev": "wrangler dev --local --port 8788",
+    "db:migrate:local": "wrangler d1 migrations apply geelypassivekey-logs --local",
+    "db:migrate:remote": "wrangler d1 migrations apply geelypassivekey-logs --remote",
+    "deploy:dry": "wrangler deploy --dry-run",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "wrangler": "4.164.0"
+  }
+}

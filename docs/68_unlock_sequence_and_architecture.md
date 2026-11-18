@@ -1,6 +1,6 @@
 # 68. 靠近解锁时序图与系统架构图
 
-本文对应代码版本 `v4.5.8-min / versionCode 508`，图示以当前代码为准：
+本文对应代码版本 `v4.6.1-min / versionCode 601`，图示以当前代码为准：
 
 - `VehicleWakeGate`：连接触发、单目标预算、ACL 保护；
 - `PassiveKeyLogic`：靠近解锁、离开上锁、原生 PE 误锁纠偏；
@@ -58,4 +58,4 @@
 
 ## 4. 旧图说明
 
-`docs/diagrams/phone_key_workflow.*` 和 `our_app_rke_flow.*` 是 v2.x/v3.x 历史功能图，包含已删除的摇一摇、桌面组件、磁贴、语音、哨兵等入口，不能直接作为当前 v4.5.8 的实现说明。当前实现请看本文两张图。
+`docs/diagrams/phone_key_workflow.*` 和 `our_app_rke_flow.*` 是 v2.x/v3.x 历史功能图，包含已删除的摇一摇、桌面组件、磁贴、语音、哨兵等入口，不能直接作为当前 v4.6.1 的实现说明。当前实现请看本文两张图。

@@ -6,6 +6,7 @@ public final class UpdatePolicyTest {
         parsesOnlyVersionedApkNames();
         comparesVersionAndHourlyWindow();
         sanitizesAndMatchesDigest();
+        allowsOnlyCloudflareAndGithubAssets();
         System.out.println("UpdatePolicyTest passed");
     }
 
@@ -48,6 +49,29 @@ public final class UpdatePolicyTest {
         check(!UpdatePolicy.digestMatches("", ""), "实测摘要为空时不能视为通过");
     }
 
+
+    private static void allowsOnlyCloudflareAndGithubAssets() {
+        String name = "GeelyPassiveKey-v4.6.0-min-600.apk";
+        UpdatePolicy.Asset cloudflare = UpdatePolicy.parseAsset(name,
+                "https://geelyupdate.mq.lucadesign.uk/releases/4.6.0-min/" + name,
+                "sha256:abc", 1234L);
+        UpdatePolicy.Asset github = UpdatePolicy.parseAsset(name,
+                "https://github.com/yangyongyongyong/GeelyPassiveKey/releases/download/v4.6.0-min/" + name,
+                "sha256:abc", 1234L);
+        check(UpdatePolicy.isAllowedAssetLocation(cloudflare), "Cloudflare 版本化 APK 地址允许");
+        check(UpdatePolicy.isAllowedAssetLocation(github), "本项目 GitHub Release 地址允许");
+        check(!UpdatePolicy.isAllowedAssetLocation(UpdatePolicy.parseAsset(name,
+                "https://evil.example/releases/4.6.0-min/" + name, "", 1234L)), "其他域名必须拒绝");
+        check(!UpdatePolicy.isAllowedAssetLocation(UpdatePolicy.parseAsset(name,
+                "https://geelyupdate.mq.lucadesign.uk/releases/4.5.9-min/" + name, "", 1234L)),
+                "Cloudflare 路径版本必须匹配");
+        check(UpdatePolicy.isAllowedManifestUrl(UpdatePolicy.CLOUDFLARE_MANIFEST_URL),
+                "Cloudflare 清单地址允许");
+        check(UpdatePolicy.isAllowedManifestUrl(UpdatePolicy.GITHUB_MANIFEST_URL),
+                "GitHub 兜底清单地址允许");
+        check(!UpdatePolicy.isAllowedManifestUrl("https://evil.example/update.json"),
+                "其他清单域名拒绝");
+    }
     private static void check(boolean condition, String message) {
         if (!condition) throw new AssertionError(message);
     }
