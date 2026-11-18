@@ -77,9 +77,9 @@ final class VehicleScanPolicy {
             if (VehicleLearningState.hasAddress(identity.address)) {
                 rules.add(simple(Kind.ADDRESS, identity.address));
             }
-            String name = VehicleBeacon.isGeelyVehicleName(identity.name) ? identity.name
+            String name = VehicleBeacon.isRecognizableVehicleName(identity.name) ? identity.name
                     : (identity.vinTail3.length() == 3 ? "GeelyVehicle" + identity.vinTail3 : "");
-            if (VehicleBeacon.isGeelyVehicleName(name)) rules.add(simple(Kind.NAME, name));
+            if (VehicleBeacon.isRecognizableVehicleName(name)) rules.add(simple(Kind.NAME, name));
             if (identity.hasUsableSignature()) {
                 byte[] prefix = identity.manufacturerPrefix();
                 if (VehicleDiscoverySignature.isUsableForTail(prefix, identity.effectiveTail2())) {
@@ -107,6 +107,7 @@ final class VehicleScanPolicy {
         rules.add(new Rule(Kind.MANUFACTURER, "", VehicleBeacon.COMPANY_ID_COMPAT, new byte[0], new byte[0]));
         rules.add(new Rule(Kind.MANUFACTURER, "", VehicleBeacon.COMPANY_ID_LEGACY, new byte[0], new byte[0]));
         rules.add(simple(Kind.SERVICE, VehicleBeacon.SERVICE_UUID));
+        rules.add(simple(Kind.NAME, "Geely_Auto"));
         return new Plan("LEARNING", rules);
     }
 

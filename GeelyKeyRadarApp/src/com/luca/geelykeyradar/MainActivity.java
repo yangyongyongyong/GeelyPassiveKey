@@ -41,7 +41,9 @@ import android.widget.Switch;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import java.util.LinkedHashMap;
 import java.util.Locale;
+import java.util.Map;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.OutputStream;
@@ -50,6 +52,7 @@ import java.util.Date;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
@@ -667,7 +670,7 @@ public class MainActivity extends Activity {
         bindSuffixButton.setOnClickListener(v -> promptBindByVinSuffix());
         identityCard.addView(bindSuffixButton, buttonLp());
         Button compatibilityButton = tonalButton("上报车型兼容问题");
-        compatibilityButton.setContentDescription("手动上传车型或蓝牙钥匙格式不兼容的脱敏日志，需填写具体异常");
+        compatibilityButton.setContentDescription("临时抓取十秒原始蓝牙广播并上传，需填写具体异常");
         compatibilityButton.setOnClickListener(v -> promptLogUpload(true));
         identityCard.addView(compatibilityButton, buttonLp());
         Button resetButton = dangerOutlinedButton("重新学习本车");
@@ -1440,8 +1443,8 @@ public class MainActivity extends Activity {
         content.setPadding(padding, dp(4), padding, 0);
         TextView description = text(
                 compatibilityReport
-                        ? "用于上报未识别的车型或蓝牙钥匙格式。将上传当前脱敏诊断ZIP、固定日志UID和必填异常现象；不会自动上传。请写明车型、手机型号、看到的现象及蓝牙设备名（如有）。"
-                        : "将生成当前完整诊断ZIP并上传到 geelylog 服务。日志已脱敏，包含固定日志UID，不包含账号、VIN、蓝牙MAC或钥匙密钥；服务端默认保留90天。异常现象为必填项。",
+                        ? "用于上报未识别的车型或蓝牙钥匙格式。提交后会先临时扫描所有 BLE 设备约10秒，并把原始广播、地址、名称、Manufacturer Data、Service UUID/Data、当前可见 GATT 与诊断日志一起上传；不会自动上传。请写明车型、手机型号和看到的现象。"
+                        : "将生成当前完整诊断ZIP并上传到 geelylog 服务。普通诊断日志已脱敏，包含固定日志UID，不包含账号、VIN、蓝牙MAC或钥匙密钥；服务端默认保留90天。异常现象为必填项。",
                 13, COLOR_MUTED, Typeface.NORMAL);
         content.addView(description);
         EditText note = new EditText(this);
@@ -1479,20 +1482,22 @@ public class MainActivity extends Activity {
         dialog.show();
     }
 
-    /** 后台生成现有脱敏ZIP并上传；UI只显示服务返回编号或简短错误。 */
+    /** 兼容上报先抓取原始 BLE，再生成ZIP；普通排查仍只上传现有脱敏日志。 */
     private void startLogUpload(String note, boolean compatibilityReport) {
         if (logOperationBusy() || !LOG_UPLOAD_BUSY.compareAndSet(false, true)) {
             Toast.makeText(this, "日志导出或上传正在进行，请稍候", Toast.LENGTH_SHORT).show();
             return;
         }
-        String snapshot = "snapshot_captured_mono_ms=" + android.os.SystemClock.elapsedRealtime()
-                + "\nupload_requested_wall_ms=" + System.currentTimeMillis()
-                + "\n" + (service == null ? "service_snapshot=unavailable" : service.getDiagnosticSnapshot());
+        PassiveKeyService uploadService = service;
+        String initialSnapshot = buildUploadSnapshot(uploadService);
+        Future<CompatibilityCapture.Result> captureFuture = compatibilityReport && uploadService != null
+                ? uploadService.captureCompatibilityRaw(CompatibilityCapture.DEFAULT_DURATION_MS)
+                : null;
         String reportNote = compatibilityReport ? "【车型兼容】" + note : note;
         Context appContext = getApplicationContext();
         uploadLogButton.setText(compatibilityReport ? "正在上报车型兼容日志…" : "正在生成并上传日志…");
         uploadLogStatusView.setText(compatibilityReport
-                ? "车型兼容上报：正在生成脱敏ZIP并上传，请保持网络连接"
+                ? "车型兼容上报：正在扫描所有 BLE 设备约10秒，随后上传原始广播与诊断日志"
                 : "日志上传：正在生成脱敏ZIP并上传，请保持网络连接");
         DiagnosticLog.event("Upload", "UPLOAD_REQUEST", "type="
                 + (compatibilityReport ? "compatibility" : "diagnostic")
@@ -1502,8 +1507,19 @@ public class MainActivity extends Activity {
             File temporary = null;
             LogUploadClient.Result result;
             try {
+                Map<String, String> extraTexts = new LinkedHashMap<>();
+                String snapshot = initialSnapshot;
+                if (compatibilityReport) {
+                    CompatibilityCapture.Result capture = captureFuture != null
+                            ? waitForCompatibilityCapture(captureFuture, appContext)
+                            : CompatibilityCapture.captureStandalone(appContext,
+                            CompatibilityCapture.DEFAULT_DURATION_MS);
+                    extraTexts.put("compatibility_capture.txt", capture.text);
+                    DiagnosticLog.event("Compatibility", "CAPTURE_ATTACHED", capture.diagnosticSummary());
+                    snapshot = buildUploadSnapshot(uploadService);
+                }
                 temporary = File.createTempFile("passive-key-upload-", ".zip", appContext.getCacheDir());
-                Future<File> archive = DiagnosticLog.export(temporary, snapshot);
+                Future<File> archive = DiagnosticLog.export(temporary, snapshot, extraTexts);
                 File ready = archive.get();
                 result = LogUploadClient.upload(appContext, ready, reportNote);
             } catch (Exception error) {
@@ -1529,6 +1545,26 @@ public class MainActivity extends Activity {
                 }
             });
         });
+    }
+
+    private String buildUploadSnapshot(PassiveKeyService currentService) {
+        return "snapshot_captured_mono_ms=" + android.os.SystemClock.elapsedRealtime()
+                + "\nupload_requested_wall_ms=" + System.currentTimeMillis()
+                + "\n" + (currentService == null ? "service_snapshot=unavailable"
+                : currentService.getDiagnosticSnapshot());
+    }
+
+    /** 等待服务抓取完成；超时仍返回可诊断的失败附件，不让整个上传卡死。 */
+    private CompatibilityCapture.Result waitForCompatibilityCapture(
+            Future<CompatibilityCapture.Result> captureFuture, Context appContext) {
+        try {
+            return captureFuture.get(CompatibilityCapture.DEFAULT_DURATION_MS + 8_000L,
+                    TimeUnit.MILLISECONDS);
+        } catch (Exception error) {
+            DiagnosticLog.event("Compatibility", "CAPTURE_WAIT_FAILED",
+                    DiagnosticText.errorSummary(error));
+            return CompatibilityCapture.unavailable("capture_wait_timeout");
+        }
     }
 
     /** 上传成功后显示可复制编号，后续排查只凭编号即可定位D1日志包。 */

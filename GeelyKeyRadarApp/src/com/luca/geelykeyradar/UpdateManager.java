@@ -287,18 +287,29 @@ final class UpdateManager {
 
     private static UpdatePolicy.Asset fetchLatestAsset(Context app) throws UpdateException {
         UpdateException primary = null;
+        UpdatePolicy.Asset best = null;
+        String bestSource = "";
         for (String manifestUrl : UPDATE_MANIFEST_URLS) {
+            String source = manifestUrl.startsWith(UpdatePolicy.CLOUDFLARE_ORIGIN) ? "cloudflare" : "github";
             try {
-                UpdatePolicy.Asset asset = fetchLatestAssetFrom(app, manifestUrl);
-                DiagnosticLog.event("Update", "MANIFEST_SOURCE_OK", "source="
-                        + (manifestUrl.startsWith(UpdatePolicy.CLOUDFLARE_ORIGIN) ? "cloudflare" : "github"));
-                return asset;
+                UpdatePolicy.Asset candidate = fetchLatestAssetFrom(app, manifestUrl);
+                DiagnosticLog.event("Update", "MANIFEST_SOURCE_OK", "source=" + source
+                        + " version_code=" + candidate.versionCode);
+                UpdatePolicy.Asset selected = UpdatePolicy.newest(best, candidate);
+                if (selected != best) {
+                    best = selected;
+                    bestSource = source;
+                }
             } catch (UpdateException error) {
                 if (primary == null) primary = error;
-                DiagnosticLog.event("Update", "MANIFEST_SOURCE_FAILED", "source="
-                        + (manifestUrl.startsWith(UpdatePolicy.CLOUDFLARE_ORIGIN) ? "cloudflare" : "github")
+                DiagnosticLog.event("Update", "MANIFEST_SOURCE_FAILED", "source=" + source
                         + " reason=" + errorSummary(error));
             }
+        }
+        if (best != null) {
+            DiagnosticLog.event("Update", "MANIFEST_BEST", "source=" + bestSource
+                    + " version_code=" + best.versionCode);
+            return best;
         }
         throw new UpdateException("Cloudflare 与 GitHub 更新源均不可用"
                 + (primary == null ? "" : "：" + errorSummary(primary)), primary);

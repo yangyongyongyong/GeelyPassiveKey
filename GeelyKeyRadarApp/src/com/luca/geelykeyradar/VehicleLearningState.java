@@ -14,6 +14,7 @@ final class VehicleLearningState {
     static final String CONNECTED = "connected_gatt";
     static final String ACL = "acl_event";
     static final String GATT_EVENT = "gatt_event";
+    static final String WAKE_CONFIRMED = "wake_confirmed";
 
     /** 只有实际获得合法蓝牙地址，才算完成地址学习；尾号或设备名不能推算MAC。 */
     static boolean hasAddress(String address) {
@@ -57,6 +58,7 @@ final class VehicleLearningState {
         if (CONNECTED.equals(source)) return "当前已连接的蓝牙设备";
         if (ACL.equals(source)) return "本车蓝牙连接事件";
         if (GATT_EVENT.equals(source)) return "本车GATT连接事件";
+        if (WAKE_CONFIRMED.equals(source)) return "银河连接确认的唤醒候选";
         if (MANUAL.equals(source)) return "手动尾号匹配提示";
         if (LEGACY.equals(source)) return "本机旧版配置迁移";
         return "已有配置，来源未记录";

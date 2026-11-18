@@ -40,7 +40,7 @@ final class GeelyAdvertisement extends VehicleBeacon {
         try {
             address = device.getAddress();
             String recordName = record == null ? null : record.getDeviceName();
-            advertisedName = VehicleBeacon.isGeelyVehicleName(recordName);
+            advertisedName = VehicleBeacon.isRecognizableVehicleName(recordName);
             name = recordName != null && !recordName.trim().isEmpty() ? recordName : device.getName();
         } catch (SecurityException denied) {
             return null;

@@ -8,7 +8,7 @@ final class UpdatePolicy {
     static final long CHECK_INTERVAL_MS = 60L * 60L * 1000L;
     static final int MAX_APK_BYTES = 50 * 1024 * 1024;
     static final String CLOUDFLARE_ORIGIN = "https://geelyupdate.mq.lucadesign.uk";
-    static final String CLOUDFLARE_MANIFEST_URL = CLOUDFLARE_ORIGIN + "/update.json";
+    static final String CLOUDFLARE_MANIFEST_URL = CLOUDFLARE_ORIGIN + "/update.json?refresh=1";
     static final String GITHUB_MANIFEST_URL =
             "https://github.com/yangyongyongyong/GeelyPassiveKey/releases/latest/download/update.json";
     static final String GITHUB_APK_PREFIX =
@@ -70,6 +70,13 @@ final class UpdatePolicy {
 
     static boolean isNewer(int remoteVersionCode, int installedVersionCode) {
         return remoteVersionCode > installedVersionCode;
+    }
+
+    /** 多渠道清单取最高构建号，旧镜像不能把用户推进多次升级。 */
+    static Asset newest(Asset current, Asset candidate) {
+        if (current == null) return candidate;
+        if (candidate == null) return current;
+        return candidate.versionCode > current.versionCode ? candidate : current;
     }
 
     /** 每小时最多自动检查一次；时钟回拨时允许重新检查。 */

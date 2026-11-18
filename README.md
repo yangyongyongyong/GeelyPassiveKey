@@ -10,9 +10,9 @@
 
 > 一张图看懂：扫描本车 → 连接触发 → 银河鉴权 → 靠近解锁 → 离开确认上锁。连接触发阈值不等于靠近解锁阈值。
 
-当前源码版本为 **v4.6.1-min（构建 601）**：新增零 R2 费用的 Cloudflare 更新镜像 `https://geelyupdate.mq.lucadesign.uk`：Worker 代理 GitHub Release 并做边缘缓存。App 默认每 1 小时优先检查 Cloudflare `update.json`，自动下载并校验后再保留 GitHub Releases 兜底；普通手机仍由用户确认 Android 系统安装。日志上报继续使用固定 `GPK-...` UID 和必填异常现象。默认参数保持连接 `≥ -95 dBm`、靠近解锁 `≥ -75 dBm`、离开上锁 `≤ -85 dBm`、离开确认 `2.0 秒`，升级不会覆盖用户配置。详见 [v4.6.1 Cloudflare更新镜像](docs/73_v4_6_1_cloudflare_update_mirror.md)、[v4.5.9日志上报](docs/72_v4_5_9_cloudflare_log_upload.md)、[v4.5.8默认参数与图示](docs/71_v4_5_8_default_threshold_and_readme_sequence.md) 与 [v4.5.7实时阶段轨迹](docs/70_live_activity_trace.md)。
+当前源码版本为 **v4.6.3-min（构建 603）**：新增星愿 `Geely_Auto` 兼容发现与真实连接确认绑定；车型兼容上报会临时进行 10 秒全 BLE 原始广播抓取，再与诊断日志一起上传。更新器会同时比较 Cloudflare 与 GitHub 清单，直接下载最高构建号，避免多个新版本被逐个升级。默认参数保持连接 `≥ -95 dBm`、靠近解锁 `≥ -75 dBm`、离开上锁 `≤ -85 dBm`、离开确认 `2.0 秒`，升级不会覆盖用户配置。详见 [v4.6.3星愿与更新链路](docs/75_v4_6_3_starwish_and_update_chain.md)、[v4.6.2车型兼容原始抓取](docs/74_v4_6_2_compatibility_raw_capture.md) 与 [v4.6.1 Cloudflare更新镜像](docs/73_v4_6_1_cloudflare_update_mirror.md)。
 
-当前源码 `v4.6.1-min` 继续使用稳定签名证书 `279948c5d7401188fb72c218e954fc088b8d9cd5eb1aece6dd077b19c08145c4`。本轮将发布 `v4.6.1-min`，由 Actions 使用同一稳定密钥构建签名包，并自动预热、校验 Cloudflare 更新镜像。v4.2.2 的单 MiuiService、15 秒通知补扫、GATT `cmdId=5` 提前就绪与 PendingIntent 回退继续保留，详见 [v4.2.2说明](docs/58_v4_2_2_long_absence_weak_connect.md)、[v4.2.1说明](docs/57_v4_2_1_lockscreen_fast_rescan.md) 和 [v4.2.0说明](docs/56_v4_2_0_fast_auth_and_notification_fallback.md)。
+当前源码 `v4.6.3-min` 继续使用稳定签名证书 `279948c5d7401188fb72c218e954fc088b8d9cd5eb1aece6dd077b19c08145c4`。本次发布由 Actions 使用同一稳定密钥构建签名包，并自动预热、校验 Cloudflare 更新镜像；升级保留用户已保存配置。v4.2.2 的单 MiuiService、15 秒通知补扫、GATT `cmdId=5` 提前就绪与 PendingIntent 回退继续保留，详见 [v4.2.2说明](docs/58_v4_2_2_long_absence_weak_connect.md)、[v4.2.1说明](docs/57_v4_2_1_lockscreen_fast_rescan.md) 和 [v4.2.0说明](docs/56_v4_2_0_fast_auth_and_notification_fallback.md)。
 
 ---
 
@@ -63,7 +63,7 @@
 | 机制 | 作用 |
 | :--- | :--- |
 | **阈值解释清晰** | 每项有永久标签、作用说明、单位、范围与调节方向；非法输入就地提示，推荐值仅填草稿，保存后生效。 |
-| **版本可见** | 维护 → 关于中显示 `版本：v4.6.1-min（构建 601）`，从实际安装包读取，未来升级无需改界面字符串。 |
+| **版本可见** | 维护 → 关于中显示 `版本：v4.6.3-min（构建 603）`，从实际安装包读取，未来升级无需改界面字符串。 |
 | **首包提前连接** | 已学完整本车名＋一致厂商/VIN线索不必等第二条命名广播；只是交给官方鉴权，不提前保存MAC或计RSSI，同地址正在ACL握手时不重复注入。 |
 | **多车隔离** | 学习后替换协议宽过滤，明确身份冲突先拒绝；匿名弱线索只找车，不改MAC/混RSSI。 |
 | **官方就绪即处理** | 官方钥匙通知变成「已连接」立即处理一次接近机会，已有请求仅完成它。GATT 测距已连不会提前冒充官方鉴权就绪。 |
@@ -82,7 +82,7 @@
 
 手机遮挡稳定800ms后，接近信号补偿 `+8 dBm`，上锁信号不补偿。界面最多显示10条关键日志，后台轮转日志总容量上限 **4 MiB**。每次解锁或上锁成功交给银河后，还会自动保存动作前最近 **3 分钟**的独立 ZIP 快照；快照包含当时四项触发参数和脱敏日志，最多保留 **100 个**，超过后删除最老文件。维护页可查看数量和占用，并一键导出全部动作快照。显示“指令已交付”代表已交给银河，未取得车锁执行回执。
 
-遇到解锁慢或漏锁，先记下大概发生时间。维护页可直接点 **“上传排查日志给开发者”**，必须填写异常现象后上传；本车识别卡片还提供 **“上报车型兼容问题”**，用于星愿等未识别名称/协议格式的主动手动上报。成功会返回固定 `GPK-...` UID 和日志编号，也可继续点 **“导出排查日志（ZIP）”** 保存到本地。上传只由用户手动触发，ZIP 不含账号、VIN、蓝牙 MAC、钥匙密钥或通知正文；原始 Android ID 只参与本地哈希，不会写入或上传。详见 [v4.5.9日志上报](docs/72_v4_5_9_cloudflare_log_upload.md) 与 [日志排查说明](docs/39_v4_0_2_diagnostic_logs.md)。
+遇到解锁慢或漏锁，先记下大概发生时间。维护页可直接点 **“上传排查日志给开发者”**，必须填写异常现象后上传；本车识别卡片还提供 **“上报车型兼容问题”**，用于星愿等未识别名称/协议格式的主动手动上报。兼容上报会额外抓取 10 秒原始 BLE 广播，包含设备地址、名称、原始 AD 字节、Manufacturer Data、Service UUID/Data、可见 GATT 与扫描错误，并作为 `compatibility_capture.txt` 放入 ZIP；普通诊断上传仍只包含脱敏日志。成功会返回固定 `GPK-...` UID 和日志编号，也可继续点 **“导出排查日志（ZIP）”** 保存到本地。上传只由用户手动触发，不包含账号、VIN、钥匙密钥或通知正文；原始 Android ID 只参与本地哈希，不会写入或上传。详见 [v4.6.3星愿与更新链路](docs/75_v4_6_3_starwish_and_update_chain.md)、[v4.6.2车型兼容原始抓取](docs/74_v4_6_2_compatibility_raw_capture.md)、[v4.5.9日志上报](docs/72_v4_5_9_cloudflare_log_upload.md) 与 [日志排查说明](docs/39_v4_0_2_diagnostic_logs.md)。
 
 ---
 
@@ -160,6 +160,8 @@
 │   │   ├── DiagnosticLog.java                  # 跨模块日志与进程退出记录
 │   │   ├── DiagnosticLogStore.java             # 有界写入队列与一致快照导出
 │   │   ├── DiagnosticText.java                 # 车辆身份与凭证脱敏
+│   │   ├── CompatibilityCapture.java            # 车型兼容原始 BLE/AD/GATT 抓取
+│   │   ├── CompatibilityAdDecoder.java          # 原始 AD length/type 解码
 │   │   ├── DiagnosticCounters.java             # 扫描、读取和过滤计数
 │   │   ├── ThresholdSettingsDialog.java         # 原生阈值设置卡片、输入、说明与错误反馈
 │   │   ├── ThresholdSettingsForm.java           # 纯Java设置校验、预览与小数精度
@@ -216,6 +218,8 @@ APK 不入库（`.gitignore` 排除 `*.apk`），从 [Releases](https://github.c
 | [65](docs/65_v4_5_3_connect_threshold_pending_unlock.md) | **v4.5.3连接触发与罚站修复**：四项触发设置、新默认值、GATT重建不误撤销解锁 |
 | [66](docs/66_v4_5_4_live_activity_bar.md) | **v4.5.4实时行为状态**：顶部跨页面阶段条、连接鉴权进度、发送/不确定结果与离开确认 |
 | [67](docs/67_v4_5_5_default_visibility_preservation.md) | **v4.5.5默认值辅助与配置保留**：默认值仅填充草稿、当前自定义标识、覆盖安装参数校验 |
+| [75](docs/75_v4_6_3_starwish_and_update_chain.md) | **v4.6.3星愿兼容**：Geely_Auto发现/真实连接绑定、最高版本更新选择与发布默认值 |
+| [74](docs/74_v4_6_2_compatibility_raw_capture.md) | **v4.6.2车型兼容抓取**：10秒全BLE原始AD、厂商数据、UUID、GATT与上传ZIP |
 | [01](docs/01_geely_ble_protocol_and_sdk.md) | 银河脱壳、`0x01FE` / `FF15` 广播格式、GATT UUID、AIDL、通知栏控件 ID |
 | [02](docs/02_vivo_wallet_and_iccoa_key.md) | vivo 钱包 / ICCOA 开卡流程与测距公式 |
 | [03](docs/03_root_causes_3m_lock_and_disconnect.md) | **3 米误锁、偶现不自动连蓝牙的源码级根因** |
@@ -243,7 +247,7 @@ APK 不入库（`.gitignore` 排除 `*.apk`），从 [Releases](https://github.c
 ANDROID_KEYSTORE=/path/to/existing.keystore SKIP_INSTALL=1 bash GeelyKeyRadarApp/build.sh
 ```
 
-先跑状态机、RSSI完整流程、曲线序列、GATT鉴权帧、待发请求、通知版本、日志轮转、诊断导出、学习资格、身份匹配、单目标选择、硬件过滤和官方就绪门控、预连接门控、阈值表单校验、车机只读回执、授权全检及更新策略 **20组Java测试＋1组APK命名回归**，再 `aapt2` → `javac` → `d8` → `apksigner`。上例仅构建，不操作手机；显式去掉 `SKIP_INSTALL=1` 才尝试原有安装流程。产物：`GeelyKeyRadarApp/GeelyPassiveKey-v4.6.1-min-601.apk`。后续命名统一为 `GeelyPassiveKey-v<versionName>-<versionCode>.apk`，不再生成无版本别名。
+先跑状态机、RSSI完整流程、曲线序列、GATT鉴权帧、待发请求、通知版本、日志轮转、诊断导出、学习资格、身份匹配、单目标选择、硬件过滤和官方就绪门控、预连接门控、阈值表单校验、车机只读回执、授权全检及更新策略 **21组Java测试＋1组APK命名回归**，再 `aapt2` → `javac` → `d8` → `apksigner`。上例仅构建，不操作手机；显式去掉 `SKIP_INSTALL=1` 才尝试原有安装流程。产物：`GeelyKeyRadarApp/GeelyPassiveKey-v4.6.3-min-603.apk`。后续命名统一为 `GeelyPassiveKey-v<versionName>-<versionCode>.apk`，不再生成无版本别名。
 
 仅查询本次版本的预期产物路径（不编译、不安装）：
 

@@ -118,6 +118,7 @@ javac -source 11 -target 11 -d "$TEST_DIR" \
     "$APP_DIR/src/com/luca/geelykeyradar/NotificationEpoch.java" \
     "$APP_DIR/src/com/luca/geelykeyradar/RotatingFileLog.java" \
     "$APP_DIR/src/com/luca/geelykeyradar/DiagnosticText.java" \
+    "$APP_DIR/src/com/luca/geelykeyradar/CompatibilityAdDecoder.java" \
     "$APP_DIR/src/com/luca/geelykeyradar/DiagnosticCounters.java" \
     "$APP_DIR/src/com/luca/geelykeyradar/DiagnosticSnapshotWindow.java" \
     "$APP_DIR/src/com/luca/geelykeyradar/DiagnosticLogStore.java" \
@@ -135,7 +136,7 @@ javac -source 11 -target 11 -d "$TEST_DIR" \
     "$APP_DIR/src/com/luca/geelykeyradar/UpdatePolicy.java" \
     "$APP_DIR/src/com/luca/geelykeyradar/LogUploadPolicy.java" \
     "$APP_DIR/tests/com/luca/geelykeyradar/"*Test.java
-for TEST_CLASS in PassiveKeyLogicTest RssiPipelineTest RssiChartSeriesTest GattAuthFrameParserTest PendingControlTest NotificationEpochTest RotatingFileLogTest DiagnosticsTest VehicleLearningStateTest VehicleIdentityTest VehicleTargetSelectorTest VehicleWakeGateTest VehicleScanPolicyTest OfficialReadyGateTest ThresholdSettingsFormTest VehicleParamCodecTest PermissionAuditTest UpdatePolicyTest LiveActivityTest LogUploadPolicyTest; do
+for TEST_CLASS in PassiveKeyLogicTest RssiPipelineTest RssiChartSeriesTest GattAuthFrameParserTest PendingControlTest NotificationEpochTest RotatingFileLogTest DiagnosticsTest CompatibilityAdDecoderTest VehicleLearningStateTest VehicleIdentityTest VehicleTargetSelectorTest VehicleWakeGateTest VehicleScanPolicyTest OfficialReadyGateTest ThresholdSettingsFormTest VehicleParamCodecTest PermissionAuditTest UpdatePolicyTest LiveActivityTest LogUploadPolicyTest; do
     java -ea -cp "$TEST_DIR" "com.luca.geelykeyradar.$TEST_CLASS"
 done
 

@@ -13,6 +13,7 @@ public final class VehicleTargetSelectorTest {
         boundedCandidatesAndIdlePrune();
         targetChangeClearsDistanceNotControlLatch();
         unknownNearCandidateDoesNotArmControls();
+        geelyAutoSelectsForOfficialConnectionOnly();
         subMillisecondResponseAndCooldownPersist();
         System.out.println("VehicleTargetSelectorTest passed");
     }
@@ -176,6 +177,21 @@ public final class VehicleTargetSelectorTest {
         }
         check(selected != null && logic.getLastSampleAtMs() == 0L && !logic.hasBeenNear(),
                 "未知近场主候选不计RSSI、不武装上锁资格");
+    }
+
+    /** 星愿 Geely_Auto 无尾号，可进入官方唤醒候选，但未学地址前不得供RSSI或车控。 */
+    private static void geelyAutoSelectsForOfficialConnectionOnly() {
+        VehicleTargetSelector<VehicleBeacon> selector = new VehicleTargetSelector<>();
+        String address = "AA:00:00:00:00:11";
+        VehicleBeacon first = VehicleBeacon.parse(address, "Geely_Auto", -65,
+                1000, null, null, null, true);
+        check(first != null, "Geely_Auto 应生成物理候选");
+        selector.observe(first, 1000);
+        selector.observe(VehicleBeacon.parse(address, "Geely_Auto", -63,
+                2600, null, null, null, true), 2600);
+        VehicleBeacon selected = selector.select(null, false, 2600);
+        check(selected != null && selected.address.equals(address), "Geely_Auto 观察后应进入官方唤醒");
+        check(!selector.authorizesRssi(null, selected), "未学习 Geely_Auto 不能供给RSSI或车控");
     }
 
     /** 同毫秒不同纳秒结果可以补名，失败候选消失后仍保持三十秒冷却。 */

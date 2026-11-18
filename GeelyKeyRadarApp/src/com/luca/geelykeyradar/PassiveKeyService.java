@@ -48,6 +48,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Future;
 
 /**
@@ -101,6 +102,7 @@ public class PassiveKeyService extends Service implements SensorEventListener {
     private final OfficialReadyGate officialReadyGate = new OfficialReadyGate();
     private final LiveActivityTrace liveTrace = new LiveActivityTrace();
     private final Runnable notificationStateListener = this::handleOfficialNotificationUpdate;
+    private final Runnable compatibilityCaptureTimeout = () -> finishCompatibilityCapture("duration_elapsed");
 
     private VehicleIdentityStore identityStore;
     private volatile VehicleIdentity identity;
@@ -153,6 +155,9 @@ public class PassiveKeyService extends Service implements SensorEventListener {
     private String lastWakeWaitKey = "";
     private long lastWakeWaitLogAtMs;
     private long lastHintFirstLogAtMs;
+    private String lastWakeAttemptAddress = "";
+    private long lastWakeAttemptAtMs = 0L;
+    private GeelyAdvertisement lastWakeAttemptAd;
     private String lastWeakCandidateKey = "";
     private long lastWeakCandidateLogAtMs = 0L;
     private long lastDecisionLogAtMs = 0L;
@@ -215,6 +220,8 @@ public class PassiveKeyService extends Service implements SensorEventListener {
     private volatile int lastGattNotifyCmdId = -1;
     private volatile long lastGattNotifyCmdAtMs = 0L;
     private volatile long lastApproachLockNotifyAtMs = 0L;
+    private CompatibilityCapture.Session compatibilityCaptureSession;
+    private CompletableFuture<CompatibilityCapture.Result> compatibilityCaptureFuture;
 
     public final class LocalBinder extends Binder {
         public PassiveKeyService getService() {
@@ -372,6 +379,7 @@ public class PassiveKeyService extends Service implements SensorEventListener {
     /** 停止服务时撤销请求和通知回调，避免销毁后再触发车控。 */
     @Override
     public void onDestroy() {
+        if (compatibilityCaptureSession != null) finishCompatibilityCapture("service_destroy");
         cancelPendingControl("服务停止");
         KeyNotificationBridgeService.markGattAuthReady(false);
         clearGattAuthObservation("service_destroy", false);
@@ -521,6 +529,91 @@ public class PassiveKeyService extends Service implements SensorEventListener {
     /** 手动导出时只读取当前快照，ZIP在日志线程生成，不触发扫描、连接或车控。 */
     public Future<File> exportLogs(File destination) {
         return DiagnosticLog.export(destination, getDiagnosticSnapshot());
+    }
+
+    /**
+     * 用户主动上报车型兼容问题时，暂停普通过滤扫描并抓取全量 BLE 原始广播。
+     * 这里只观察，不连接设备、不改身份、不执行车控；抓取结束后自动恢复原扫描。
+     */
+    public Future<CompatibilityCapture.Result> captureCompatibilityRaw(long durationMs) {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            return CompletableFuture.completedFuture(
+                    CompatibilityCapture.unavailable("caller_not_main_thread"));
+        }
+        if (compatibilityCaptureFuture != null && compatibilityCaptureSession != null) {
+            return compatibilityCaptureFuture;
+        }
+        CompletableFuture<CompatibilityCapture.Result> future = new CompletableFuture<>();
+        compatibilityCaptureFuture = future;
+        compatibilityCaptureSession = new CompatibilityCapture.Session(this, durationMs, "service_scan");
+        cancelPendingControl("车型兼容原始抓取");
+        DiagnosticLog.event("Compatibility", "CAPTURE_START",
+                "duration_ms=" + Math.max(1_000L, Math.min(30_000L, durationMs))
+                        + " mode=UNFILTERED_LOW_LATENCY");
+        appendLog("开始 10 秒车型兼容原始 BLE 抓取，期间暂停普通车辆扫描");
+        handler.post(this::startCompatibilityScan);
+        return future;
+    }
+
+    private void startCompatibilityScan() {
+        CompatibilityCapture.Session session = compatibilityCaptureSession;
+        if (session == null) return;
+        if (!hasBluetoothPermission()) {
+            finishCompatibilityCapture("permission_denied");
+            return;
+        }
+        if (bluetoothAdapter == null || !bluetoothAdapter.isEnabled()) {
+            finishCompatibilityCapture("bluetooth_unavailable");
+            return;
+        }
+        try {
+            stopBleScan();
+            bleScanner = bluetoothAdapter.getBluetoothLeScanner();
+            if (bleScanner == null) {
+                finishCompatibilityCapture("scanner_unavailable");
+                return;
+            }
+            long now = SystemClock.elapsedRealtime();
+            SCAN_RESTART_BUDGET.started(now);
+            bleScanner.startScan(null, CompatibilityCapture.scanSettings(), scanCallback);
+            activeScanPlanKey = "COMPATIBILITY_RAW";
+            activeScanMode = "COMPATIBILITY_RAW";
+            isScanning = true;
+            lastScanStartAtMs = now;
+            handler.removeCallbacks(compatibilityCaptureTimeout);
+            handler.postDelayed(compatibilityCaptureTimeout,
+                    Math.max(1_000L, Math.min(30_000L, session.durationMs())));
+            DiagnosticLog.detail("Compatibility", "SCAN_START",
+                    "filters=0 mode=UNFILTERED_LOW_LATENCY duration_ms=" + session.durationMs());
+            updateNotificationIfNeeded(true);
+        } catch (Throwable error) {
+            session.addError("start_compatibility_scan", error);
+            finishCompatibilityCapture("scan_start_failed");
+        }
+    }
+
+    /** 完成抓取、交付结果并恢复原身份过滤扫描；任何失败都必须允许上传继续。 */
+    private void finishCompatibilityCapture(String reason) {
+        CompatibilityCapture.Session session;
+        CompletableFuture<CompatibilityCapture.Result> future;
+        synchronized (this) {
+            session = compatibilityCaptureSession;
+            future = compatibilityCaptureFuture;
+            compatibilityCaptureSession = null;
+            compatibilityCaptureFuture = null;
+        }
+        if (session == null) return;
+        handler.removeCallbacks(compatibilityCaptureTimeout);
+        stopBleScan();
+        CompatibilityCapture.Result result = session.finish(reason, activeGatt);
+        if (future != null) future.complete(result);
+        DiagnosticLog.event("Compatibility", "CAPTURE_DONE", result.diagnosticSummary());
+        appendLog("车型兼容原始抓取完成：" + result.deviceCount + " 个设备 / "
+                + result.uniqueObservationCount + " 种广播");
+        handler.postDelayed(() -> {
+            if (running && serviceEnabled) startBleScan();
+        }, 800L);
+        updateNotificationIfNeeded(true);
     }
 
     /** 返回可导出的完整状态，所有计时使用单调时间且身份只有短指纹。 */
@@ -685,6 +778,9 @@ public class PassiveKeyService extends Service implements SensorEventListener {
      */
     public void setServiceEnabled(boolean enabled) {
         serviceEnabled = enabled;
+        if (!enabled && compatibilityCaptureSession != null) {
+            finishCompatibilityCapture("service_disabled");
+        }
         KeyNotificationBridgeService.markGattAuthReady(false);
         clearGattAuthObservation("service_switch", false);
         identityStore.setServiceEnabled(enabled);
@@ -1009,6 +1105,12 @@ public class PassiveKeyService extends Service implements SensorEventListener {
             diagnostics.increment("scan_callbacks");
             long now = SystemClock.elapsedRealtime();
             lastScanCallbackAtMs = now;
+            CompatibilityCapture.Session capture = compatibilityCaptureSession;
+            if (capture != null) {
+                diagnostics.increment("compatibility_scan_callbacks");
+                capture.record(callbackType, result, System.currentTimeMillis(), now);
+                return;
+            }
             if (!serviceEnabled || !running) {
                 diagnostics.increment("scan_disabled");
                 return;
@@ -1079,6 +1181,12 @@ public class PassiveKeyService extends Service implements SensorEventListener {
             diagnostics.increment("scan_failures");
             DiagnosticLog.event("Scan", "SCAN_CALLBACK_ERROR", "code=" + errorCode
                     + " " + scanDiagnostic(SystemClock.elapsedRealtime(), false));
+            CompatibilityCapture.Session capture = compatibilityCaptureSession;
+            if (capture != null) {
+                capture.scanFailed(errorCode);
+                finishCompatibilityCapture("scan_failed");
+                return;
+            }
             if (errorCode == ScanCallback.SCAN_FAILED_ALREADY_STARTED) {
                 isScanning = true;
                 return;
@@ -1281,6 +1389,9 @@ public class PassiveKeyService extends Service implements SensorEventListener {
                 + " since_first_wake_ms=" + age(now, firstWakeInSessionAtMs)
                 + " " + targetSelector.observationDiagnostic(ad, now));
         liveTrace.add(LiveActivityTrace.Step.WAKE_REQUEST, now, "RSSI " + ad.rssi + " dBm");
+        lastWakeAttemptAddress = ad.address;
+        lastWakeAttemptAtMs = now;
+        lastWakeAttemptAd = ad;
         GeelyBridge.wakeAndConnect(this, ad.scanResult, ad.carId());
         KeyNotificationBridgeService.requestFastRescan(this, KeyNotificationBridgeService.FAST_RESCAN_WINDOW_MS);
         scheduleWakeFallback(ad, now);
@@ -1317,6 +1428,9 @@ public class PassiveKeyService extends Service implements SensorEventListener {
         wakeGate.clear();
         liveTrace.clear();
         wakeSessionAddress = "";
+        lastWakeAttemptAddress = "";
+        lastWakeAttemptAtMs = 0L;
+        lastWakeAttemptAd = null;
         lastVehicleSignalAtMs = 0L;
         longAbsenceSessionStartedAtMs = 0L;
         firstAdvertInSessionAtMs = 0L;
@@ -1379,7 +1493,7 @@ public class PassiveKeyService extends Service implements SensorEventListener {
                 + " " + wakeGate.diagnosticSnapshot(now));
     }
 
-    /** 不再凭lastWakeAd或单包候选猜测本车，官方在线后只学习唯一可验证的真实连接。 */
+    /** 官方在线后优先采用唯一GATT/ACL真实连接；Geely_Auto可用近期实际注入并由银河确认的候选兜底。 */
     private void maybeLearnVehicle(long now) {
         if (!serviceEnabled || !hasBluetoothPermission() || !isOfficialConnected()) return;
         if (lastLearnAttemptAtMs > 0L && now - lastLearnAttemptAtMs < 1000L) return;
@@ -1389,6 +1503,17 @@ public class PassiveKeyService extends Service implements SensorEventListener {
         VehicleIdentity verified = findIdentityFromConnectedGatt();
         if (verified != null) {
             adoptConnectedIdentity(verified, VehicleLearningState.CONNECTED, now);
+            return;
+        }
+        // 部分 ROM 不向第三方暴露系统 GATT 列表，但同一 MAC 的 ACL 事件仍可作为真实连接证据。
+        VehicleIdentity aclVerified = findIdentityFromRecentAclPeer(now);
+        if (aclVerified != null) {
+            adoptConnectedIdentity(aclVerified, VehicleLearningState.ACL, now);
+            return;
+        }
+        VehicleIdentity wakeVerified = findIdentityFromLatestInjectedGeelyAuto(now);
+        if (wakeVerified != null) {
+            adoptConnectedIdentity(wakeVerified, VehicleLearningState.WAKE_CONFIRMED, now);
             return;
         }
         if (!hasCompleteIdentity() && (lastLearningWaitLogAtMs == 0L || now - lastLearningWaitLogAtMs >= 10000L)) {
@@ -1414,16 +1539,61 @@ public class PassiveKeyService extends Service implements SensorEventListener {
             identityStore.save(identity, source);
         }
         waitForDisconnectToLearn = false;
+        GeelyAdvertisement wakeEvidence = lastWakeAttemptAd != null
+                && identity.address.equalsIgnoreCase(lastWakeAttemptAddress) ? lastWakeAttemptAd : null;
+        lastWakeAttemptAddress = "";
+        lastWakeAttemptAtMs = 0L;
+        lastWakeAttemptAd = null;
         targetSelector.pinConnected(identity.address, now);
         wakeGate.onVerifiedConnectedPeer();
         resetMeasurementTarget(identity.address, now);
         lastObservedBleMac = identity.address;
         GeelyAdvertisement evidence = targetSelector.evidenceFor(identity.address, now);
+        if (evidence == null) evidence = wakeEvidence;
         currentAd = evidence;
         if (bluetoothAdapter != null) lastObservedCarDevice = bluetoothAdapter.getRemoteDevice(identity.address);
         requestScanFilterRefresh();
         updateNotificationIfNeeded(changed);
+        if (evidence != null && evidence.seenAtMs > 0L && evidence.seenAtMs <= now
+                && now - evidence.seenAtMs <= PassiveKeyLogic.SIGNAL_STALE_MS) {
+            onFreshRssi(evidence.rssi, "广播 " + evidence.sourceTag, evidence);
+        }
         processOfficialReadyDecision(now);
+    }
+
+    /**
+     * 部分 ROM 同时隐藏系统 GATT 和 ACL 事件。只有当最近一次实际注入的是唯一
+     * Geely_Auto 候选，且银河在 30 秒内报告已连接时，才采用该候选地址。
+     */
+    private VehicleIdentity findIdentityFromLatestInjectedGeelyAuto(long now) {
+        if (!hasBluetoothPermission() || !isOfficialConnected()) return null;
+        if (lastWakeAttemptAddress.isEmpty() || lastWakeAttemptAtMs <= 0L
+                || now < lastWakeAttemptAtMs || now - lastWakeAttemptAtMs > 30_000L) return null;
+        GeelyAdvertisement evidence = lastWakeAttemptAd;
+        if (evidence == null || !lastWakeAttemptAddress.equalsIgnoreCase(evidence.address)
+                || !VehicleBeacon.isGeelyAutoName(evidence.name)) return null;
+        return VehicleIdentity.fromConnectedPeer(evidence.address, evidence.name, evidence, identity);
+    }
+
+    /**
+     * GATT 列表不可见时的安全兜底：ACL 地址必须同时匹配当前主候选/唤醒目标，
+     * 且该地址仍有近期广播证据；Geely_Auto 等无唯一名称的车型由此完成地址绑定。
+     */
+    private VehicleIdentity findIdentityFromRecentAclPeer(long now) {
+        if (!hasBluetoothPermission() || !isOfficialConnected()) return null;
+        BluetoothDevice device = lastObservedCarDevice;
+        if (device == null) return null;
+        try {
+            String address = device.getAddress();
+            String selected = targetSelector.selectedAddress();
+            String active = wakeGate.activeAddress();
+            if (!address.equalsIgnoreCase(selected) && !address.equalsIgnoreCase(active)) return null;
+            GeelyAdvertisement evidence = targetSelector.evidenceFor(address, now);
+            if (evidence == null) return null;
+            return VehicleIdentity.fromConnectedPeer(address, device.getName(), evidence, identity);
+        } catch (SecurityException denied) {
+            return null;
+        }
     }
 
     /** 从可见系统连接识别车辆，匿名设备缺少名称时继续查同MAC候选；多匹配连接一律拒绝。 */
@@ -1457,7 +1627,7 @@ public class PassiveKeyService extends Service implements SensorEventListener {
 
     /** 接近补偿与离开测距分离，先更新距离再验证旧请求，避免回到车旁仍执行上锁。 */
     private void onFreshRssi(int rawDbm, String source, GeelyAdvertisement ad) {
-        if (!serviceEnabled || !running) return;
+        if (!serviceEnabled || !running || compatibilityCaptureSession != null) return;
         if (rawDbm <= -105 || rawDbm >= 0) {
             diagnostics.increment("rssi_invalid");
             return;
@@ -1769,6 +1939,9 @@ public class PassiveKeyService extends Service implements SensorEventListener {
             processOfficialReadyDecision(now);
         } else {
             appendLog("银河蓝牙钥匙已断开");
+            lastWakeAttemptAddress = "";
+            lastWakeAttemptAtMs = 0L;
+            lastWakeAttemptAd = null;
             KeyNotificationBridgeService.markGattAuthReady(false);
             clearGattAuthObservation("official_disconnected", false);
             waitForDisconnectToLearn = false;
@@ -2445,8 +2618,15 @@ public class PassiveKeyService extends Service implements SensorEventListener {
             // ACL先于官方鉴权到达时只记录握手事实；官方就绪后再学习唯一可见GATT设备。
             if (isOfficialConnected()) {
                 VehicleIdentity verified = findIdentityFromConnectedGatt();
-                if (verified != null && addr.equalsIgnoreCase(verified.address)) {
-                    adoptConnectedIdentity(verified, VehicleLearningState.ACL, now);
+                if (verified != null) {
+                    if (addr.equalsIgnoreCase(verified.address)) {
+                        adoptConnectedIdentity(verified, VehicleLearningState.ACL, now);
+                    }
+                } else {
+                    VehicleIdentity aclVerified = findIdentityFromRecentAclPeer(now);
+                    if (aclVerified != null && addr.equalsIgnoreCase(aclVerified.address)) {
+                        adoptConnectedIdentity(aclVerified, VehicleLearningState.ACL, now);
+                    }
                 }
             }
             liveTrace.add(LiveActivityTrace.Step.ACL_CONNECTED, now, "addr_id=" + DiagnosticLog.fingerprint(addr));

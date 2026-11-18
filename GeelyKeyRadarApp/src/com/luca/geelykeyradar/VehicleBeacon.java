@@ -55,7 +55,7 @@ class VehicleBeacon {
                                byte[] geelyPayload, byte[] compatPayload, byte[] legacyPayload,
                                boolean hasFdfd) {
         String safeName = clean(name);
-        boolean geelyName = isGeelyVehicleName(safeName);
+        boolean geelyName = isRecognizableVehicleName(safeName);
         byte[] payload = null;
         int company = -1;
         String source = "";
@@ -114,6 +114,16 @@ class VehicleBeacon {
                     || (character >= 'a' && character <= 'z'))) return false;
         }
         return true;
+    }
+
+    /** 星愿等车型使用无尾号的 Geely_Auto；它只可作为发现线索，不能证明唯一车辆。 */
+    static boolean isGeelyAutoName(String value) {
+        return "Geely_Auto".equalsIgnoreCase(clean(value));
+    }
+
+    /** 可参与找车的明确名称；唯一身份仍需 GeelyVehicle 尾号或真实连接地址。 */
+    static boolean isRecognizableVehicleName(String value) {
+        return isGeelyVehicleName(value) || isGeelyAutoName(value);
     }
 
     /** 从精确设备名提取尾号，保留合法字母，不从任意名称尾部猜测数字。 */

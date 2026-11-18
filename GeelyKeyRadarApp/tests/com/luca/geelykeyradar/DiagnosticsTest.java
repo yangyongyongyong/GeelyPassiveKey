@@ -20,6 +20,7 @@ public final class DiagnosticsTest {
         diagnosticSnapshotDoesNotMutateLogic();
         reasonsMatchActualBranches();
         exportIsConsistentAndRedacted();
+        compatibilityAttachmentRemainsRaw();
         actionSnapshotUsesThreeMinuteWindowAndKeepsConfiguration();
         actionSnapshotPrunesOldestAtOneHundred();
         processMarkerDistinguishesUncleanStop();
@@ -135,6 +136,37 @@ public final class DiagnosticsTest {
             check(Files.readString(directory.resolve("passive_key.log")).contains("LOGS_CLEARED"), "清空后保留清空标记");
             check(!Files.exists(directory.resolve("passive_key.log.3"))
                     && !Files.exists(directory.resolve("passive_key_diagnostic.log")), "清空应移除所有日志历史分段");
+        } finally {
+            store.close();
+            deleteTemporary(directory);
+        }
+    }
+
+    /** 兼容附件只允许固定名称，但内容必须原样保留原始地址、名称和广播字节。 */
+    private static void compatibilityAttachmentRemainsRaw() throws Exception {
+        Path directory = Files.createTempDirectory("diagnostic-compatibility-test-");
+        DiagnosticLogStore store = new DiagnosticLogStore(directory.toFile(), "compat", 9, "salt");
+        try {
+            store.flush().get(10L, TimeUnit.SECONDS);
+            String raw = "addr=AA:BB:CC:11:22:33\nname=Geely_Auto\nraw_ad_hex=02010609094765656C795F4175746F\n";
+            java.util.Map<String, String> extras = new java.util.LinkedHashMap<>();
+            extras.put("compatibility_capture.txt", raw);
+            File archive = store.export(directory.resolve("compat.zip").toFile(), "state=ok",
+                    10_000L, 20_000L, extras).get(10L, TimeUnit.SECONDS);
+            try (ZipFile zip = new ZipFile(archive)) {
+                check(zip.getEntry("compatibility_capture.txt") != null, "兼容附件应进入ZIP");
+                String actual = new String(zip.getInputStream(zip.getEntry("compatibility_capture.txt"))
+                        .readAllBytes(), StandardCharsets.UTF_8);
+                check(actual.equals(raw), "兼容附件不得再次脱敏或改写");
+            }
+            try {
+                java.util.Map<String, String> invalid = java.util.Map.of("events.log", "overwrite");
+                store.export(directory.resolve("invalid.zip").toFile(), "state=ok",
+                        11_000L, 21_000L, invalid).get(10L, TimeUnit.SECONDS);
+                check(false, "不允许覆盖固定日志文件");
+            } catch (Exception expected) {
+                check(true, "非法附件名称被拒绝");
+            }
         } finally {
             store.close();
             deleteTemporary(directory);

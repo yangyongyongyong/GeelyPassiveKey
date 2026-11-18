@@ -43,7 +43,7 @@ final class VehicleIdentity {
     static VehicleIdentity from(VehicleBeacon ad) {
         if (ad == null) return null;
         String tail2 = !ad.vinTail2.isEmpty() ? ad.vinTail2 : tail2(ad.vinTail3);
-        return new VehicleIdentity(ad.address, VehicleBeacon.isGeelyVehicleName(ad.name) ? ad.name : "",
+        return new VehicleIdentity(ad.address, VehicleBeacon.isRecognizableVehicleName(ad.name) ? ad.name : "",
                 tail2, ad.vinTail3, ad.mfgSignature, ad.manufacturerId, System.currentTimeMillis());
     }
 
@@ -64,6 +64,7 @@ final class VehicleIdentity {
         if (conflicts(ad.name, ad.vinTail2, ad.vinTail3)) return Match.CONFLICT;
         if (!address.isEmpty() && address.equalsIgnoreCase(ad.address)) return Match.ADDRESS;
         if (matchesName(ad.name)) return Match.NAME;
+        if (VehicleBeacon.isGeelyAutoName(name) && VehicleBeacon.isGeelyAutoName(ad.name)) return Match.HINT;
         boolean tailMatches = !effectiveTail2().isEmpty() && effectiveTail2().equalsIgnoreCase(ad.vinTail2);
         boolean signatureMatches = hasUsableSignature() && manufacturerId == ad.manufacturerId
                 && mfgSignature.equalsIgnoreCase(ad.mfgSignature);
@@ -126,8 +127,8 @@ final class VehicleIdentity {
         }
         VehicleIdentity base = known != null ? known : (sameEvidenceAddress ? from(evidence)
                 : new VehicleIdentity(address, peerName, tail2(peerTail), peerTail, "", System.currentTimeMillis()));
-        String newName = VehicleBeacon.isGeelyVehicleName(peerName) ? peerName : base.name;
-        if (newName.isEmpty() && sameEvidenceAddress && VehicleBeacon.isGeelyVehicleName(evidence.name)) {
+        String newName = VehicleBeacon.isRecognizableVehicleName(peerName) ? peerName : base.name;
+        if (newName.isEmpty() && sameEvidenceAddress && VehicleBeacon.isRecognizableVehicleName(evidence.name)) {
             newName = evidence.name;
         }
         String newTail3 = !base.vinTail3.isEmpty() ? base.vinTail3 : VehicleBeacon.vinTailFromName(newName);
@@ -147,7 +148,7 @@ final class VehicleIdentity {
     VehicleIdentity mergeWith(VehicleBeacon ad) {
         if (!matches(ad)) return this;
         String newAddress = !ad.address.isEmpty() ? ad.address : address;
-        String newName = VehicleBeacon.isGeelyVehicleName(ad.name) ? ad.name : name;
+        String newName = VehicleBeacon.isRecognizableVehicleName(ad.name) ? ad.name : name;
         String newTail3 = !ad.vinTail3.isEmpty() ? ad.vinTail3 : vinTail3;
         String newTail2 = !ad.vinTail2.isEmpty() ? ad.vinTail2 : effectiveTail2();
         if (newTail2.isEmpty()) newTail2 = tail2(newTail3);

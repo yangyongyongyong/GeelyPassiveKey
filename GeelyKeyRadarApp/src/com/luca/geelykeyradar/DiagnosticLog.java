@@ -12,6 +12,7 @@ import android.util.Log;
 
 import java.io.File;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.Future;
 
@@ -129,11 +130,16 @@ final class DiagnosticLog {
 
     /** 导出包含版本和状态快照的ZIP，调用方在后台等待结果。 */
     static Future<File> export(File destination, String snapshot) {
+        return export(destination, snapshot, java.util.Collections.emptyMap());
+    }
+
+    /** 兼容性上传可附带原始 BLE 抓取附件；普通导出不传附件，保持原白名单。 */
+    static Future<File> export(File destination, String snapshot, Map<String, String> extraTexts) {
         DiagnosticLogStore current = store;
         if (current == null) throw new IllegalStateException("日志尚未初始化");
         event("User", "EXPORT_REQUEST", "");
         return current.export(destination, "trace_run=" + traceRun + " " + environment + "\n" + snapshot,
-                System.currentTimeMillis(), SystemClock.elapsedRealtime());
+                System.currentTimeMillis(), SystemClock.elapsedRealtime(), extraTexts);
     }
 
     /** 动作交付后截取最近三分钟，写入私有动作快照目录并异步限数。 */

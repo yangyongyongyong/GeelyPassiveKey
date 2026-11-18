@@ -32,6 +32,8 @@ public final class VehicleLearningStateTest {
                 "迁移数据不能冒充自动识别来源");
         check(VehicleLearningState.sourceLabel(VehicleLearningState.MANUAL).contains("匹配提示"),
                 "手填数据须显示真实来源");
+        check(VehicleLearningState.sourceLabel(VehicleLearningState.WAKE_CONFIRMED).contains("银河连接确认"),
+                "Geely_Auto唤醒确认来源必须明确标注");
         check(VehicleLearningState.message(false, true, true, false, false, false, false).contains("服务已关闭"),
                 "重学不能绕过服务总开关");
         System.out.println("VehicleLearningStateTest passed");

@@ -15,6 +15,7 @@ import java.util.Arrays;
 import java.util.Comparator;
 import java.util.Iterator;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Properties;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.Future;
@@ -151,8 +152,16 @@ final class DiagnosticLogStore {
 
     /** 在同一写入队列中生成ZIP；只读取白名单日志，不打包偏好、身份盐或其他应用数据。 */
     Future<File> export(File destination, String snapshot, long wallMs, long monoMs) {
+        return export(destination, snapshot, wallMs, monoMs, java.util.Collections.emptyMap());
+    }
+
+    /** 在固定诊断文件之外加入显式采集附件；附件只允许兼容性抓取白名单名称。 */
+    Future<File> export(File destination, String snapshot, long wallMs, long monoMs,
+                        Map<String, String> extraTexts) {
         if (!exportBusy.compareAndSet(false, true)) throw new IllegalStateException("已有日志导出进行中");
         try {
+            Map<String, String> extras = extraTexts == null
+                    ? java.util.Collections.emptyMap() : new java.util.LinkedHashMap<>(extraTexts);
             return writer.submit(() -> {
                 try {
                     try (OutputStream output = new FileOutputStream(destination);
@@ -166,9 +175,16 @@ final class DiagnosticLogStore {
                                 + "用 sid + trace_run + req_id 关联请求；SERVICE_BEGIN 的 previous_clean_stop=false 不能单独证明崩溃。\n"
                                 + "计数是累计(+本窗口新增)，dropped/io_errors 非零说明日志可能丢失；轮转不保证保留全部历史。\n"
                                 + "SENT 是交给银河，不是车锁执行回执；UNKNOWN 不能算成功或失败。\n"
-                                + "蓝牙地址/车辆名称已替换为本机指纹，不含账号、VIN、密钥、扫描原始数据或系统通知正文。\n");
+                                + "普通诊断日志中的蓝牙地址/车辆名称已替换为本机指纹。\n"
+                                + (extras.isEmpty() ? "" : "compatibility_capture.txt 是用户主动兼容上报时采集的原始 BLE 数据，"
+                                + "刻意保留地址、名称、广播字节、厂商数据、UUID 与当前可见 GATT 信息。\n"));
                         addLogs(zip, "events.log", "passive_key.log", EVENT_FILES, EVENT_BYTES);
                         addLogs(zip, "diagnostic.log", "passive_key_diagnostic.log", DETAIL_FILES, DETAIL_BYTES);
+                        for (Map.Entry<String, String> entry : extras.entrySet()) {
+                            String name = entry.getKey();
+                            if (!safeExtraName(name)) throw new IllegalArgumentException("不允许的日志附件名称");
+                            addText(zip, name, entry.getValue() == null ? "" : entry.getValue());
+                        }
                     }
                     return destination;
                 } catch (Exception error) {
@@ -183,6 +199,11 @@ final class DiagnosticLogStore {
             dropped.incrementAndGet();
             throw rejected;
         }
+    }
+
+    /** 兼容性附件只允许固定前缀，避免调用方覆盖 summary/README 或写入任意路径。 */
+    private static boolean safeExtraName(String name) {
+        return name != null && name.matches("compatibility_[a-z0-9_]{1,48}\\.txt");
     }
 
     /**

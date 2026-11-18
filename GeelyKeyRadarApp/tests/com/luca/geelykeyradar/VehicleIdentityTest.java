@@ -10,6 +10,7 @@ public final class VehicleIdentityTest {
         nameAndAddressSupplement();
         connectedEvidenceKeepsManualHint();
         strictParserAndStructuredPayload();
+        geelyAutoNameIsDiscoveryOnly();
         legacyPrefixAndHexValidation();
         System.out.println("VehicleIdentityTest passed");
     }
@@ -111,6 +112,29 @@ public final class VehicleIdentityTest {
         check(VehicleBeacon.parse("AA:00:00:00:00:01", "GeelyVehicle245", -60, 1000,
                 VehicleBeacon.hexToBytes("060200143436"), null, null, false) == null, "名字与载荷尾号矛盾不进入RSSI");
         check(VehicleBeacon.parse("", "GeelyVehicle245", -60, 1000, null, null, null, false) == null, "无MAC不生成物理候选");
+    }
+
+    /** 星愿 Geely_Auto 可找车，但同名跨MAC只到 HINT，必须由真实连接采用新地址。 */
+    private static void geelyAutoNameIsDiscoveryOnly() {
+        VehicleBeacon first = VehicleBeacon.parse("AA:00:00:00:00:01", "Geely_Auto",
+                -65, 1000, null, null, null, true);
+        check(first != null && first.sourceTag.equals("FDFD+NAME"), "Geely_Auto 加 FDFD 应进入候选");
+        VehicleIdentity identity = VehicleIdentity.from(first);
+        check(identity.name.equals("Geely_Auto") && identity.address.equals(first.address),
+                "连接验证后的 Geely_Auto 身份应保留型号提示与地址");
+        VehicleBeacon other = VehicleBeacon.parse("BB:00:00:00:00:02", "Geely_Auto",
+                -62, 1100, null, null, null, true);
+        check(identity.match(other) == VehicleIdentity.Match.HINT && !identity.matches(other),
+                "同名 Geely_Auto 跨地址只能作为发现线索，不能测距");
+        VehicleIdentity verified = VehicleIdentity.fromConnectedPeer(
+                other.address, "Geely_Auto", other, identity);
+        check(verified != null && verified.address.equals(other.address),
+                "官方真实连接可把 Geely_Auto 新地址采用为本车");
+        check(VehicleIdentity.fromConnectedPeer("CC:00:00:00:00:03", "Geely_Auto", null, null) == null,
+                "没有同MAC广播和官方连接的 Geely_Auto 不能猜测绑定");
+        VehicleBeacon arbitrary = VehicleBeacon.parse("DD:00:00:00:00:04", "GeelyAuto",
+                -60, 1200, null, null, null, true);
+        check(arbitrary == null, "相似名称 GeelyAuto 不能被放行");
     }
 
     /** 兼容15FF签名中的Company ID并严格处理损坏十六进制，不再搜索任意raw字节子串。 */

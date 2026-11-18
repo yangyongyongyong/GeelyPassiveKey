@@ -5,6 +5,7 @@ public final class UpdatePolicyTest {
     public static void main(String[] args) {
         parsesOnlyVersionedApkNames();
         comparesVersionAndHourlyWindow();
+        selectsHighestVersionAcrossSources();
         sanitizesAndMatchesDigest();
         allowsOnlyCloudflareAndGithubAssets();
         System.out.println("UpdatePolicyTest passed");
@@ -37,6 +38,17 @@ public final class UpdatePolicyTest {
                 "满一小时应检查");
         check(UpdatePolicy.isCheckDue(now, now + 10L, true), "时钟回拨后允许重新检查");
         check(!UpdatePolicy.isCheckDue(now, 0L, false), "关闭自动更新后不得自动检查");
+    }
+
+    private static void selectsHighestVersionAcrossSources() {
+        UpdatePolicy.Asset stale = UpdatePolicy.parseAsset("GeelyPassiveKey-v4.6.2-min-602.apk",
+                "https://geelyupdate.mq.lucadesign.uk/releases/4.6.2-min/GeelyPassiveKey-v4.6.2-min-602.apk",
+                "sha256:a", 100L);
+        UpdatePolicy.Asset latest = UpdatePolicy.parseAsset("GeelyPassiveKey-v4.6.4-min-604.apk",
+                "https://github.com/yangyongyongyong/GeelyPassiveKey/releases/download/v4.6.4-min/GeelyPassiveKey-v4.6.4-min-604.apk",
+                "sha256:b", 100L);
+        check(UpdatePolicy.newest(stale, latest) == latest, "旧 Cloudflare 清单不能压过更高 GitHub 版本");
+        check(UpdatePolicy.newest(latest, stale) == latest, "渠道顺序不能降低已选最高版本");
     }
 
     private static void sanitizesAndMatchesDigest() {
