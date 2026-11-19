@@ -116,9 +116,10 @@ class VehicleBeacon {
         return true;
     }
 
-    /** 星愿等车型使用无尾号的 Geely_Auto；它只可作为发现线索，不能证明唯一车辆。 */
+    /** 星愿不同层可能显示 Geely_Auto 或 GeelyAuto；它只可作为发现线索，不能证明唯一车辆。 */
     static boolean isGeelyAutoName(String value) {
-        return "Geely_Auto".equalsIgnoreCase(clean(value));
+        String name = clean(value);
+        return "Geely_Auto".equalsIgnoreCase(name) || "GeelyAuto".equalsIgnoreCase(name);
     }
 
     /** 可参与找车的明确名称；唯一身份仍需 GeelyVehicle 尾号或真实连接地址。 */

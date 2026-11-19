@@ -108,6 +108,7 @@ final class VehicleScanPolicy {
         rules.add(new Rule(Kind.MANUFACTURER, "", VehicleBeacon.COMPANY_ID_LEGACY, new byte[0], new byte[0]));
         rules.add(simple(Kind.SERVICE, VehicleBeacon.SERVICE_UUID));
         rules.add(simple(Kind.NAME, "Geely_Auto"));
+        rules.add(simple(Kind.NAME, "GeelyAuto"));
         return new Plan("LEARNING", rules);
     }
 

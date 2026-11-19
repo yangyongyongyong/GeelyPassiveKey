@@ -130,11 +130,25 @@ public final class VehicleIdentityTest {
                 other.address, "Geely_Auto", other, identity);
         check(verified != null && verified.address.equals(other.address),
                 "官方真实连接可把 Geely_Auto 新地址采用为本车");
-        check(VehicleIdentity.fromConnectedPeer("CC:00:00:00:00:03", "Geely_Auto", null, null) == null,
-                "没有同MAC广播和官方连接的 Geely_Auto 不能猜测绑定");
-        VehicleBeacon arbitrary = VehicleBeacon.parse("DD:00:00:00:00:04", "GeelyAuto",
+        check(VehicleIdentity.fromConnectedPeer("CC:00:00:00:00:03", "Geely_Auto", null, null) != null,
+                "官方唯一 GATT 显示 Geely_Auto 时应可直接学习地址");
+        check(VehicleIdentity.fromConnectedPeer("CD:00:00:00:00:03", "GeelyAutoX", null, null) == null,
+                "相似 GATT 名称不能猜测绑定");
+        VehicleBeacon gattStyleName = VehicleBeacon.parse("DD:00:00:00:00:04", "GeelyAuto",
                 -60, 1200, null, null, null, true);
-        check(arbitrary == null, "相似名称 GeelyAuto 不能被放行");
+        check(gattStyleName != null, "星愿系统层 GeelyAuto（无下划线）也必须被识别");
+        VehicleIdentity gattLearned = VehicleIdentity.fromConnectedPeer(
+                "EE:00:00:00:00:05", "GeelyAuto", null, null);
+        check(gattLearned != null && gattLearned.address.equals("EE:00:00:00:00:05")
+                        && gattLearned.name.equals("GeelyAuto"),
+                "官方唯一 GATT 显示 GeelyAuto 时应可直接学习地址");
+        VehicleIdentity rotatedGatt = VehicleIdentity.fromConnectedPeer(
+                "FE:00:00:00:00:06", "GeelyAuto", null, gattLearned);
+        check(rotatedGatt != null && rotatedGatt.address.equals("FE:00:00:00:00:06"),
+                "GeelyAuto 地址轮换后仍应由新的真实 GATT 连接更新");
+        VehicleBeacon similar = VehicleBeacon.parse("FF:00:00:00:00:06", "GeelyAutoX",
+                -60, 1300, null, null, null, true);
+        check(similar == null, "相似名称 GeelyAutoX 不能被放行");
     }
 
     /** 兼容15FF签名中的Company ID并严格处理损坏十六进制，不再搜索任意raw字节子串。 */

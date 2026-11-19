@@ -120,9 +120,11 @@ final class VehicleIdentity {
             Match match = sameEvidenceAddress ? known.match(evidence) : Match.NONE;
             if (match == Match.CONFLICT) return null;
             boolean sameAddress = !known.address.isEmpty() && known.address.equalsIgnoreCase(address);
-            if (!sameAddress && !known.matchesName(peerName)
+            boolean sameAutoFamily = VehicleBeacon.isGeelyAutoName(peerName)
+                    && VehicleBeacon.isGeelyAutoName(known.name);
+            if (!sameAddress && !known.matchesName(peerName) && !sameAutoFamily
                     && match != Match.ADDRESS && match != Match.NAME && match != Match.HINT) return null;
-        } else if (!VehicleBeacon.isGeelyVehicleName(peerName) && !sameEvidenceAddress) {
+        } else if (!VehicleBeacon.isRecognizableVehicleName(peerName) && !sameEvidenceAddress) {
             return null;
         }
         VehicleIdentity base = known != null ? known : (sameEvidenceAddress ? from(evidence)

@@ -86,14 +86,17 @@ public final class VehicleScanPolicyTest {
     /** 所有模式保持非空过滤，四次启动后等待三十秒滚动预算，身份逐包变化不能无限stop/start。 */
     private static void learningIsFilteredAndBudgeted() {
         VehicleScanPolicy.Plan learning = VehicleScanPolicy.build(null);
-        boolean hasGeelyAutoName = false;
+        boolean hasUnderscoreName = false;
+        boolean hasCompactName = false;
         for (VehicleScanPolicy.Rule rule : learning.rules) {
-            if (rule.kind == VehicleScanPolicy.Kind.NAME && "Geely_Auto".equals(rule.value)) {
-                hasGeelyAutoName = true;
-            }
+            if (rule.kind != VehicleScanPolicy.Kind.NAME) continue;
+            if ("Geely_Auto".equals(rule.value)) hasUnderscoreName = true;
+            if ("GeelyAuto".equals(rule.value)) hasCompactName = true;
         }
-        check(hasGeelyAutoName, "首次学习必须能由硬件过滤放行 Geely_Auto 名称广播");
-        check(learning.mode.equals("LEARNING") && learning.rules.size() == 5, "首次学习使用四个协议规则加 Geely_Auto 名称规则，仍支持息屏");
+        check(hasUnderscoreName && hasCompactName,
+                "首次学习必须同时由硬件过滤放行 Geely_Auto 与 GeelyAuto");
+        check(learning.mode.equals("LEARNING") && learning.rules.size() == 6,
+                "首次学习使用四个协议规则加两种星愿名称规则，仍支持息屏");
         VehicleScanPolicy.RestartBudget budget = new VehicleScanPolicy.RestartBudget();
         for (long now = 1000; now <= 4000; now += 1000) {
             check(budget.delayMs(now) == 0, "启动间隔达到一秒可启动");
