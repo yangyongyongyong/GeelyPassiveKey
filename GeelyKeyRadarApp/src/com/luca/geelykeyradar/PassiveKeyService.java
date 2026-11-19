@@ -43,10 +43,12 @@ import android.util.Log;
 
 import java.io.File;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Future;
@@ -222,6 +224,8 @@ public class PassiveKeyService extends Service implements SensorEventListener {
     private volatile long lastApproachLockNotifyAtMs = 0L;
     private CompatibilityCapture.Session compatibilityCaptureSession;
     private CompletableFuture<CompatibilityCapture.Result> compatibilityCaptureFuture;
+    private Set<String> gattBaselineAddresses = new HashSet<>();
+    private long lastGattBaselineAtMs = 0L;
 
     public final class LocalBinder extends Binder {
         public PassiveKeyService getService() {
@@ -625,6 +629,7 @@ public class PassiveKeyService extends Service implements SensorEventListener {
                 + "\n" + signalDiagnostic(now) + "\n" + logic.diagnosticSnapshot(now)
                 + "\n" + pendingControl.diagnosticSnapshot(now) + " wait_reason=" + lastPendingWaitReason
                 + "\n" + scanDiagnostic(now, false) + "\n" + gattDiagnostic(now)
+                + " gatt_baseline_count=" + gattBaselineAddresses.size()
                 + "\n" + KeyNotificationBridgeService.diagnosticSnapshot(now)
                 + "\nlearning=" + learningMessage() + " learning_source=" + identityStore.getLearningSource()
                 + " waiting_reconnect=" + waitForDisconnectToLearn
@@ -1493,7 +1498,7 @@ public class PassiveKeyService extends Service implements SensorEventListener {
                 + " " + wakeGate.diagnosticSnapshot(now));
     }
 
-    /** 官方在线后优先采用唯一GATT/ACL真实连接；Geely_Auto可用近期实际注入并由银河确认的候选兜底。 */
+    /** 官方在线后优先采用唯一GATT/ACL真实连接；近期实际注入且由银河确认的候选作为受限兜底。 */
     private void maybeLearnVehicle(long now) {
         if (!serviceEnabled || !hasBluetoothPermission() || !isOfficialConnected()) return;
         if (lastLearnAttemptAtMs > 0L && now - lastLearnAttemptAtMs < 1000L) return;
@@ -1511,7 +1516,7 @@ public class PassiveKeyService extends Service implements SensorEventListener {
             adoptConnectedIdentity(aclVerified, VehicleLearningState.ACL, now);
             return;
         }
-        VehicleIdentity wakeVerified = findIdentityFromLatestInjectedGeelyAuto(now);
+        VehicleIdentity wakeVerified = findIdentityFromLatestInjectedPeer(now);
         if (wakeVerified != null) {
             adoptConnectedIdentity(wakeVerified, VehicleLearningState.WAKE_CONFIRMED, now);
             return;
@@ -1562,22 +1567,21 @@ public class PassiveKeyService extends Service implements SensorEventListener {
     }
 
     /**
-     * 部分 ROM 同时隐藏系统 GATT 和 ACL 事件。只有当最近一次实际注入的是唯一
-     * Geely_Auto 候选，且银河在 30 秒内报告已连接时，才采用该候选地址。
+     * 部分 ROM 同时隐藏系统 GATT 和 ACL 事件。只有当最近一次实际注入的是近期
+     * 吉利候选，且银河在 30 秒内报告已连接时，才采用该候选地址；不再限定车型名称。
      */
-    private VehicleIdentity findIdentityFromLatestInjectedGeelyAuto(long now) {
+    private VehicleIdentity findIdentityFromLatestInjectedPeer(long now) {
         if (!hasBluetoothPermission() || !isOfficialConnected()) return null;
         if (lastWakeAttemptAddress.isEmpty() || lastWakeAttemptAtMs <= 0L
                 || now < lastWakeAttemptAtMs || now - lastWakeAttemptAtMs > 30_000L) return null;
         GeelyAdvertisement evidence = lastWakeAttemptAd;
-        if (evidence == null || !lastWakeAttemptAddress.equalsIgnoreCase(evidence.address)
-                || !VehicleBeacon.isGeelyAutoName(evidence.name)) return null;
-        return VehicleIdentity.fromConnectedPeer(evidence.address, evidence.name, evidence, identity);
+        if (evidence == null || !lastWakeAttemptAddress.equalsIgnoreCase(evidence.address)) return null;
+        return VehicleIdentity.fromTrustedConnectedPeer(evidence.address, evidence.name, evidence, identity);
     }
 
     /**
      * GATT 列表不可见时的安全兜底：ACL 地址必须同时匹配当前主候选/唤醒目标，
-     * 且该地址仍有近期广播证据；Geely_Auto 等无唯一名称的车型由此完成地址绑定。
+     * 且该地址仍有近期广播证据；无VIN尾号的车型也可由此完成地址绑定。
      */
     private VehicleIdentity findIdentityFromRecentAclPeer(long now) {
         if (!hasBluetoothPermission() || !isOfficialConnected()) return null;
@@ -1590,36 +1594,92 @@ public class PassiveKeyService extends Service implements SensorEventListener {
             if (!address.equalsIgnoreCase(selected) && !address.equalsIgnoreCase(active)) return null;
             GeelyAdvertisement evidence = targetSelector.evidenceFor(address, now);
             if (evidence == null) return null;
-            return VehicleIdentity.fromConnectedPeer(address, device.getName(), evidence, identity);
+            return VehicleIdentity.fromTrustedConnectedPeer(address, device.getName(), evidence, identity);
         } catch (SecurityException denied) {
             return null;
         }
     }
 
-    /** 从可见系统连接识别车辆，匿名设备缺少名称时继续查同MAC候选；多匹配连接一律拒绝。 */
+    /**
+     * 从系统真实 GATT 连接选择本车，不再用车型名称作为学习白名单。
+     * 优先选择官方连接前后新增的唯一 LE 设备；名称仅在多个连接的唯一消歧时使用。
+     */
     private VehicleIdentity findIdentityFromConnectedGatt() {
         if (!hasBluetoothPermission() || !isOfficialConnected()) return null;
-        List<BluetoothDevice> devices = new ArrayList<>(GeelyBridge.getConnectedGattDevices(this));
-        if (activeGatt != null && gattConnected) devices.add(activeGatt.getDevice());
-        Map<String, VehicleIdentity> verified = new LinkedHashMap<>();
         long now = SystemClock.elapsedRealtime();
-        for (BluetoothDevice device : devices) {
-            VehicleIdentity candidate = observedIdentityForDevice(device, now);
-            if (candidate != null) verified.put(candidate.address.toUpperCase(Locale.ROOT), candidate);
-        }
-        String address = VehicleLearningState.uniqueAddress(verified.keySet());
-        return verified.get(address);
-    }
-
-    /** 连接事实加同MAC近期广播/精确车名才可补全身份，未知通知状态不作为匿名绑定依据。 */
-    private VehicleIdentity observedIdentityForDevice(BluetoothDevice device, long now) {
+        List<ConnectedPeerSelector.Peer> peers = currentGattPeers();
+        ConnectedPeerSelector.Selection selection =
+                ConnectedPeerSelector.select(peers, gattBaselineAddresses);
+        DiagnosticLog.detail("Learning", "GATT_PEER_SELECTION", selection.diagnostic()
+                + " addr_id=" + DiagnosticLog.fingerprint(selection.address));
+        if (!selection.selected()) return null;
+        BluetoothDevice device = findGattDevice(selection.address);
         if (device == null) return null;
         try {
             String address = device.getAddress();
             GeelyAdvertisement evidence = targetSelector.evidenceFor(address, now);
-            return VehicleIdentity.fromConnectedPeer(address, device.getName(), evidence, identity);
+            return VehicleIdentity.fromTrustedConnectedPeer(address, device.getName(), evidence, identity);
         } catch (SecurityException denied) {
             return null;
+        }
+    }
+
+    /** 去重收集 GATT/GATT_SERVER 与本应用主动挂载的唯一连接。 */
+    private List<ConnectedPeerSelector.Peer> currentGattPeers() {
+        Map<String, BluetoothDevice> devices = new LinkedHashMap<>();
+        for (BluetoothDevice device : GeelyBridge.getConnectedGattDevices(this)) addGattDevice(devices, device);
+        if (activeGatt != null && gattConnected) addGattDevice(devices, activeGatt.getDevice());
+        List<ConnectedPeerSelector.Peer> result = new ArrayList<>();
+        for (BluetoothDevice device : devices.values()) {
+            if (device == null) continue;
+            try {
+                result.add(new ConnectedPeerSelector.Peer(device.getAddress(), device.getName(),
+                        device.getType(), device.getBondState()));
+            } catch (SecurityException ignored) {
+            }
+        }
+        return result;
+    }
+
+    private static void addGattDevice(Map<String, BluetoothDevice> devices, BluetoothDevice device) {
+        if (device == null) return;
+        try {
+            String address = device.getAddress();
+            if (VehicleLearningState.hasAddress(address)) {
+                devices.putIfAbsent(address.toUpperCase(Locale.ROOT), device);
+            }
+        } catch (SecurityException ignored) {
+        }
+    }
+
+    private BluetoothDevice findGattDevice(String address) {
+        if (address == null || address.isEmpty()) return null;
+        for (BluetoothDevice device : GeelyBridge.getConnectedGattDevices(this)) {
+            try {
+                if (address.equalsIgnoreCase(device.getAddress())) return device;
+            } catch (SecurityException ignored) {
+            }
+        }
+        if (activeGatt != null && gattConnected) {
+            try {
+                if (address.equalsIgnoreCase(activeGatt.getDevice().getAddress())) return activeGatt.getDevice();
+            } catch (SecurityException ignored) {
+            }
+        }
+        return null;
+    }
+
+    /** 官方断开期间持续记录普通GATT设备，官方连接时用集合差找到新增车机。 */
+    private void refreshGattBaseline(long now) {
+        if (geelyConnected || now < lastGattBaselineAtMs) return;
+        if (lastGattBaselineAtMs > 0L && now - lastGattBaselineAtMs < 2000L) return;
+        lastGattBaselineAtMs = now;
+        Set<String> addresses = new HashSet<>();
+        for (ConnectedPeerSelector.Peer peer : currentGattPeers()) addresses.add(peer.address);
+        if (!addresses.equals(gattBaselineAddresses)) {
+            gattBaselineAddresses = addresses;
+            DiagnosticLog.detail("Learning", "GATT_BASELINE", "count=" + addresses.size()
+                    + " gatt_baseline=" + addresses.size());
         }
     }
 
@@ -2714,6 +2774,7 @@ public class PassiveKeyService extends Service implements SensorEventListener {
             }
             targetSelector.prune(now);
             boolean notifConnected = isOfficialConnected();
+            if (!notifConnected) refreshGattBaseline(now);
             if (notifConnected != geelyConnected) {
                 onGeelyConnectionChanged(notifConnected, now);
             }

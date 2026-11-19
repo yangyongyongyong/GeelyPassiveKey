@@ -144,6 +144,43 @@ final class VehicleIdentity {
     }
 
     /**
+     * 调用方已通过系统 GATT 增量/唯一连接证明该地址可信时，不再用车型名称做白名单。
+     * 名称只保存用于诊断；严格车名冲突和同MAC广播冲突仍必须拒绝。
+     */
+    static VehicleIdentity fromTrustedConnectedPeer(String address, String observedName,
+                                                    VehicleBeacon evidence, VehicleIdentity known) {
+        if (!VehicleLearningState.hasAddress(address)) return null;
+        String peerName = clean(observedName);
+        String peerTail = VehicleBeacon.vinTailFromName(peerName);
+        boolean sameEvidenceAddress = evidence != null && address.equalsIgnoreCase(evidence.address);
+        VehicleIdentity evidenceIdentity = sameEvidenceAddress ? from(evidence) : null;
+        if (evidenceIdentity != null && evidenceIdentity.conflicts(peerName, "", peerTail)) return null;
+        if (known != null) {
+            if (known.conflicts(peerName, "", peerTail)) return null;
+            if (sameEvidenceAddress && known.match(evidence) == Match.CONFLICT) return null;
+        }
+        VehicleIdentity base = known != null ? known
+                : (evidenceIdentity != null ? evidenceIdentity
+                : new VehicleIdentity(address, "", "", "", "", System.currentTimeMillis()));
+        String newName = base.name;
+        if (VehicleBeacon.isRecognizableVehicleName(peerName)) {
+            newName = peerName;
+        } else if (newName.isEmpty() && !peerName.isEmpty()) {
+            newName = peerName;
+        }
+        if (newName.isEmpty() && evidenceIdentity != null) newName = evidenceIdentity.name;
+        String newTail3 = !base.vinTail3.isEmpty() ? base.vinTail3 : VehicleBeacon.vinTailFromName(newName);
+        String newTail2 = !base.effectiveTail2().isEmpty() ? base.effectiveTail2()
+                : (evidenceIdentity != null ? evidenceIdentity.vinTail2 : tail2(newTail3));
+        String signature = evidenceIdentity != null && !evidenceIdentity.mfgSignature.isEmpty()
+                ? evidenceIdentity.mfgSignature : base.mfgSignature;
+        int company = evidenceIdentity != null && !evidenceIdentity.mfgSignature.isEmpty()
+                ? evidenceIdentity.manufacturerId : base.manufacturerId;
+        return new VehicleIdentity(address, newName, newTail2, newTail3, signature, company,
+                System.currentTimeMillis());
+    }
+
+    /**
      * 将新广播中补全的字段（如 ScanResponse 名称、01FE 尾号、最新 MAC）合并到本车身份中。
      * 不同MAC的名称/尾号/短前缀一律不合并，必须先通过fromConnectedPeer验证真实连接。
      */

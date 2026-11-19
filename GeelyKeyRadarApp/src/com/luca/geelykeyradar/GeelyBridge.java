@@ -12,8 +12,11 @@ import android.content.pm.PackageManager;
 import android.os.IBinder;
 import android.util.Log;
 
+import java.util.ArrayList;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * 对吉利银河官方 App 的最小桥接。
@@ -225,13 +228,28 @@ final class GeelyBridge {
      */
     static List<BluetoothDevice> getConnectedGattDevices(Context context) {
         if (context == null) return Collections.emptyList();
+        Map<String, BluetoothDevice> unique = new LinkedHashMap<>();
         try {
             BluetoothManager manager = (BluetoothManager) context.getSystemService(Context.BLUETOOTH_SERVICE);
             if (manager == null) return Collections.emptyList();
-            List<BluetoothDevice> devices = manager.getConnectedDevices(BluetoothProfile.GATT);
-            return devices == null ? Collections.<BluetoothDevice>emptyList() : devices;
+            appendConnected(unique, manager.getConnectedDevices(BluetoothProfile.GATT));
+            appendConnected(unique, manager.getConnectedDevices(BluetoothProfile.GATT_SERVER));
+            return new ArrayList<>(unique.values());
         } catch (Throwable ignored) {
-            return Collections.emptyList();
+            return new ArrayList<>(unique.values());
+        }
+    }
+
+    /** 同一设备同时出现在GATT与GATT_SERVER时只保留一次，避免伪多车歧义。 */
+    private static void appendConnected(Map<String, BluetoothDevice> unique, List<BluetoothDevice> devices) {
+        if (devices == null) return;
+        for (BluetoothDevice device : devices) {
+            if (device == null) continue;
+            try {
+                String address = device.getAddress();
+                if (address != null && !address.isEmpty()) unique.putIfAbsent(address.toUpperCase(java.util.Locale.ROOT), device);
+            } catch (SecurityException ignored) {
+            }
         }
     }
 }

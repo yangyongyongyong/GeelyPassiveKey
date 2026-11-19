@@ -11,6 +11,7 @@ public final class VehicleIdentityTest {
         connectedEvidenceKeepsManualHint();
         strictParserAndStructuredPayload();
         geelyAutoNameIsDiscoveryOnly();
+        trustedGattPeerLearnsArbitraryModelName();
         legacyPrefixAndHexValidation();
         System.out.println("VehicleIdentityTest passed");
     }
@@ -149,6 +150,23 @@ public final class VehicleIdentityTest {
         VehicleBeacon similar = VehicleBeacon.parse("FF:00:00:00:00:06", "GeelyAutoX",
                 -60, 1300, null, null, null, true);
         check(similar == null, "相似名称 GeelyAutoX 不能被放行");
+    }
+
+    /** 已由系统唯一 GATT 连接证明时，不再要求车型名在白名单；明确冲突仍拒绝。 */
+    private static void trustedGattPeerLearnsArbitraryModelName() {
+        VehicleIdentity learned = VehicleIdentity.fromTrustedConnectedPeer(
+                "DC:0D:30:75:60:BB", "[E21H-A1-1687]", null, null);
+        check(learned != null && learned.name.equals("[E21H-A1-1687]"),
+                "未知车型的真实GATT名称应可保存地址");
+        VehicleIdentity rotated = VehicleIdentity.fromTrustedConnectedPeer(
+                "DC:0D:30:75:61:CC", "[E21H-A1-1687]", null, learned);
+        check(rotated != null && rotated.address.equals("DC:0D:30:75:61:CC"),
+                "真实GATT地址轮换应可更新");
+        VehicleIdentity strict = VehicleIdentity.from(beacon("AA:00:00:00:00:01",
+                "GeelyVehicle245", "060200143435", 1000));
+        VehicleIdentity conflict = VehicleIdentity.fromTrustedConnectedPeer(
+                "AA:00:00:00:00:02", "GeelyVehicle345", null, strict);
+        check(conflict == null, "真实连接也不能绕过明确车名冲突");
     }
 
     /** 兼容15FF签名中的Company ID并严格处理损坏十六进制，不再搜索任意raw字节子串。 */
