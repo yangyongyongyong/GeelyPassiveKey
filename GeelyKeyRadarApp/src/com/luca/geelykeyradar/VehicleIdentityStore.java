@@ -26,6 +26,7 @@ final class VehicleIdentityStore {
     private static final String KEY_LOCK_DBM = "lock_dbm";
     private static final String KEY_LOCK_DWELL_MS = "lock_dwell_ms";
     private static final String KEY_CONNECT_DBM = "connect_dbm";
+    private static final String KEY_WIDGET_FALLBACK_ENABLED = "widget_fallback_enabled";
 
     static final float DEFAULT_UNLOCK_DBM = PassiveKeyDefaults.UNLOCK_DBM;
     static final float DEFAULT_LOCK_DBM = PassiveKeyDefaults.LOCK_DBM;
@@ -197,6 +198,16 @@ final class VehicleIdentityStore {
     boolean hasCustomThresholds() {
         return prefs.contains(KEY_UNLOCK_DBM) || prefs.contains(KEY_LOCK_DBM)
                 || prefs.contains(KEY_LOCK_DWELL_MS) || prefs.contains(KEY_CONNECT_DBM);
+    }
+
+    /** 官方小组件备用控制默认关闭，必须由用户在设置页显式启用。 */
+    boolean isWidgetFallbackEnabled() {
+        return prefs.getBoolean(KEY_WIDGET_FALLBACK_ENABLED, false);
+    }
+
+    /** 保存官方小组件备用控制开关，不改变四项触发参数。 */
+    void setWidgetFallbackEnabled(boolean enabled) {
+        prefs.edit().putBoolean(KEY_WIDGET_FALLBACK_ENABLED, enabled).apply();
     }
 
     /** 同步持久化四项触发参数，不改变车辆身份或自动动作开关。 */

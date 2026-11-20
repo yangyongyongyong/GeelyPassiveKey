@@ -62,7 +62,8 @@ import java.util.concurrent.Future;
  * - 靠近一次解锁、持续远离上锁；
  * - 通过银河官方通知栏按钮完成车控及用户主动发起的手动链路测试。
  *
- * 不包含摇一摇、电源键、快捷磁贴、桌面组件、里程、哨兵、语音等功能。
+ * 不创建自有桌面组件、摇一摇、电源键、快捷磁贴、里程、哨兵、语音等功能；
+ * 仅在用户显式启用时宿主官方 AppWidget 作为备用 token。
  */
 public class PassiveKeyService extends Service implements SensorEventListener {
 
@@ -193,6 +194,8 @@ public class PassiveKeyService extends Service implements SensorEventListener {
     private float lastSmoothRssi = Float.NaN;
     private float lastApproachRssi = Float.NaN;
     private volatile String lastSource = "";
+    private volatile String lastControlSource = "NONE";
+    private volatile String lastControlDiagnostic = "transport=NONE source=NONE";
     private volatile String lastAction = "等待车辆";
     private volatile String lastZone = "等待车辆蓝牙信号";
     private volatile String lastZoneCategory = "";
@@ -284,9 +287,31 @@ public class PassiveKeyService extends Service implements SensorEventListener {
         public String source = "";
         public String authObserver = "";
         public String buttonDiag = "";
+        public boolean widgetFallbackEnabled;
+        public boolean widgetReady;
+        public String widgetStatus = "";
+        public String widgetDiagnostic = "";
+        public String widgetLockHint = "";
+        public String widgetLockHintSource = "";
+        public long widgetLockHintAgeMs = -1L;
         public String learningMessage = "";
         public String learningSource = "";
         public String manualControlMessage = "";
+        public String lastControlSource = "NONE";
+    }
+
+    /** 一次车控尝试只返回一个已发送 token 源和结果。 */
+    private static final class DispatchOutcome {
+        final KeyNotificationBridgeService.ControlResult result;
+        final String source;
+        final String diagnostic;
+
+        DispatchOutcome(KeyNotificationBridgeService.ControlResult result, String source,
+                        String diagnostic) {
+            this.result = result;
+            this.source = source == null || source.isEmpty() ? "NONE" : source;
+            this.diagnostic = diagnostic == null ? "" : diagnostic;
+        }
     }
 
     /** 返回前台服务实例是否仍处于运行状态。 */
@@ -341,12 +366,14 @@ public class PassiveKeyService extends Service implements SensorEventListener {
         KeyNotificationBridgeService.setControlContext(this);
         KeyNotificationBridgeService.markGattAuthReady(false);
         if (serviceEnabled) {
+            WidgetTokenBridge.start(this);
             ServiceWatchdogReceiver.schedule(this);
             GeelyBridge.bindKeepAlive(this);
             KeyNotificationBridgeService.ensureRebound(this);
             UpdateManager.maybeAutoCheck(this);
             startBleScan();
         } else {
+            WidgetTokenBridge.stop();
             lastZone = "无感进出服务已关闭";
             lastAction = "服务已由总开关暂停";
         }
@@ -389,6 +416,7 @@ public class PassiveKeyService extends Service implements SensorEventListener {
         clearGattAuthObservation("service_destroy", false);
         serviceEnabled = false;
         KeyNotificationBridgeService.clearStateListener(notificationStateListener);
+        WidgetTokenBridge.stop();
         running = false;
         handler.removeCallbacksAndMessages(null);
         stopBleScan();
@@ -464,7 +492,9 @@ public class PassiveKeyService extends Service implements SensorEventListener {
                 : isChargingBlocked() ? "已插数据线/充电线，禁控保护中；拔线后再测试"
                 : isDriving(now) ? "车辆行驶中，禁止手动测试"
                 : (!KeyNotificationBridgeService.isListenerConnected()
-                ? "系统已解绑通知监听，请点下方“修复通知监听”"
+                ? (identityStore.isWidgetFallbackEnabled()
+                ? "通知监听未绑定；官方小组件备用仅在 token 已捕获且锁态新鲜时可用"
+                : "系统已解绑通知监听，请点下方“修复通知监听”")
                 : lastManualControlMessage);
         status.unlockDbm = unlockDbm;
         status.lockDbm = lockDbm;
@@ -498,12 +528,21 @@ public class PassiveKeyService extends Service implements SensorEventListener {
                 : (signalFresh ? lastZone : "不在车辆附近 (无信号)"));
         status.lastAction = lastAction;
         status.source = signalFresh ? lastSource : "";
+        status.lastControlSource = lastControlSource;
         status.authObserver = gattAuthSuccessObserved ? "CMD5_OBSERVED"
                 : authObserverNotifyReady ? "NOTIFY_READY"
                 : authObservationActive ? "OBSERVING" : "IDLE";
         status.buttonDiag = KeyNotificationBridgeService.getLastButtonCaptureDiag();
         status.learningSource = identityStore.getLearningSource();
         status.learningMessage = learningMessage();
+        status.widgetFallbackEnabled = identityStore.isWidgetFallbackEnabled();
+        status.widgetReady = WidgetTokenBridge.hasLockToken();
+        status.widgetStatus = WidgetTokenBridge.getStatusText();
+        status.widgetDiagnostic = WidgetTokenBridge.getLastDiagnostic();
+        status.widgetLockHint = currentLockHint();
+        status.widgetLockHintSource = currentLockHintSource();
+        status.widgetLockHintAgeMs = currentLockHintAtMs() == 0L
+                ? -1L : Math.max(0L, now - currentLockHintAtMs());
         return status;
     }
 
@@ -631,6 +670,13 @@ public class PassiveKeyService extends Service implements SensorEventListener {
                 + "\n" + scanDiagnostic(now, false) + "\n" + gattDiagnostic(now)
                 + " gatt_baseline_count=" + gattBaselineAddresses.size()
                 + "\n" + KeyNotificationBridgeService.diagnosticSnapshot(now)
+                + "\nwidget=" + WidgetTokenBridge.getStatusText()
+                + " widget_diag=" + WidgetTokenBridge.getLastDiagnostic()
+                + " widget_token_age_ms=" + WidgetTokenBridge.getLockTokenAgeMs(now)
+                + " widget_lock_hint=" + currentLockHint()
+                + " widget_lock_source=" + currentLockHintSource()
+                + " last_control_source=" + lastControlSource
+                + " last_control_diag=" + lastControlDiagnostic
                 + "\nlearning=" + learningMessage() + " learning_source=" + identityStore.getLearningSource()
                 + " waiting_reconnect=" + waitForDisconnectToLearn
                 + "\nmanual_req_id=" + manualRequestSequence + " manual_cooldown_left_ms="
@@ -659,8 +705,10 @@ public class PassiveKeyService extends Service implements SensorEventListener {
         nextManualControlAtMs = now + MANUAL_CLICK_GAP_MS;
         lastDispatchAction = action;
         lastDispatchStartedAtMs = now;
-        KeyNotificationBridgeService.ControlResult result =
-                KeyNotificationBridgeService.triggerManualControlViaNotification(action);
+        DispatchOutcome outcome = dispatchControlOnce(action, now, true);
+        KeyNotificationBridgeService.ControlResult result = outcome.result;
+        lastControlSource = outcome.source;
+        lastControlDiagnostic = outcome.diagnostic;
         if (result != KeyNotificationBridgeService.ControlResult.NOT_SENT) {
             logic.onManualControlSent(action, now);
             lastControlResult = result.name();
@@ -668,15 +716,18 @@ public class PassiveKeyService extends Service implements SensorEventListener {
         if (result == KeyNotificationBridgeService.ControlResult.SENT) {
             if (action == PassiveKeyLogic.Action.UNLOCK) unlockCount++;
             else lockCount++;
-            lastManualControlMessage = label + "指令已交给银河（未获取车锁回执），请观察车辆";
+            lastManualControlMessage = label + sourceLabel(outcome.source)
+                    + "指令已交给银河（未获取车锁回执），请观察车辆";
         } else if (result == KeyNotificationBridgeService.ControlResult.UNKNOWN) {
-            lastManualControlMessage = label + "发送结果不确定，不会重发，请核实车锁";
+            lastManualControlMessage = label + sourceLabel(outcome.source)
+                    + "发送结果不确定，不会重发，请核实车锁";
         } else {
-            lastManualControlMessage = label + "未发送：官方通知按钮不可用或已失效，请检查银河连接后重试";
+            lastManualControlMessage = label + "未发送：通知按钮和官方小组件 token 均不可用"
+                    + widgetReasonSuffix(action, now);
         }
         lastAction = lastManualControlMessage;
         DiagnosticLog.event("Control", "MANUAL_RESULT", "manual_req_id=" + sequence + " action=" + action
-                + " result=" + result + " " + KeyNotificationBridgeService.getLastControlDiagnostic());
+                + " result=" + result + " source=" + outcome.source + " " + outcome.diagnostic);
         appendLog(lastManualControlMessage + " #" + sequence);
         updateNotificationIfNeeded(true);
         return lastManualControlMessage;
@@ -692,6 +743,12 @@ public class PassiveKeyService extends Service implements SensorEventListener {
         if (!hasBluetoothPermission()) return "请先授予蓝牙权限";
         if (bluetoothAdapter == null || !bluetoothAdapter.isEnabled()) return "请先开启手机蓝牙";
         if (!GeelyBridge.isGeelyInstalled(this)) return "请先安装银河 App";
+        WidgetTokenPolicy.Route route = isOfficialConnected()
+                ? controlRoute(action, now) : WidgetTokenPolicy.Route.NONE;
+        if (route != WidgetTokenPolicy.Route.NONE) {
+            if (now < nextManualControlAtMs) return "操作过于频繁，请等待两秒后重试";
+            return "";
+        }
         if (KeyNotificationBridgeService.isNotificationListenerEnabled(this)
                 && !KeyNotificationBridgeService.isListenerConnected()) {
             KeyNotificationBridgeService.requestImmediateRecovery(this);
@@ -707,9 +764,77 @@ public class PassiveKeyService extends Service implements SensorEventListener {
         }
         if (!KeyNotificationBridgeService.isListenerConnected()) return "通知监听尚未就绪，请稍后重试";
         if (!isOfficialConnected()) return "银河蓝牙钥匙未连接，请先在银河 App 连接车辆";
+        if (identityStore.isWidgetFallbackEnabled()) {
+            String widgetReason = widgetRouteReason(action, now);
+            String display = WidgetTokenPolicy.displayReason(widgetReason);
+            if (!display.isEmpty()) return "官方小组件备用控制暂不可用：" + display;
+        }
         if (!KeyNotificationBridgeService.hasControlIntent(action)) return "未找到对应的银河通知按钮";
         if (now < nextManualControlAtMs) return "操作过于频繁，请等待两秒后重试";
         return "";
+    }
+
+    /** 通知文字与官方小组件图标都可能提供锁态，取时间更新鲜的一份。 */
+    private String currentLockHint() {
+        long notificationAt = KeyNotificationBridgeService.getLastObservedLockHintAtMs();
+        long widgetAt = WidgetTokenBridge.getObservedLockHintAtMs();
+        String widgetHint = WidgetTokenBridge.getObservedLockHint();
+        if (widgetAt > notificationAt && !widgetHint.isEmpty()) {
+            return widgetHint;
+        }
+        return KeyNotificationBridgeService.getLastObservedLockHint();
+    }
+
+    private long currentLockHintAtMs() {
+        return Math.max(KeyNotificationBridgeService.getLastObservedLockHintAtMs(),
+                WidgetTokenBridge.getObservedLockHintAtMs());
+    }
+
+    private String currentLockHintSource() {
+        long notificationAt = KeyNotificationBridgeService.getLastObservedLockHintAtMs();
+        long widgetAt = WidgetTokenBridge.getObservedLockHintAtMs();
+        return widgetAt > notificationAt && !WidgetTokenBridge.getObservedLockHint().isEmpty()
+                ? "WIDGET" : notificationAt > 0L ? "NOTIFICATION" : "NONE";
+    }
+
+    /** 选择唯一车控 token 源；通知 token 永远优先于可选的小组件。 */
+    private WidgetTokenPolicy.Route controlRoute(PassiveKeyLogic.Action action, long now) {
+        String lockHint = currentLockHint();
+        long lockHintAt = currentLockHintAtMs();
+        boolean widgetEnabled = identityStore != null && identityStore.isWidgetFallbackEnabled();
+        return WidgetTokenPolicy.selectRoute(action,
+                KeyNotificationBridgeService.hasControlIntent(action),
+                widgetEnabled, WidgetTokenBridge.hasLockToken(), lockHint, lockHintAt, now);
+    }
+
+    /** 只有通知 token 不可用时才返回 Widget 缺失/锁态拒绝原因。 */
+    private String widgetRouteReason(PassiveKeyLogic.Action action, long now) {
+        boolean widgetEnabled = identityStore != null && identityStore.isWidgetFallbackEnabled();
+        return WidgetTokenPolicy.routeReason(action, false, widgetEnabled,
+                WidgetTokenBridge.hasLockToken(),
+                currentLockHint(), currentLockHintAtMs(), now);
+    }
+
+    /** 自动请求等待时把具体 token 原因暴露给顶部实时状态。 */
+    private String pendingWaitReasonFor(PassiveKeyLogic.Action action, long now) {
+        if (KeyNotificationBridgeService.hasControlIntent(action)) return "WAIT_BUTTON";
+        if (identityStore == null || !identityStore.isWidgetFallbackEnabled()) return "WAIT_BUTTON";
+        String reason = widgetRouteReason(action, now);
+        if ("WIDGET_TOKEN_MISSING".equals(reason)) return "WAIT_WIDGET_TOKEN";
+        return "WAIT_WIDGET_STATE";
+    }
+
+    private static String sourceLabel(String source) {
+        if ("WIDGET".equals(source) || "WIDGET_FALLBACK".equals(source)) return "（官方小组件）";
+        if ("NOTIFICATION".equals(source)) return "（官方通知）";
+        return "";
+    }
+
+    private String widgetReasonSuffix(PassiveKeyLogic.Action action, long now) {
+        if (identityStore == null || !identityStore.isWidgetFallbackEnabled()) return "";
+        String reason = widgetRouteReason(action, now);
+        String display = WidgetTokenPolicy.displayReason(reason);
+        return display.isEmpty() ? "" : "（" + display + "）";
     }
 
     /** 更新解锁开关并立即撤销对应待发请求。 */
@@ -803,11 +928,13 @@ public class PassiveKeyService extends Service implements SensorEventListener {
             lastAction = "服务已启用，等待车辆";
             lastZone = "不在车辆附近 (无信号)";
             appendLog("✓ 已开启无感进出总开关，恢复 BLE 扫描与自动解闭锁");
+            WidgetTokenBridge.start(this);
             GeelyBridge.bindKeepAlive(this);
             ServiceWatchdogReceiver.schedule(this);
             KeyNotificationBridgeService.ensureRebound(this);
             startBleScan();
         } else {
+            WidgetTokenBridge.stop();
             ServiceWatchdogReceiver.cancel(this);
             stopBleScan();
             closeGatt("用户关闭无感进出总开关");
@@ -1830,10 +1957,58 @@ public class PassiveKeyService extends Service implements SensorEventListener {
     }
 
     /**
-     * 单次执行解锁或上锁：仅点击已连接通知中的按钮。
-     * 原 DK1.5 广播兜底无法确认接收结果，不能与通知点击并发重发，否则会再次造成二次上锁。
+     * 单次执行解锁或上锁：通知 token 优先；通知 token 明确未发送时才允许尝试
+     * 已通过安全门控的小组件 token。UNKNOWN 绝不回退，避免双发造成反向车控。
      */
-    private KeyNotificationBridgeService.ControlResult dispatchControlOnce(PassiveKeyLogic.Action action) {
+    private DispatchOutcome dispatchControlOnce(PassiveKeyLogic.Action action, long now, boolean manual) {
+        WidgetTokenPolicy.Route route = controlRoute(action, now);
+        String source = "NONE";
+        String diagnostic;
+        KeyNotificationBridgeService.ControlResult result;
+        if (route == WidgetTokenPolicy.Route.NOTIFICATION) {
+            result = manual
+                    ? KeyNotificationBridgeService.triggerManualControlViaNotification(action)
+                    : sendNotificationControl(action);
+            source = "NOTIFICATION";
+            diagnostic = KeyNotificationBridgeService.getLastControlDiagnostic();
+            if (result == KeyNotificationBridgeService.ControlResult.NOT_SENT) {
+                WidgetTokenPolicy.Route fallback = WidgetTokenPolicy.selectRoute(action, false,
+                        identityStore != null && identityStore.isWidgetFallbackEnabled(),
+                        WidgetTokenBridge.hasLockToken(),
+                        currentLockHint(),
+                        currentLockHintAtMs(), now);
+                if (fallback == WidgetTokenPolicy.Route.WIDGET) {
+                    result = WidgetTokenBridge.triggerToggle(action,
+                            currentLockHint(),
+                            currentLockHintAtMs(), now);
+                    source = "WIDGET_FALLBACK";
+                    diagnostic = diagnostic + " fallback=" + WidgetTokenBridge.getLastDiagnostic();
+                    DiagnosticLog.event("Control", "CONTROL_TOKEN_FALLBACK", "action=" + action
+                            + " notification=NOT_SENT widget=" + result);
+                }
+            }
+        } else if (route == WidgetTokenPolicy.Route.WIDGET) {
+            result = WidgetTokenBridge.triggerToggle(action,
+                    currentLockHint(),
+                    currentLockHintAtMs(), now);
+            source = "WIDGET";
+            diagnostic = WidgetTokenBridge.getLastDiagnostic();
+        } else {
+            result = KeyNotificationBridgeService.ControlResult.NOT_SENT;
+            source = "NONE";
+            String reason = widgetRouteReason(action, now);
+            diagnostic = "transport=NONE reason=" + reason + " widget=" + WidgetTokenBridge.getLastDiagnostic();
+            DiagnosticLog.event("Control", "CONTROL_TOKEN_REJECTED", "action=" + action
+                    + " reason=" + reason + " " + diagnostic);
+        }
+        lastControlSource = source;
+        lastControlDiagnostic = diagnostic;
+        DiagnosticLog.event("Control", "CONTROL_TOKEN_SOURCE", "action=" + action
+                + " source=" + source + " result=" + result + " " + diagnostic);
+        return new DispatchOutcome(result, source, diagnostic);
+    }
+
+    private KeyNotificationBridgeService.ControlResult sendNotificationControl(PassiveKeyLogic.Action action) {
         return action == PassiveKeyLogic.Action.UNLOCK
                 ? KeyNotificationBridgeService.triggerUnlockViaNotification()
                 : KeyNotificationBridgeService.triggerLockViaNotification();
@@ -1869,8 +2044,8 @@ public class PassiveKeyService extends Service implements SensorEventListener {
             recordPendingWait("WAIT_VERIFIED_PEER", now);
             return;
         }
-        if (!KeyNotificationBridgeService.hasControlIntent(action)) {
-            recordPendingWait("WAIT_BUTTON", now);
+        if (controlRoute(action, now) == WidgetTokenPolicy.Route.NONE) {
+            recordPendingWait(pendingWaitReasonFor(action, now), now);
             return;
         }
         if (!pendingControl.claimAttempt(now, justReady)) {
@@ -1882,12 +2057,14 @@ public class PassiveKeyService extends Service implements SensorEventListener {
         lastDispatchStartedAtMs = now;
         DiagnosticLog.event("Control", "SEND_ATTEMPT", pendingControl.diagnosticSnapshot(now)
                 + " just_ready=" + justReady + " " + signalDiagnostic(now));
-        KeyNotificationBridgeService.ControlResult result = dispatchControlOnce(action);
+        DispatchOutcome outcome = dispatchControlOnce(action, now, false);
+        KeyNotificationBridgeService.ControlResult result = outcome.result;
         DiagnosticLog.event("Control", "SEND_RESULT", pendingControl.diagnosticSnapshot(now)
-                + " result=" + result + " " + KeyNotificationBridgeService.getLastControlDiagnostic());
+                + " result=" + result + " source=" + outcome.source + " " + outcome.diagnostic);
         if (result == KeyNotificationBridgeService.ControlResult.NOT_SENT) {
-            appendDiagnostic("通知按钮发送暂未成功 #" + sequence + " 尝试=" + pendingControl.getAttempts());
-            if (pendingControl.isAttemptsExhausted()) cancelPendingControl("通知按钮两次发送失败");
+            appendDiagnostic("车控 token 发送暂未成功 #" + sequence + " source=" + outcome.source
+                    + " 尝试=" + pendingControl.getAttempts());
+            if (pendingControl.isAttemptsExhausted()) cancelPendingControl("车控 token 两次发送失败");
             return;
         }
         if (!pendingControl.complete(sequence)) return;
@@ -1898,18 +2075,18 @@ public class PassiveKeyService extends Service implements SensorEventListener {
                         ? LiveActivityTrace.Step.RESULT_UNKNOWN
                         : action == PassiveKeyLogic.Action.UNLOCK
                         ? LiveActivityTrace.Step.UNLOCK_SENT : LiveActivityTrace.Step.LOCK_SENT,
-                now, "req_id=" + sequence + " transport=PI");
+                now, "req_id=" + sequence + " source=" + outcome.source);
         String label = action == PassiveKeyLogic.Action.UNLOCK ? "解锁" : "上锁";
         if (result == KeyNotificationBridgeService.ControlResult.UNKNOWN) {
-            lastAction = label + "发送结果不确定，已停止重发，请核实车锁";
+            lastAction = label + sourceLabel(outcome.source) + "发送结果不确定，已停止重发，请核实车锁";
             appendLog(lastAction + " #" + sequence + " | " + signalDiagnostic(now));
             updateNotificationIfNeeded(true);
             return;
         }
         if (action == PassiveKeyLogic.Action.UNLOCK) unlockCount++;
         else lockCount++;
-        lastAction = label + "指令已交给银河（未获取车锁回执）";
-        appendLog("✓ " + label + "发送完成 #" + sequence + " 等待="
+        lastAction = label + sourceLabel(outcome.source) + "指令已交给银河（未获取车锁回执）";
+        appendLog("✓ " + label + sourceLabel(outcome.source) + "发送完成 #" + sequence + " 等待="
                 + pendingControl.getAgeMs(now) + "ms | " + signalDiagnostic(now));
         updateNotificationIfNeeded(true);
     }
@@ -1919,7 +2096,8 @@ public class PassiveKeyService extends Service implements SensorEventListener {
         try {
             String name = action == PassiveKeyLogic.Action.UNLOCK ? "UNLOCK" : "LOCK";
             DiagnosticLog.captureActionSnapshot(name,
-                    "action=" + action + " req_id=" + sequence + "\n" + getDiagnosticSnapshot());
+                    "action=" + action + " req_id=" + sequence + " source=" + lastControlSource
+                            + "\n" + getDiagnosticSnapshot());
             DiagnosticLog.event("DiagnosticSnapshot", "ACTION_SNAPSHOT_REQUESTED",
                     "action=" + action + " req_id=" + sequence + " window_ms="
                             + DiagnosticSnapshotWindow.WINDOW_MS + " max_files="
@@ -2909,7 +3087,8 @@ public class PassiveKeyService extends Service implements SensorEventListener {
         lastPendingWaitReason = reason;
         lastPendingLogAtMs = now;
         DiagnosticLog.detail("Control", "REQUEST_WAIT", "reason=" + reason + " "
-                + pendingControl.diagnosticSnapshot(now) + " " + KeyNotificationBridgeService.diagnosticSnapshot(now));
+                + pendingControl.diagnosticSnapshot(now) + " widget=" + WidgetTokenBridge.getLastDiagnostic()
+                + " " + KeyNotificationBridgeService.diagnosticSnapshot(now));
     }
 
     /** 无信号时也保留低频心跳，Handler长时间未获调度会留下明确间隔。 */

@@ -2,6 +2,13 @@
 
 本文档记录了对吉利银河 App (`com.geelygalaxy.customer`) 的脱壳提取路径、数字钥匙 SDK (`com.geely.snc.digitalkey` / `com.zeekr.sdk.snc.ble`) 核心类结构、BLE 广播协议、GATT 特征值、车机参数标定报文以及跨进程 AIDL/Notification 控制接口。
 
+> **2026-11-20 对 1.56.1 的运行时复测（优先阅读 [78](78_geely_1_56_1_unpack_and_control_channels.md)）：**
+> - APK 当前是 KiwiVM/kiwic 壳，非 debuggable；本机已通过 root AOSP 35 冻结 `/proc/<pid>/mem` 提取 14 个真实 DEX。
+> - 1.56.1 Manifest 中 `DigitalKeyBgService` 为 `exported=false`；`RemoteViewsClickReceiver` 与 `WgProviderMiddle` 也为 `exported=false`。
+> - `DigitalKeyBgService.mNotificationReceiver` 在 Android 14+ 使用 `RECEIVER_NOT_EXPORTED`；普通第三方 App 直接发广播不可达。
+> - `DigitalKeyBgService.DkBinder` 虽实现 `doFeatureActionData`，普通 App 不能直接绑定；通知栏 PendingIntent 仍是主路径。
+> - `WgProviderMiddle` 的官方 AppWidget token 可作为备用，但 `FunType.LOCK` 是状态切换，必须用新鲜锁态门控。
+
 ---
 
 ## 一、APK 加固壳分析与免 Root 脱壳方法
@@ -10,7 +17,7 @@
 - 原始安装包 `/data/app/.../com.geelygalaxy.customer.../base.apk` 仅包含壳入口 `com.SecShell.SecShell.AW` 与 native 壳库 `libzky.so`（梆梆企业版加固），直接用 JADX 打开原始 APK 只能看到空壳类。
 - **关键突破口**：该 APK 的 Manifest 中保留了 `android:debuggable="true"`（或在运行期将解密后的 22 个 DEX 缓存在应用私有数据目录中）。
 
-### 2. 免 Root 提取真实 DEX 命令
+### 2. 历史版本免 Root 提取真实 DEX 命令（1.56.1 不适用）
 通过 `run-as com.geelygalaxy.customer` 可以直接访问其私有目录下的已解密 DEX：
 ```bash
 # 查看运行态解密后的 DEX 目录
@@ -106,7 +113,7 @@ $$\text{lockRange} = \text{unlockInterval} + \text{lockInterval} - \text{rssiAdj
 ## 五、`DigitalKeyBgService` 本地 AIDL 接口 (`IDigitalKeyBleService`) 全集
 
 吉利银河的数字钥匙后台服务运行在独立进程 `com.geelygalaxy.customer:dkservice` 中：
-- **Service 类名**：`com.geely.snc.digitalkey.base.service.DigitalKeyBgService`（`exported="true"`）
+- **Service 类名**：`com.geely.snc.digitalkey.base.service.DigitalKeyBgService`（历史版本 `exported="true"`；当前 1.56.1 为 `false`，见 [78](78_geely_1_56_1_unpack_and_control_channels.md)）
 - **绑定 Action**：`com.zeekr.snc.service.action.DK_START` / `com.geely.pendintent.scanresult`（包名 `com.geelygalaxy.customer`）
 - **保活伴生 Service**：`com.ecarx.blekey.thirdadapter.service.MiuiService`（`exported="true"`，Action: `com.geely.geometry.miuiservice.action`）
 - **AIDL 接口描述符**：
@@ -185,7 +192,9 @@ $$\text{lockRange} = \text{unlockInterval} + \text{lockInterval} - \text{rssiAdj
 
 ---
 
-## 七、吉利银河 App 导出的跨进程组件 (`exported="true"`) 与 V2 控制/唤醒链路
+## 七、历史版本导出的跨进程组件与 V2 控制/唤醒链路
+
+> 本节表格包含历史版本结论。1.56.1 的当前实际状态以 [78](78_geely_1_56_1_unpack_and_control_channels.md) 为准；特别是 `DigitalKeyBgService`、`RemoteViewsClickReceiver`、`WgProviderMiddle` 均不再是普通 App 可直接调用的导出组件。
 
 由于吉利银河主服务 `DigitalKeyBgService` 在新版本 Manifest 中设为 `exported="false"`，外部独立 App 必须通过吉利银河暴露的 **`exported="true"` 且无特殊权限限制**的组件进行后台唤醒、蓝牙直连与车控触发：
 
@@ -197,7 +206,7 @@ $$\text{lockRange} = \text{unlockInterval} + \text{lockInterval} - \text{rssiAdj
 | `Receiver` | `com.ecarx.blekey.thirdadapter.receiver.MiuiReceiver` | Action: `com.geely.consumer.miuiservice.action`<br>Extras: `"setCarId"`, `"ScanResult"` | 广播方式触发 V2 蓝牙直连与进程唤醒 |
 | `Service` | `com.geely.lib.dk.ble.GLDkConnectionService` | Extra: `"setCarId"` (VIN `String`) | 唤醒底层 BLE 连接管理服务 |
 | `Receiver` | `com.geely.snc.digitalkey.notify.RemoteViewsClickReceiver` | Action: `com.geely.cockpit.ble.RemoteViewClick`<br>Extras: `"com.extra.cmd"` / `"ctrlType"` (`1`=解锁, `2`=上锁) | 导出的通知栏远程视图点击接收器 |
-| `Receiver` | `com.geely.galaxy.car.weight.appwidget.WgProviderMiddle` | Action: `com.geely.galaxy.customer.widget.event.CONFIRM`<br>Extras: `"WidgetConfirmType"="android.appwidget.action.confirm.ok"`, `"clickType"="LOCK"`, `"carControlType"` (`1`/`2`) | 导出的桌面小组件二次确认控车入口（内部调用 `WidgetCarControlHelper.handleCommand`） |
+| `Receiver` | `com.geely.galaxy.car.weight.appwidget.WgProviderMiddle` | Action: `com.geely.galaxy.customer.widget.event.CONFIRM`<br>Extras: `"WidgetConfirmType"="android.appwidget.action.confirm.ok"`, `"clickType"="LOCK"`, `"carControlType"` (`1`/`2`) | Manifest `exported=false`；由 AppWidgetHost 取得官方 RemoteViews/token 后使用，不能作为普通外部广播入口 |
 
 ### 2. `VehicleV2BleStrategy` 鉴权握手时序特征（实测 3.07 秒）
 在 `dk_core.dex` 的 `com.geely.icc.common.business.alive.ble.VehicleV2BleStrategy` 中：

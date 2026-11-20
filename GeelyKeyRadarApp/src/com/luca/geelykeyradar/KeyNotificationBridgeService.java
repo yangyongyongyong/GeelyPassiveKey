@@ -79,6 +79,7 @@ public class KeyNotificationBridgeService extends NotificationListenerService {
     private static volatile String lastObservedParkStatus = "";
     private static volatile long lastObservedParkStatusAtMs = 0L;
     private static volatile String lastObservedLockHint = "";
+    private static volatile long lastObservedLockHintAtMs = 0L;
     private static volatile String lastButtonCaptureDiag = "等待解析吉利银河通知栏...";
     private static volatile Boolean textConnectionHint = null;
     private static volatile String lastControlDiagnostic = "transport=NONE result=NONE";
@@ -178,6 +179,11 @@ public class KeyNotificationBridgeService extends NotificationListenerService {
         return lastObservedLockHint;
     }
 
+    /** 锁态文字的最后观测时间，供 Widget 状态切换门控判断是否过期。 */
+    public static long getLastObservedLockHintAtMs() {
+        return lastObservedLockHintAtMs;
+    }
+
     public static String getLastButtonCaptureDiag() {
         return lastButtonCaptureDiag;
     }
@@ -208,6 +214,8 @@ public class KeyNotificationBridgeService extends NotificationListenerService {
                 + " gatt_auth_ready=" + gattAuthReady
                 + " park=" + lastObservedParkStatus
                 + " park_age_ms=" + (lastObservedParkStatusAtMs == 0L ? -1L : nowMs - lastObservedParkStatusAtMs)
+                + " lock_hint=" + (lastObservedLockHint.isEmpty() ? "UNKNOWN" : lastObservedLockHint)
+                + " lock_hint_age_ms=" + (lastObservedLockHintAtMs == 0L ? -1L : nowMs - lastObservedLockHintAtMs)
                 + " " + lastRecoveryDiagnostic
                 + (service == null ? " epoch=unavailable" : " " + service.notificationEpoch.diagnosticSnapshot()
                 + " " + service.diagnosticCounters.snapshot(false));
@@ -742,6 +750,8 @@ public class KeyNotificationBridgeService extends NotificationListenerService {
         geelyNotificationPresent = false;
         geelyBleConnected = false;
         textConnectionHint = null;
+        lastObservedLockHint = "";
+        lastObservedLockHintAtMs = 0L;
         cachedUnlockPi = null;
         cachedLockPi = null;
         cachedUnlockView = null;
@@ -1238,8 +1248,10 @@ public class KeyNotificationBridgeService extends NotificationListenerService {
         }
         if (text.contains("已上锁") || text.contains("已闭锁") || text.contains("已锁车")) {
             lastObservedLockHint = "LOCKED";
+            lastObservedLockHintAtMs = SystemClock.elapsedRealtime();
         } else if (text.contains("已解锁") || text.contains("未上锁") || text.contains("未闭锁")) {
             lastObservedLockHint = "UNLOCKED";
+            lastObservedLockHintAtMs = SystemClock.elapsedRealtime();
         }
         if (text.contains("未连接") || text.contains("已断开")) {
             textConnectionHint = false;

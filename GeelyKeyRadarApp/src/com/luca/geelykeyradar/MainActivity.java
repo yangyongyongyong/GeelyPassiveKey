@@ -66,6 +66,8 @@ public class MainActivity extends Activity {
     private static final int REQUEST_LOG_EXPORT = 1002;
     private static final int REQUEST_ACTION_SNAPSHOT_EXPORT = 1004;
     private static final int REQUEST_NOTIFICATION_PERMISSION = 1003;
+    private static final int REQUEST_WIDGET_BIND = 1005;
+    private static final int REQUEST_WIDGET_CONFIGURE = 1006;
     private static final ExecutorService LOG_EXPORT_EXECUTOR = Executors.newSingleThreadExecutor();
     private static final ExecutorService LOG_UPLOAD_EXECUTOR = Executors.newSingleThreadExecutor();
     private static final AtomicBoolean LOG_EXPORT_BUSY = new AtomicBoolean();
@@ -149,6 +151,10 @@ public class MainActivity extends Activity {
     private Button permissionGuideButton;
     private Button updateActionButton;
     private Switch autoUpdateSwitch;
+    private Switch widgetFallbackSwitch;
+    private TextView widgetFallbackStatusView;
+    private Button widgetBindButton;
+    private Button widgetConfigureButton;
     private ScrollView mainScrollView;
     private LinearLayout overviewPage;
     private LinearLayout controlsPage;
@@ -170,6 +176,7 @@ public class MainActivity extends Activity {
     private View maintenanceBadge;
     private int activeTab = TAB_OVERVIEW;
     private boolean settingUpdateSwitch;
+    private boolean settingWidgetSwitch;
     private boolean pendingInstallAfterPermission;
     private String exportSnapshot = "service_snapshot=unavailable";
     private String actionSnapshotExportSnapshot = "service_snapshot=unavailable";
@@ -256,6 +263,10 @@ public class MainActivity extends Activity {
         super.onResume();
         startPassiveKeyService();
         bindPassiveKeyService();
+        VehicleIdentityStore widgetStore = new VehicleIdentityStore(this);
+        if (widgetStore.isServiceEnabled() && widgetStore.isWidgetFallbackEnabled()) {
+            WidgetTokenBridge.start(this);
+        }
         if (KeyNotificationBridgeService.isNotificationListenerEnabled(this)
                 && !KeyNotificationBridgeService.isListenerConnected()) {
             KeyNotificationBridgeService.ensureRebound(this);
@@ -661,6 +672,43 @@ public class MainActivity extends Activity {
         permissionCard.addView(permissionGuideButton, buttonLp());
         maintenancePage.addView(permissionCard, cardLp());
 
+        addSection(maintenancePage, "官方小组件备用控制（可选）");
+        LinearLayout widgetCard = card();
+        widgetCard.addView(text("通知栏按钮仍是主路径", 17, COLOR_TEXT, Typeface.BOLD));
+        widgetCard.addView(text("小组件只作为备用 token。它没有独立解锁/上锁命令，官方 LOCK 控件是状态切换；锁态未知或过期时绝不发送。",
+                13, COLOR_MUTED, Typeface.NORMAL), supportLp());
+        widgetFallbackStatusView = text("读取官方小组件状态...", 13, COLOR_MUTED, Typeface.NORMAL);
+        widgetFallbackStatusView.setLineSpacing(dp(2), 1.06f);
+        widgetCard.addView(widgetFallbackStatusView, supportLp());
+        widgetFallbackSwitch = switchToggle();
+        settingWidgetSwitch = true;
+        widgetFallbackSwitch.setChecked(new VehicleIdentityStore(this).isWidgetFallbackEnabled());
+        settingWidgetSwitch = false;
+        widgetFallbackSwitch.setOnCheckedChangeListener((buttonView, isChecked) -> {
+            if (settingWidgetSwitch) return;
+            new VehicleIdentityStore(MainActivity.this).setWidgetFallbackEnabled(isChecked);
+            if (isChecked) {
+                WidgetTokenBridge.enableAndStart(MainActivity.this);
+            } else {
+                WidgetTokenBridge.stopAndDelete(MainActivity.this);
+            }
+            refreshUi();
+        });
+        addSwitchRow(widgetCard, "启用官方小组件备用控制",
+                "默认关闭；启用后仍需由你手动绑定并选择车辆，不会覆盖四项触发参数",
+                widgetFallbackSwitch, false);
+        widgetBindButton = tonalButton("绑定官方小组件（系统确认）");
+        widgetBindButton.setContentDescription("打开 Android 系统绑定页面，手动允许本应用绑定银河官方小组件");
+        widgetBindButton.setOnClickListener(v -> requestWidgetBinding());
+        widgetCard.addView(widgetBindButton, buttonLp());
+        widgetConfigureButton = outlinedButton("打开官方小组件配置");
+        widgetConfigureButton.setContentDescription("打开银河官方小组件配置页，由你手动选择车辆和车锁控件");
+        widgetConfigureButton.setOnClickListener(v -> openWidgetConfiguration());
+        widgetCard.addView(widgetConfigureButton, buttonLp());
+        widgetCard.addView(text("绑定和车辆选择都由你手动完成；本应用不会自动打开银河 App 或替你点击控件。",
+                11, COLOR_MUTED, Typeface.NORMAL), supportLp());
+        maintenancePage.addView(widgetCard, cardLp());
+
         addSection(maintenancePage, "本车识别");
         LinearLayout identityCard = card();
         identityCard.addView(text("本车身份", 16, COLOR_TEXT, Typeface.BOLD));
@@ -943,6 +991,7 @@ public class MainActivity extends Activity {
                 ? "查看授权与运行全检"
                 : "立即处理 " + audit.pendingRequired() + " 项");
         refreshUpdateUi(update);
+        refreshWidgetUi(status);
         refreshOverview(status, audit, update);
 
         if (status == null) {
@@ -973,6 +1022,8 @@ public class MainActivity extends Activity {
                             + "信号：" + (status.rssi > -127 ? status.rssi + " dBm" : "--")
                             + " · " + status.zone + "\n"
                             + "通知按钮：" + status.buttonDiag + "\n"
+                            + "小组件备用：" + (status.widgetFallbackEnabled
+                                    ? status.widgetStatus : "未启用（可选）") + "\n"
                             + "最近动作：" + status.lastAction + "\n"
                             + "指令已交付（解锁/上锁）：" + status.unlockCount + " / " + status.lockCount
             );
@@ -1038,6 +1089,95 @@ public class MainActivity extends Activity {
         }
     }
 
+    /** 小组件状态只展示真实绑定、token 和锁态，不把“保存过开关”误报为可用。 */
+    private void refreshWidgetUi(PassiveKeyService.Status status) {
+        if (widgetFallbackSwitch == null || widgetFallbackStatusView == null
+                || widgetBindButton == null || widgetConfigureButton == null) return;
+        VehicleIdentityStore store = new VehicleIdentityStore(this);
+        boolean enabled = store.isWidgetFallbackEnabled();
+        settingWidgetSwitch = true;
+        widgetFallbackSwitch.setChecked(enabled);
+        settingWidgetSwitch = false;
+        widgetFallbackSwitch.setEnabled(true);
+
+        String bridgeStatus = status != null && status.widgetStatus != null && !status.widgetStatus.isEmpty()
+                ? status.widgetStatus : WidgetTokenBridge.getStatusText();
+        boolean tokenReady = status != null ? status.widgetReady : WidgetTokenBridge.hasLockToken();
+        String lockHint = status != null ? status.widgetLockHint
+                : (WidgetTokenBridge.getObservedLockHintAtMs()
+                > KeyNotificationBridgeService.getLastObservedLockHintAtMs()
+                ? WidgetTokenBridge.getObservedLockHint() : KeyNotificationBridgeService.getLastObservedLockHint());
+        long lockHintAge = status != null ? status.widgetLockHintAgeMs
+                : (Math.max(WidgetTokenBridge.getObservedLockHintAtMs(),
+                KeyNotificationBridgeService.getLastObservedLockHintAtMs()) == 0L ? -1L
+                : Math.max(0L, android.os.SystemClock.elapsedRealtime()
+                - Math.max(WidgetTokenBridge.getObservedLockHintAtMs(),
+                KeyNotificationBridgeService.getLastObservedLockHintAtMs())));
+        String lockState;
+        if ("LOCKED".equals(lockHint)) {
+            lockState = "已上锁" + (lockHintAge >= 0L ? " · " + lockHintAge / 1000L + " 秒前" : "");
+        } else if ("UNLOCKED".equals(lockHint)) {
+            lockState = "已解锁" + (lockHintAge >= 0L ? " · " + lockHintAge / 1000L + " 秒前" : "");
+        } else {
+            lockState = "未知";
+        }
+        String lockSource = status != null && "WIDGET".equals(status.widgetLockHintSource)
+                ? "（小组件图标）" : "";
+        String line = enabled
+                ? "绑定状态：" + bridgeStatus + "\n车锁 token：" + (tokenReady ? "已捕获" : "未捕获")
+                + "\n官方锁态：" + lockState + lockSource
+                : "默认关闭。通知按钮不可用时，只有你显式启用并完成绑定后才会考虑备用通道。";
+        widgetFallbackStatusView.setText(line);
+        widgetFallbackStatusView.setContentDescription("官方小组件备用状态。" + line.replace('\n', '。'));
+        widgetBindButton.setEnabled(enabled);
+        widgetBindButton.setText(!enabled ? "先启用小组件备用控制"
+                : (tokenReady ? "重新绑定官方小组件" : "绑定官方小组件（系统确认）"));
+        widgetConfigureButton.setEnabled(enabled && WidgetTokenBridge.isBound());
+    }
+
+    /** 由用户点击后才进入系统 AppWidget 绑定确认，不在后台静默申请。 */
+    private void requestWidgetBinding() {
+        if (!new VehicleIdentityStore(this).isWidgetFallbackEnabled()) {
+            Toast.makeText(this, "请先启用官方小组件备用控制", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        Intent bind = WidgetTokenBridge.buildBindIntent(this);
+        if (bind == null) {
+            String message = WidgetTokenBridge.isBound()
+                    ? "官方小组件已绑定，可打开配置页选择车辆"
+                    : "未找到银河官方小组件，请确认银河 App 已安装并更新";
+            Toast.makeText(this, message, Toast.LENGTH_LONG).show();
+            refreshUi();
+            return;
+        }
+        try {
+            startActivityForResult(bind, REQUEST_WIDGET_BIND);
+        } catch (Throwable unavailable) {
+            DiagnosticLog.bridgeError("Widget", "BIND_ACTIVITY_ERROR", unavailable);
+            Toast.makeText(this, "无法打开系统小组件绑定页", Toast.LENGTH_LONG).show();
+        }
+    }
+
+    /** 仅响应用户点击打开官方配置页；不替用户选择车辆或点击车锁控件。 */
+    private void openWidgetConfiguration() {
+        Intent configure = WidgetTokenBridge.buildConfigureIntent(this);
+        if (configure != null) {
+            try {
+                startActivityForResult(configure, REQUEST_WIDGET_CONFIGURE);
+                Toast.makeText(this, "请在银河配置页手动选择车辆和车锁控件，完成后返回", Toast.LENGTH_LONG).show();
+                return;
+            } catch (Throwable unavailable) {
+                DiagnosticLog.bridgeError("Widget", "CONFIG_ACTIVITY_ERROR", unavailable);
+            }
+        }
+        if (WidgetTokenBridge.openConfig(this)) {
+            Toast.makeText(this, "请在银河配置页手动选择车辆和车锁控件，完成后返回", Toast.LENGTH_LONG).show();
+        } else {
+            Toast.makeText(this, "尚未绑定官方小组件，或银河 App 未提供配置页", Toast.LENGTH_LONG).show();
+        }
+        refreshUi();
+    }
+
     /** 顶部跨页面实时行为条：由服务阶段映射，不使用最近日志文本猜测。 */
     private void refreshLiveActivity(PassiveKeyService.Status status, boolean notificationAccess,
                                      boolean listenerConnected) {
@@ -1073,6 +1213,11 @@ public class MainActivity extends Activity {
         input.lastSentAction = status.lastSentAction;
         input.dispatchAction = status.dispatchAction;
         input.lastControlResult = status.lastControlResult;
+        input.lastControlSource = status.lastControlSource;
+        input.widgetFallbackEnabled = status.widgetFallbackEnabled;
+        input.widgetReady = status.widgetReady;
+        input.widgetStatus = status.widgetStatus;
+        input.widgetDiagnostic = status.widgetDiagnostic;
         input.pendingWaitReason = status.pendingWaitReason;
         input.sampleDecision = status.sampleDecision;
         input.zone = status.zone;
@@ -1722,6 +1867,18 @@ public class MainActivity extends Activity {
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == REQUEST_WIDGET_BIND) {
+            boolean bound = WidgetTokenBridge.onBindResult(this, resultCode, data);
+            Toast.makeText(this, bound ? "官方小组件已绑定，请打开配置页选择车辆" : "未绑定官方小组件",
+                    Toast.LENGTH_LONG).show();
+            refreshUi();
+            return;
+        }
+        if (requestCode == REQUEST_WIDGET_CONFIGURE) {
+            WidgetTokenBridge.refreshNow();
+            refreshUi();
+            return;
+        }
         if (requestCode != REQUEST_LOG_EXPORT && requestCode != REQUEST_ACTION_SNAPSHOT_EXPORT) return;
         if (resultCode != RESULT_OK || data == null || data.getData() == null) {
             DiagnosticLog.detail("Export", requestCode == REQUEST_ACTION_SNAPSHOT_EXPORT

@@ -7,6 +7,7 @@ public final class LiveActivityTest {
         idleAndDiscovery();
         wakeAndAuthentication();
         pendingAndSending();
+        widgetFallbackStates();
         connectedMonitoringAndDeparture();
         safetyBlocksTakePriority();
         tracePreservesShortStages();
@@ -90,6 +91,31 @@ public final class LiveActivityTest {
         LiveActivity.Result departure = LiveActivity.resolve(input);
         check(departure.stage == LiveActivity.Stage.CONFIRMING_DEPARTURE
                 && departure.detail.contains("1.0 / 2.0"), "远场驻留显示确认进度");
+    }
+
+    private static void widgetFallbackStates() {
+        LiveActivity.Input input = new LiveActivity.Input();
+        input.listenerConnected = false;
+        input.widgetFallbackEnabled = true;
+        LiveActivity.Result fallback = LiveActivity.resolve(input);
+        check(fallback.stage == LiveActivity.Stage.LISTENER_RECONNECTING
+                && fallback.title.contains("小组件备用"), "通知掉绑但启用Widget时显示受限备用状态");
+
+        input = new LiveActivity.Input();
+        input.pendingUnlock = true;
+        input.geelyConnected = true;
+        input.gattConnected = true;
+        input.widgetFallbackEnabled = true;
+        input.pendingWaitReason = "WAIT_WIDGET_STATE";
+        LiveActivity.Result stale = LiveActivity.resolve(input);
+        check(stale.stage == LiveActivity.Stage.WAITING_WIDGET_STATE
+                && stale.tone == LiveActivity.Tone.WARNING, "Widget锁态未知或过期时明确等待");
+
+        input.pendingWaitReason = "WAIT_WIDGET_TOKEN";
+        input.widgetStatus = "等待官方车锁控件";
+        LiveActivity.Result token = LiveActivity.resolve(input);
+        check(token.stage == LiveActivity.Stage.WAITING_WIDGET_TOKEN
+                && token.detail.contains("等待官方车锁控件"), "Widget token缺失时显示真实桥接状态");
     }
 
     private static void safetyBlocksTakePriority() {

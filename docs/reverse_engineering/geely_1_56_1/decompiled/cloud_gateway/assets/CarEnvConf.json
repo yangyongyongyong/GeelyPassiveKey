@@ -1,0 +1,22 @@
+{
+  "environment": {
+    "dev": {
+      "otaApiBaseUrl": "https://galaxy-app-test.geely-test.com/"
+    },
+    "sit": {
+      "otaApiBaseUrl": "https://galaxy-app-test.geely-test.com/"
+    },
+    "uat": {
+      "otaApiBaseUrl": "https://galaxy-vc-uat.geely-test.com/"
+    },
+    "tra": {
+      "otaApiBaseUrl": "https://galaxy-app-uat.geely-test.com/"
+    },
+    "release": {
+      "otaApiBaseUrl": "https://galaxy-vc.geely.com/"
+    },
+    "production": {
+      "otaApiBaseUrl": "https://galaxy-vc.geely.com/"
+    }
+  }
+}

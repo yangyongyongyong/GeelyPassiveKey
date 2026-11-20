@@ -1,0 +1,22 @@
+{
+  "environment": {
+    "dev": {
+      "otaApiBaseUrl": "https://iov-service-galaxy-test.geely-test.com/"
+    },
+    "sit": {
+      "otaApiBaseUrl": "https://iov-service-galaxy-test.geely-test.com/"
+    },
+    "uat": {
+      "otaApiBaseUrl": "https://iov-service-galaxy-sit.geely-test.com/"
+    },
+    "tra": {
+      "otaApiBaseUrl": "https://iov-service-galaxy-sit.geely-test.com/"
+    },
+    "release": {
+      "otaApiBaseUrl": "https://iov-service-galaxy.geely.com/"
+    },
+    "production": {
+      "otaApiBaseUrl": "https://iov-service-galaxy.geely.com/"
+    }
+  }
+}

@@ -33,6 +33,8 @@ final class LiveActivity {
         CONNECTING_OFFICIAL,
         WAITING_AUTH,
         WAITING_UNLOCK_BUTTON,
+        WAITING_WIDGET_TOKEN,
+        WAITING_WIDGET_STATE,
         CONNECTING_GATT,
         PREPARING_UNLOCK,
         PREPARING_LOCK,
@@ -63,6 +65,8 @@ final class LiveActivity {
         boolean signalFresh;
         boolean pendingUnlock;
         boolean pendingLock;
+        boolean widgetFallbackEnabled;
+        boolean widgetReady;
         int rssi = -127;
         float connectDbm = PassiveKeyDefaults.CONNECT_DBM;
         long wakeAgeMs = -1L;
@@ -74,6 +78,9 @@ final class LiveActivity {
         PassiveKeyLogic.Action lastSentAction = PassiveKeyLogic.Action.NONE;
         PassiveKeyLogic.Action dispatchAction = PassiveKeyLogic.Action.NONE;
         String lastControlResult = "NONE";
+        String lastControlSource = "NONE";
+        String widgetStatus = "";
+        String widgetDiagnostic = "";
         String pendingWaitReason = "";
         String sampleDecision = "";
         String zone = "";
@@ -114,10 +121,20 @@ final class LiveActivity {
                     "打开蓝牙后才能发现车辆", Tone.WARNING);
         }
         if (!value.notificationAccess) {
+            if (value.widgetFallbackEnabled) {
+                return result(Stage.NOTIFICATION_ACCESS, "备用", "通知使用权不可用，小组件备用受限",
+                        "只有官方锁态新鲜时才能用小组件；建议到维护页修复通知监听", Tone.WARNING);
+            }
             return result(Stage.NOTIFICATION_ACCESS, "权限", "缺少通知使用权",
                     "需要读取银河通知按钮才能发送解锁或上锁", Tone.ERROR);
         }
         if (!value.listenerConnected) {
+            if (value.widgetFallbackEnabled) {
+                return result(Stage.LISTENER_RECONNECTING, "备用", "通知桥接正在重连，小组件备用待命",
+                        value.widgetReady
+                                ? "小组件 token 已捕获；仍需新鲜锁态且目标相反才会单次发送"
+                                : "正在等待官方小组件 token；未就绪不会发送备用控制", Tone.WARNING);
+            }
             return result(Stage.LISTENER_RECONNECTING, "重连", "通知桥接正在重新连接",
                     "系统正在恢复银河通知监听；持续失败请运行全检", Tone.WARNING);
         }
@@ -131,17 +148,19 @@ final class LiveActivity {
         }
         if (value.dispatchAgeMs >= 0L && value.dispatchAgeMs <= SENDING_VISIBLE_MS
                 && value.dispatchAction != PassiveKeyLogic.Action.NONE) {
+            String transport = sourceText(value.lastControlSource);
             return value.dispatchAction == PassiveKeyLogic.Action.LOCK
                     ? result(Stage.SENDING_LOCK, "上锁", "正在发送上锁指令",
-                    "正在通过银河官方通知按钮发送", Tone.PROGRESS)
+                    "正在通过" + transport + "发送", Tone.PROGRESS)
                     : result(Stage.SENDING_UNLOCK, "解锁", "正在发送解锁指令",
-                    "正在通过银河官方通知按钮发送", Tone.PROGRESS);
+                    "正在通过" + transport + "发送", Tone.PROGRESS);
         }
         if (value.lastSentAgeMs >= 0L && value.lastSentAgeMs <= RESULT_VISIBLE_MS) {
             if ("UNKNOWN".equals(value.lastControlResult)) {
                 String action = value.lastSentAction == PassiveKeyLogic.Action.LOCK ? "上锁" : "解锁";
                 return result(Stage.RESULT_UNKNOWN, "待核实", action + "结果不确定",
-                        "已交给银河但未收到车锁回执，请观察车辆确认", Tone.WARNING);
+                        "已交给" + sourceText(value.lastControlSource)
+                                + "，未收到车锁回执，请观察车辆确认", Tone.WARNING);
             }
             if (value.lastSentAction == PassiveKeyLogic.Action.UNLOCK) {
                 return result(Stage.UNLOCK_SENT, "已发送", "解锁指令已交给银河",
@@ -164,6 +183,16 @@ final class LiveActivity {
                 return result(Stage.WAITING_UNLOCK_BUTTON, "就绪", "银河已连接，正在等待解锁按钮",
                         "官方通知已出现，正在等待可点击的解锁按钮", Tone.PROGRESS);
             }
+            if ("WAIT_WIDGET_TOKEN".equals(value.pendingWaitReason)) {
+                return result(Stage.WAITING_WIDGET_TOKEN, "备用", "银河已连接，等待小组件 token",
+                        value.widgetStatus == null || value.widgetStatus.isEmpty()
+                                ? "通知按钮暂不可用，正在等待官方小组件车锁 token" : value.widgetStatus,
+                        Tone.PROGRESS);
+            }
+            if ("WAIT_WIDGET_STATE".equals(value.pendingWaitReason)) {
+                return result(Stage.WAITING_WIDGET_STATE, "锁态", "小组件备用等待新鲜车锁状态",
+                        "为防止 LOCK 切换反向执行，锁态未知或超过 45 秒时不会发送", Tone.WARNING);
+            }
             if (!value.gattConnected) {
                 return result(Stage.CONNECTING_GATT, "测距", "银河已连接，正在建立测距通道",
                         "正在读取连接态 RSSI", Tone.PROGRESS);
@@ -172,6 +201,16 @@ final class LiveActivity {
                     "距离条件已满足，准备交给银河执行", Tone.PROGRESS);
         }
         if (value.pendingLock) {
+            if ("WAIT_WIDGET_STATE".equals(value.pendingWaitReason)) {
+                return result(Stage.WAITING_WIDGET_STATE, "锁态", "小组件备用等待新鲜车锁状态",
+                        "通知按钮不可用；锁态未知或过期时不会发送切换指令", Tone.WARNING);
+            }
+            if ("WAIT_WIDGET_TOKEN".equals(value.pendingWaitReason)) {
+                return result(Stage.WAITING_WIDGET_TOKEN, "备用", "正在等待官方小组件 token",
+                        value.widgetStatus == null || value.widgetStatus.isEmpty()
+                                ? "通知按钮暂不可用，正在等待官方小组件车锁 token" : value.widgetStatus,
+                        Tone.PROGRESS);
+            }
             return result(Stage.PREPARING_LOCK, "上锁", "正在准备上锁指令",
                     "正在复核远离证据和官方通知按钮", Tone.PROGRESS);
         }
@@ -304,6 +343,11 @@ final class LiveActivity {
     private static String zoneSuffix(String zone) {
         if (zone == null || zone.trim().isEmpty()) return "";
         return " · " + zone.replace(" (无信号)", "").replace("（无信号）", "").trim();
+    }
+
+    private static String sourceText(String source) {
+        if ("WIDGET".equals(source) || "WIDGET_FALLBACK".equals(source)) return "官方小组件备用通道";
+        return "银河官方通知按钮";
     }
 
     private static Result result(Stage stage, String badge, String title, String detail, Tone tone) {
