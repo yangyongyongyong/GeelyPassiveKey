@@ -10,9 +10,9 @@
 
 > 一张图看懂：扫描本车 → 连接触发 → 银河鉴权 → 靠近解锁 → 离开确认上锁。连接触发阈值不等于靠近解锁阈值。
 
-当前源码版本为 **v4.6.5-min（构建 605）**：本车学习改为通用“GATT 连接增量”选择，官方连接前后新增的唯一 LE 设备优先，其次使用唯一非绑定 LE 设备；车型名称只用于唯一消歧，不再逐车型维护白名单。星愿 `Geely_Auto/GeelyAuto` 继续保留兼容。车型兼容上报继续抓取 10 秒全 BLE 原始广播。通知主路径之外新增可选的官方 AppWidget 备用 token（默认关闭、锁态门控），默认参数保持连接 `≥ -95 dBm`、靠近解锁 `≥ -75 dBm`、离开上锁 `≤ -85 dBm`、离开确认 `2.0 秒`，升级不会覆盖用户配置。详见 [v4.6.5通用GATT连接选择](docs/77_v4_6_5_gatt_connection_delta.md)、[官方小组件备用控制](docs/79_official_widget_fallback.md)、[v4.6.4星愿GATT名称修复](docs/76_v4_6_4_geelyauto_gatt_alias.md) 与 [v4.6.3星愿与更新链路](docs/75_v4_6_3_starwish_and_update_chain.md)。
+当前源码版本为 **v4.6.6-min（构建 606）**：本车学习改为通用“GATT 连接增量”选择，官方连接前后新增的唯一 LE 设备优先，其次使用唯一非绑定 LE 设备；车型名称只用于唯一消歧，不再逐车型维护白名单。星愿 `Geely_Auto/GeelyAuto` 继续保留兼容。车型兼容上报继续抓取 10 秒全 BLE 原始广播。通知主路径之外新增可选的官方 AppWidget 备用 token（默认关闭、锁态门控），默认参数保持连接 `≥ -95 dBm`、靠近解锁 `≥ -75 dBm`、离开上锁 `≤ -85 dBm`、离开确认 `2.0 秒`，升级不会覆盖用户配置。详见 [v4.6.5通用GATT连接选择](docs/77_v4_6_5_gatt_connection_delta.md)、[官方小组件备用控制](docs/79_official_widget_fallback.md)、[v4.6.4星愿GATT名称修复](docs/76_v4_6_4_geelyauto_gatt_alias.md) 与 [v4.6.3星愿与更新链路](docs/75_v4_6_3_starwish_and_update_chain.md)。
 
-当前源码 `v4.6.5-min` 继续使用稳定签名证书 `279948c5d7401188fb72c218e954fc088b8d9cd5eb1aece6dd077b19c08145c4`。本地构建继续使用稳定密钥；正式发布后仍由 Actions 自动预热、校验 Cloudflare 更新镜像。升级保留用户已保存配置。v4.2.2 的单 MiuiService、15 秒通知补扫、GATT `cmdId=5` 提前就绪与 PendingIntent 回退继续保留，详见 [v4.2.2说明](docs/58_v4_2_2_long_absence_weak_connect.md)、[v4.2.1说明](docs/57_v4_2_1_lockscreen_fast_rescan.md) 和 [v4.2.0说明](docs/56_v4_2_0_fast_auth_and_notification_fallback.md)。
+当前源码 `v4.6.6-min` 继续使用稳定签名证书 `279948c5d7401188fb72c218e954fc088b8d9cd5eb1aece6dd077b19c08145c4`。本地构建继续使用稳定密钥；正式发布后仍由 Actions 自动预热、校验 Cloudflare 更新镜像。升级保留用户已保存配置。v4.2.2 的单 MiuiService、15 秒通知补扫、GATT `cmdId=5` 提前就绪与 PendingIntent 回退继续保留，详见 [v4.2.2说明](docs/58_v4_2_2_long_absence_weak_connect.md)、[v4.2.1说明](docs/57_v4_2_1_lockscreen_fast_rescan.md) 和 [v4.2.0说明](docs/56_v4_2_0_fast_auth_and_notification_fallback.md)。
 
 ---
 
@@ -63,7 +63,7 @@
 | 机制 | 作用 |
 | :--- | :--- |
 | **阈值解释清晰** | 每项有永久标签、作用说明、单位、范围与调节方向；非法输入就地提示，推荐值仅填草稿，保存后生效。 |
-| **版本可见** | 维护 → 关于中显示 `版本：v4.6.5-min（构建 605）`，从实际安装包读取，未来升级无需改界面字符串。 |
+| **版本可见** | 维护 → 关于中显示 `版本：v4.6.6-min（构建 606）`，从实际安装包读取，未来升级无需改界面字符串。 |
 | **首包提前连接** | 已学完整本车名＋一致厂商/VIN线索不必等第二条命名广播；只是交给官方鉴权，不提前保存MAC或计RSSI，同地址正在ACL握手时不重复注入。 |
 | **多车隔离** | 学习后替换协议宽过滤，明确身份冲突先拒绝；匿名弱线索只找车，不改MAC/混RSSI。 |
 | **官方就绪即处理** | 官方钥匙通知变成「已连接」立即处理一次接近机会，已有请求仅完成它。GATT 测距已连不会提前冒充官方鉴权就绪。 |
@@ -256,7 +256,7 @@ APK 不入库（`.gitignore` 排除 `*.apk`），从 [Releases](https://github.c
 ANDROID_KEYSTORE=/path/to/existing.keystore SKIP_INSTALL=1 bash GeelyKeyRadarApp/build.sh
 ```
 
-先跑状态机、RSSI完整流程、曲线序列、GATT鉴权帧、待发请求、通知版本、日志轮转、诊断导出、学习资格、身份匹配、单目标选择、硬件过滤和官方就绪门控、预连接门控、阈值表单校验、车机只读回执、授权全检及更新策略 **22组Java测试＋1组APK命名回归**，再 `aapt2` → `javac` → `d8` → `apksigner`。上例仅构建，不操作手机；显式去掉 `SKIP_INSTALL=1` 才尝试原有安装流程。产物：`GeelyKeyRadarApp/GeelyPassiveKey-v4.6.5-min-605.apk`。后续命名统一为 `GeelyPassiveKey-v<versionName>-<versionCode>.apk`，不再生成无版本别名。
+先跑状态机、RSSI完整流程、曲线序列、GATT鉴权帧、待发请求、通知版本、日志轮转、诊断导出、学习资格、身份匹配、单目标选择、硬件过滤和官方就绪门控、预连接门控、阈值表单校验、车机只读回执、授权全检及更新策略 **22组Java测试＋1组APK命名回归**，再 `aapt2` → `javac` → `d8` → `apksigner`。上例仅构建，不操作手机；显式去掉 `SKIP_INSTALL=1` 才尝试原有安装流程。产物：`GeelyKeyRadarApp/GeelyPassiveKey-v4.6.6-min-606.apk`。后续命名统一为 `GeelyPassiveKey-v<versionName>-<versionCode>.apk`，不再生成无版本别名。
 
 仅查询本次版本的预期产物路径（不编译、不安装）：
 
@@ -264,7 +264,7 @@ ANDROID_KEYSTORE=/path/to/existing.keystore SKIP_INSTALL=1 bash GeelyKeyRadarApp
 bash GeelyKeyRadarApp/build.sh --print-apk-path
 ```
 
-本地发布压缩包包含当前极简版源码、资源、测试、文档和签名APK；不包含Git目录、构建缓存、签名私钥、本机配置、运行日志、旧版源码归档及历史界面mockups。缺少密钥时脚本现在直接失败，只有显式设置 `ALLOW_NEW_DEBUG_KEYSTORE=1` 才创建新密钥。真机安装前会比较已安装 APK 与新 APK 的证书 SHA-256，不一致时拒绝安装且不卸载、不清数据；无线调试可用 `ADB_SERIAL=host:port` 指定设备。
+GitHub Release 仅上传签名 APK、APK 的 SHA-256 和 `update.json`，不上传源码、文档、反编译资料或源码压缩包；仓库同时通过 `.gitattributes` 的 `export-ignore` 让自动源码归档跳过 `docs/`。CI 会强制 APK 不超过 2 MiB，并拒绝 APK 内出现 `docs/`、`reverse_engineering/`、`decompiled/`、JADX 目录或 `.md` / `.java` 文件。源码与文档只保留在 Git 仓库。缺少密钥时脚本直接失败，只有显式设置 `ALLOW_NEW_DEBUG_KEYSTORE=1` 才创建新密钥。真机安装前会比较已安装 APK 与新 APK 的证书 SHA-256，不一致时拒绝安装且不卸载、不清数据；无线调试可用 `ADB_SERIAL=host:port` 指定设备。
 
 ### GitHub Release 流水线
 
