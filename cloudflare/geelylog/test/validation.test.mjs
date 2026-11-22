@@ -40,6 +40,8 @@ test('normalizes and verifies a zip payload', async () => {
   assert.equal(payload.note, '靠近未解锁');
   assert.equal(payload.deviceUid, 'GPK-ABCD-EF01-2345-6789-ABCD');
   assert.equal(payload.archiveName, '-----.zip');
+  assert.equal(payload.appVersion, '4.5.9-min');
+  assert.equal(payload.versionCode, 509);
   assert.equal(payload.archive.length, zipBytes.length);
   assert.match(await sha256Hex(payload.archive), /^[0-9a-f]{64}$/);
 });
@@ -50,12 +52,16 @@ test('rejects malformed and oversized archives', () => {
     installId: '12345678-1234-1234-1234-123456789abc',
     deviceUid: 'GPK-ABCD-EF01-2345-6789-ABCD',
     note: '测试异常现象',
+    appVersion: '4.6.7-min',
+    versionCode: 607,
     archiveBase64: Buffer.from('not-a-zip-but-long-enough').toString('base64')
   };
   assert.throws(() => normalizeLogPayload(base), /not a ZIP/);
   assert.throws(() => normalizeLogPayload({ ...base, deviceUid: 'BAD' }), /deviceUid/);
   assert.throws(() => normalizeLogPayload({ ...base, note: '' }), /note/);
   assert.throws(() => normalizeLogPayload({ ...base, archiveBase64: '***' }), /invalid/);
+  assert.throws(() => normalizeLogPayload({ ...base, archiveBase64: zipBase64, appVersion: '', versionCode: 0 }),
+    /appVersion and versionCode/);
   const oversized = new Uint8Array(MAX_ARCHIVE_BYTES + 1);
   oversized.set([0x50, 0x4b, 0x03, 0x04]);
   assert.throws(() => normalizeLogPayload({

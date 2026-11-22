@@ -39,6 +39,7 @@ final class DiagnosticLogStore {
     private final File actionSnapshotDirectory;
     private final String session;
     private final int pid;
+    private final String appVersion;
     private final DiagnosticText redactor;
     private final RotatingFileLog events;
     private final RotatingFileLog details;
@@ -50,12 +51,18 @@ final class DiagnosticLogStore {
     private final ThreadPoolExecutor writer = new ThreadPoolExecutor(1, 1, 0L, TimeUnit.MILLISECONDS,
             new ArrayBlockingQueue<>(256));
 
-    /** 创建两组固定容量日志，沿用旧文件名以保留升级前的现场。 */
+    /** 测试或旧调用方没有版本时显式标为 unknown，生产初始化必须传入安装包版本。 */
     DiagnosticLogStore(File directory, String session, int pid, String salt) {
+        this(directory, session, pid, salt, "unknown");
+    }
+
+    /** 创建两组固定容量日志；每一行都固化当前安装包版本，避免不同版本日志混读。 */
+    DiagnosticLogStore(File directory, String session, int pid, String salt, String appVersion) {
         this.directory = directory;
         this.actionSnapshotDirectory = new File(directory, ACTION_SNAPSHOT_DIR);
         this.session = session;
         this.pid = pid;
+        this.appVersion = safeVersion(appVersion);
         redactor = new DiagnosticText(salt);
         events = new RotatingFileLog(directory, "passive_key.log", EVENT_BYTES, EVENT_FILES);
         details = new RotatingFileLog(directory, "passive_key_diagnostic.log", DETAIL_BYTES, DETAIL_FILES);
@@ -77,7 +84,8 @@ final class DiagnosticLogStore {
     /** 使用完整日期、墙钟时区、单调时间和进程会话区分重启及系统时间变化。 */
     private String format(String source, String event, String fields, long wallMs, long monoMs) {
         String timestamp = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSSZ", Locale.ROOT).format(new Date(wallMs));
-        return timestamp + " sid=" + session + " pid=" + pid + " seq=" + sequence.incrementAndGet()
+        return timestamp + " sid=" + session + " pid=" + pid + " app=" + appVersion
+                + " seq=" + sequence.incrementAndGet()
                 + " mono_ms=" + monoMs + " src=" + source + " event=" + event + " " + redactor.sanitize(fields);
     }
 
@@ -166,10 +174,14 @@ final class DiagnosticLogStore {
                 try {
                     try (OutputStream output = new FileOutputStream(destination);
                          ZipOutputStream zip = new ZipOutputStream(output)) {
-                        addText(zip, "summary.txt", "schema=2 exported_wall_ms=" + wallMs + " exported_mono_ms=" + monoMs
+                        addText(zip, "build_info.txt", "schema=1 package=com.luca.geelykeyradar"
+                                + " app_version=" + appVersion + "\n"
+                                + "version_source=PackageManager\n");
+                        addText(zip, "summary.txt", "schema=3 app_version=" + appVersion
+                                + " exported_wall_ms=" + wallMs + " exported_mono_ms=" + monoMs
                                 + "\n" + triggerConfigSummary(snapshot, wallMs)
                                 + "sid=" + session + " pid=" + pid + "\n" + health() + "\n" + sanitizeLines(snapshot));
-                        addText(zip, "README.txt", "银河无感钥匙诊断包\n"
+                        addText(zip, "README.txt", "银河无感钥匙诊断包 · app=" + appVersion + "\n"
                                 + "events.log 是关键事件，diagnostic.log 是计数、采样和等待细节；每组按旧分段到新分段合并。\n"
                                 + "sid/pid 区分进程；mono_ms 比较同一次开机的耗时；墙钟可能因时间校准改变。\n"
                                 + "用 sid + trace_run + req_id 关联请求；SERVICE_BEGIN 的 previous_clean_stop=false 不能单独证明崩溃。\n"
@@ -223,7 +235,10 @@ final class DiagnosticLogStore {
             try (OutputStream output = new FileOutputStream(destination);
                  ZipOutputStream zip = new ZipOutputStream(output)) {
                 String triggerConfig = triggerConfigSummary(snapshot, wallMs);
+                addText(zip, "build_info.txt", "schema=1 package=com.luca.geelykeyradar"
+                        + " app_version=" + appVersion + "\nversion_source=PackageManager\n");
                 addText(zip, "summary.txt", DiagnosticSnapshotWindow.summary(wallMs, monoMs, action)
+                        + "app_version=" + appVersion + "\n"
                         + triggerConfig
                         + "sid=" + session + " pid=" + pid + "\n" + health() + "\n" + sanitizeLines(snapshot));
                 addText(zip, "README.txt", "银河无感钥匙动作诊断快照\n"
@@ -307,7 +322,10 @@ final class DiagnosticLogStore {
                     .thenComparing(File::getName));
             try (OutputStream output = new FileOutputStream(destination);
                  ZipOutputStream zip = new ZipOutputStream(output)) {
-                addText(zip, "summary.txt", "schema=2 snapshot_type=ACTION_HISTORY"
+                addText(zip, "build_info.txt", "schema=1 package=com.luca.geelykeyradar"
+                        + " app_version=" + appVersion + "\nversion_source=PackageManager\n");
+                addText(zip, "summary.txt", "schema=3 app_version=" + appVersion
+                        + " snapshot_type=ACTION_HISTORY"
                         + " exported_wall_ms=" + wallMs + " exported_mono_ms=" + monoMs
                         + " count=" + files.length + " max_files=" + DiagnosticSnapshotWindow.MAX_FILES
                         + "\n" + health() + "\n" + sanitizeLines(snapshot));
@@ -448,4 +466,12 @@ final class DiagnosticLogStore {
         }
         zip.closeEntry();
     }
+
+    /** 版本字段只保留单个短 token，避免换行破坏日志或ZIP摘要。 */
+    private static String safeVersion(String value) {
+        String safe = value == null ? "" : value.replaceAll("[^A-Za-z0-9._()\\-]", "-");
+        if (safe.isEmpty()) safe = "unknown";
+        return safe.length() <= 60 ? safe : safe.substring(0, 60);
+    }
+
 }

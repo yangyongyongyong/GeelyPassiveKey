@@ -273,6 +273,14 @@ final class LiveActivity {
             return result(Stage.RESULT_UNKNOWN, "待核实", "车控发送结果不确定",
                     "已交给银河但未收到车锁回执，请观察车辆确认", Tone.WARNING);
         }
+        if (hasRecent(value.trace, now, LiveActivityTrace.Step.LOCK_CONFIRMED)) {
+            return result(Stage.LOCK_SENT, "已确认", "车辆已确认上锁",
+                    "官方锁态已变为已上锁", Tone.SUCCESS);
+        }
+        if (hasRecent(value.trace, now, LiveActivityTrace.Step.LOCK_CONFIRMING)) {
+            return result(Stage.LOCK_SENT, "确认", "上锁指令已交付，等待车辆确认",
+                    "旧通知 token 最多执行一次显式上锁复核；不会重试解锁", Tone.WARNING);
+        }
         if (hasRecent(value.trace, now, LiveActivityTrace.Step.UNLOCK_SENT)) {
             return result(Stage.UNLOCK_SENT, "已发送", "解锁指令已交给银河",
                     "等待车辆执行；这里不是车锁执行回执", Tone.SUCCESS);
@@ -347,6 +355,7 @@ final class LiveActivity {
 
     private static String sourceText(String source) {
         if ("WIDGET".equals(source) || "WIDGET_FALLBACK".equals(source)) return "官方小组件备用通道";
+        if ("NOTIFICATION_FALLBACK".equals(source)) return "官方通知缓存按钮";
         return "银河官方通知按钮";
     }
 

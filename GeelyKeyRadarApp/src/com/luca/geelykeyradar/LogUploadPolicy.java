@@ -57,6 +57,18 @@ final class LogUploadPolicy {
         }
     }
 
+    /** 上传包文件名版本段；版本名只保留安全字符，构建号单独追加。 */
+    static String archiveVersionTag(String versionName, long versionCode) {
+        String name = versionName == null ? "" : versionName.trim();
+        if (name.isEmpty()) name = "unknown";
+        name = name.replaceAll("[^A-Za-z0-9._-]", "-")
+                .replaceAll("-+", "-")
+                .replaceAll("(^-+|-+$)", "");
+        if (name.isEmpty()) name = "unknown";
+        if (name.length() > 40) name = name.substring(0, 40);
+        return String.format(Locale.ROOT, "v%s-%d", name, Math.max(0L, versionCode));
+    }
+
     static boolean isZip(byte[] data) {
         return data != null && data.length >= 4 && data[0] == 0x50 && data[1] == 0x4B
                 && (data[2] == 0x03 || data[2] == 0x05 || data[2] == 0x07)
@@ -90,13 +102,17 @@ final class LogUploadPolicy {
         if (!validIssueDescription(note)) throw new IllegalArgumentException("请填写至少4个字符的异常现象");
         String safeSha = archiveSha256 == null ? "" : archiveSha256.toLowerCase(Locale.ROOT);
         if (!safeSha.matches("[0-9a-f]{64}")) throw new IllegalArgumentException("日志校验值无效");
+        String safeAppVersion = sanitizeMeta(appVersion);
+        if ("unknown".equals(safeAppVersion) || versionCode <= 0) {
+            throw new IllegalArgumentException("缺少可核对的App版本，已拒绝上传");
+        }
         return "{"
                 + "\"schema\":1,"
                 + "\"installId\":\"" + jsonEscape(installId) + "\","
                 + "\"deviceUid\":\"" + jsonEscape(deviceUid) + "\","
                 + "\"note\":\"" + jsonEscape(sanitizeNote(note)) + "\","
-                + "\"appVersion\":\"" + jsonEscape(sanitizeMeta(appVersion)) + "\","
-                + "\"versionCode\":" + Math.max(0, versionCode) + ","
+                + "\"appVersion\":\"" + jsonEscape(safeAppVersion) + "\","
+                + "\"versionCode\":" + versionCode + ","
                 + "\"androidRelease\":\"" + jsonEscape(sanitizeMeta(androidRelease)) + "\","
                 + "\"brand\":\"" + jsonEscape(sanitizeMeta(brand)) + "\","
                 + "\"model\":\"" + jsonEscape(sanitizeMeta(model)) + "\","

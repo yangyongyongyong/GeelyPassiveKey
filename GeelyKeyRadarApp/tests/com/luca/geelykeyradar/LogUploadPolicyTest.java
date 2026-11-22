@@ -8,6 +8,7 @@ public final class LogUploadPolicyTest {
     public static void main(String[] args) {
         installIdsAndNotes();
         archivesAndJson();
+        archiveNamesCarryVersion();
         System.out.println("LogUploadPolicyTest passed");
     }
 
@@ -57,6 +58,15 @@ public final class LogUploadPolicyTest {
             check(expected.getMessage().contains("异常现象"), "异常现象为必填");
         }
         try {
+            LogUploadPolicy.buildRequestJson(
+                    "12345678-1234-1234-1234-123456789abc", deviceUid,
+                    "有效异常现象", "unknown", 0, "16", "vivo", "V2426A",
+                    "log.zip", zip, digest);
+            throw new AssertionError("缺少版本必须拒绝上传");
+        } catch (IllegalArgumentException expected) {
+            check(expected.getMessage().contains("App版本"), "缺少版本错误清晰");
+        }
+        try {
             LogUploadPolicy.validateArchive(new byte[32]);
             throw new AssertionError("非ZIP必须拒绝");
         } catch (IllegalArgumentException expected) {
@@ -72,6 +82,15 @@ public final class LogUploadPolicyTest {
         }
         check(new String(LogUploadPolicy.utf8("中文"), StandardCharsets.UTF_8).equals("中文"),
                 "UTF-8编码稳定");
+    }
+
+    private static void archiveNamesCarryVersion() {
+        check("v4.6.7-min-607".equals(LogUploadPolicy.archiveVersionTag("4.6.7-min", 607)),
+                "标准版本号进入上传文件名");
+        check("v5.2-beta-test-520".equals(LogUploadPolicy.archiveVersionTag(" 5.2 beta/test ", 520)),
+                "版本名特殊字符安全替换");
+        check("vunknown-0".equals(LogUploadPolicy.archiveVersionTag("", 0)),
+                "缺失版本显式标记unknown");
     }
 
     private static void check(boolean condition, String message) {

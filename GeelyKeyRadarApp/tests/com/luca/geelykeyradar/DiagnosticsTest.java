@@ -98,7 +98,8 @@ public final class DiagnosticsTest {
     /** 压测轮转并导出旧版含身份日志，ZIP不得包含任何偏好或身份盐文件。 */
     private static void exportIsConsistentAndRedacted() throws Exception {
         Path directory = Files.createTempDirectory("diagnostic-export-test-");
-        DiagnosticLogStore store = new DiagnosticLogStore(directory.toFile(), "testsid", 123, "salt");
+        DiagnosticLogStore store = new DiagnosticLogStore(directory.toFile(), "testsid", 123, "salt",
+                "4.6.7-min(607)");
         try {
             Files.writeString(directory.resolve("private-prefs.xml"), "token=should-not-be-exported");
             Files.writeString(directory.resolve("passive_key.log.3"), "old AA:BB:CC:11:22:33 GeelyVehicle123\n"
@@ -117,13 +118,17 @@ public final class DiagnosticsTest {
             try (ZipFile zip = new ZipFile(archive)) {
                 Set<String> names = new HashSet<>();
                 zip.stream().forEach(entry -> names.add(entry.getName()));
-                check(names.equals(Set.of("summary.txt", "README.txt", "events.log", "diagnostic.log")), "仅白名单日志可以进入ZIP");
+                check(names.equals(Set.of("build_info.txt", "summary.txt", "README.txt", "events.log", "diagnostic.log")), "仅白名单日志和版本文件可以进入ZIP");
                 String events = new String(zip.getInputStream(zip.getEntry("events.log")).readAllBytes(), StandardCharsets.UTF_8);
-                check(events.contains("number=19") && events.contains("sid=testsid"), "导出应包含先前所有已接纳关键事件");
+                check(events.contains("number=19") && events.contains("sid=testsid")
+                        && events.contains("app=4.6.7-min(607)"), "每条导出日志都必须固化安装包版本");
                 check(!events.contains("AA:BB:CC:11:22:33") && !events.contains("GeelyVehicle123")
                         && !events.contains("Luca EV"), "旧版本日志也必须再次脱敏");
                 String summary = new String(zip.getInputStream(zip.getEntry("summary.txt")).readAllBytes(), StandardCharsets.UTF_8);
                 check(summary.contains("state=ok") && !summary.contains("private-value"), "摘要要保留状态并脱敏");
+                check(summary.contains("schema=3 app_version=4.6.7-min(607)"), "摘要顶部必须包含安装包版本");
+                String buildInfo = new String(zip.getInputStream(zip.getEntry("build_info.txt")).readAllBytes(), StandardCharsets.UTF_8);
+                check(buildInfo.contains("app_version=4.6.7-min(607)"), "独立版本文件必须可快速核对");
             }
             long logBytes;
             try (Stream<Path> paths = Files.list(directory)) {
@@ -189,11 +194,12 @@ public final class DiagnosticsTest {
             try (ZipFile zip = new ZipFile(archive)) {
                 Set<String> names = new HashSet<>();
                 zip.stream().forEach(entry -> names.add(entry.getName()));
-                check(names.equals(Set.of("summary.txt", "README.txt", "events.log", "diagnostic.log")),
-                        "动作快照必须保持固定白名单");
+                check(names.equals(Set.of("build_info.txt", "summary.txt", "README.txt", "events.log", "diagnostic.log")),
+                        "动作快照必须保持固定白名单并含版本文件");
                 String summary = new String(zip.getInputStream(zip.getEntry("summary.txt"))
                         .readAllBytes(), StandardCharsets.UTF_8);
                 check(summary.contains("window_ms=180000")
+                                && summary.contains("app_version=unknown")
                                 && summary.contains("connect_dbm=-82.0")
                                 && summary.contains("unlock_dbm=-75.0")
                                 && summary.contains("lock_dbm=-85.0")

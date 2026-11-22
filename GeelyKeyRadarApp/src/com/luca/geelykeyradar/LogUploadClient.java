@@ -76,15 +76,8 @@ final class LogUploadClient {
             byte[] bytes = readFile(archive);
             LogUploadPolicy.validateArchive(bytes);
             String sha256 = sha256(bytes);
-            String appVersion = "unknown";
-            int versionCode = 0;
-            try {
-                android.content.pm.PackageInfo info = context.getPackageManager()
-                        .getPackageInfo(context.getPackageName(), 0);
-                appVersion = info.versionName;
-                versionCode = (int) info.getLongVersionCode();
-            } catch (Exception ignored) {
-            }
+            String appVersion = AppBuildInfo.versionName(context);
+            int versionCode = (int) Math.min(Integer.MAX_VALUE, AppBuildInfo.versionCode(context));
             String deviceUid = DeviceUid.get(context);
             String json = LogUploadPolicy.buildRequestJson(installId(context), deviceUid,
                     note, appVersion, versionCode, Build.VERSION.RELEASE, Build.BRAND, Build.MODEL,
@@ -111,11 +104,13 @@ final class LogUploadClient {
                 if (status >= 200 && status < 300 && parsed.optBoolean("ok", false)) {
                     String id = parsed.optString("logId", "");
                     String returnedUid = parsed.optString("deviceUid", deviceUid);
-                    String message = "日志已上传\nUID：" + returnedUid + "\n编号：" + id
+                    String message = "日志已上传\n版本：" + AppBuildInfo.label(context)
+                            + "\nUID：" + returnedUid + "\n编号：" + id
                             + "\n保留 " + parsed.optInt("retentionDays", 90) + " 天";
                     saveSuccess(context, id, message);
                     DiagnosticLog.event("Upload", "UPLOAD_SENT", "log_id=" + id
-                            + " device_uid=" + returnedUid + " bytes=" + bytes.length + " http=" + status);
+                            + " device_uid=" + returnedUid + " app_version=" + AppBuildInfo.label(context)
+                            + " bytes=" + bytes.length + " http=" + status);
                     return new Result(true, id, message, status);
                 }
                 String code = parsed.optString("code", "HTTP_" + status);

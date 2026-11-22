@@ -90,12 +90,18 @@ export function normalizeLogPayload(raw, maxArchiveBytes = MAX_ARCHIVE_BYTES) {
   const archive = decodeBase64(raw.archiveBase64);
   if (archive.length > maxArchiveBytes) throw new Error('archive is too large');
   if (!looksLikeZip(archive)) throw new Error('archive is not a ZIP file');
+  const appVersion = sanitizeText(raw.appVersion, 40);
+  const versionCode = Number(raw.versionCode);
+  if (!appVersion || appVersion === 'unknown'
+      || !Number.isSafeInteger(versionCode) || versionCode <= 0) {
+    throw new Error('appVersion and versionCode are required');
+  }
   return {
     installId,
     deviceUid,
     note,
-    appVersion: sanitizeText(raw.appVersion, 40) || 'unknown',
-    versionCode: Number.isSafeInteger(Number(raw.versionCode)) ? Number(raw.versionCode) : 0,
+    appVersion,
+    versionCode,
     androidRelease: sanitizeText(raw.androidRelease, 20) || 'unknown',
     brand: sanitizeText(raw.brand, 40) || 'unknown',
     model: sanitizeText(raw.model, 60) || 'unknown',

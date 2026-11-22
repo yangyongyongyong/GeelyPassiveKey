@@ -11,6 +11,7 @@ public final class LiveActivityTest {
         connectedMonitoringAndDeparture();
         safetyBlocksTakePriority();
         tracePreservesShortStages();
+        lockConfirmationTrace();
         System.out.println("LiveActivityTest passed");
     }
 
@@ -163,6 +164,28 @@ public final class LiveActivityTest {
         input.traceNowMs = 40_200L;
         check(LiveActivity.resolve(input).stage == LiveActivity.Stage.WAKING_OFFICIAL,
                 "短阶段轨迹可显示发现后的唤醒步骤");
+    }
+
+    private static void lockConfirmationTrace() {
+        LiveActivityTrace trace = new LiveActivityTrace();
+        trace.add(LiveActivityTrace.Step.LOCK_SENT, 5_000L, "sent");
+        trace.add(LiveActivityTrace.Step.LOCK_CONFIRMING, 5_100L, "waiting");
+        LiveActivity.Input input = new LiveActivity.Input();
+        input.trace = trace.snapshot();
+        input.traceNowMs = 5_200L;
+        LiveActivity.Result confirming = LiveActivity.resolve(input);
+        check(confirming.stage == LiveActivity.Stage.LOCK_SENT
+                        && confirming.title.contains("等待车辆确认")
+                        && confirming.tone == LiveActivity.Tone.WARNING,
+                "旧token上锁后应显示等待车辆确认，而不是直接完成");
+        trace.add(LiveActivityTrace.Step.LOCK_CONFIRMED, 6_000L, "locked");
+        input.trace = trace.snapshot();
+        input.traceNowMs = 6_100L;
+        LiveActivity.Result confirmed = LiveActivity.resolve(input);
+        check(confirmed.stage == LiveActivity.Stage.LOCK_SENT
+                        && confirmed.title.contains("车辆已确认上锁")
+                        && confirmed.tone == LiveActivity.Tone.SUCCESS,
+                "收到官方已上锁状态后应显示确认成功");
     }
 
     private static void check(boolean condition, String message) {

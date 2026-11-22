@@ -103,6 +103,12 @@ public class PassiveKeyService extends Service implements SensorEventListener {
     private final DiagnosticCounters diagnostics = new DiagnosticCounters();
     private final PendingControl pendingControl = new PendingControl();
     private final OfficialReadyGate officialReadyGate = new OfficialReadyGate();
+    private boolean lockDeliveryRetryPending = false;
+    private boolean lockDeliveryRetryUsed = false;
+    private long lockDeliverySentAtMs = 0L;
+    private long lockDeliveryRetryAtMs = 0L;
+    private int lockDeliveryRetryRequestId = 0;
+    private String lockDeliveryRetryReason = "";
     private final LiveActivityTrace liveTrace = new LiveActivityTrace();
     private final Runnable notificationStateListener = this::handleOfficialNotificationUpdate;
     private final Runnable compatibilityCaptureTimeout = () -> finishCompatibilityCapture("duration_elapsed");
@@ -305,12 +311,17 @@ public class PassiveKeyService extends Service implements SensorEventListener {
         final KeyNotificationBridgeService.ControlResult result;
         final String source;
         final String diagnostic;
+        final boolean staleNotificationToken;
+        final long notificationTokenAgeMs;
 
         DispatchOutcome(KeyNotificationBridgeService.ControlResult result, String source,
-                        String diagnostic) {
+                        String diagnostic, boolean staleNotificationToken,
+                        long notificationTokenAgeMs) {
             this.result = result;
             this.source = source == null || source.isEmpty() ? "NONE" : source;
             this.diagnostic = diagnostic == null ? "" : diagnostic;
+            this.staleNotificationToken = staleNotificationToken;
+            this.notificationTokenAgeMs = notificationTokenAgeMs;
         }
     }
 
@@ -411,6 +422,7 @@ public class PassiveKeyService extends Service implements SensorEventListener {
     @Override
     public void onDestroy() {
         if (compatibilityCaptureSession != null) finishCompatibilityCapture("service_destroy");
+        clearLockDeliveryRetry("SERVICE_DESTROYED");
         cancelPendingControl("服务停止");
         KeyNotificationBridgeService.markGattAuthReady(false);
         clearGattAuthObservation("service_destroy", false);
@@ -677,6 +689,11 @@ public class PassiveKeyService extends Service implements SensorEventListener {
                 + " widget_lock_source=" + currentLockHintSource()
                 + " last_control_source=" + lastControlSource
                 + " last_control_diag=" + lastControlDiagnostic
+                + " lock_retry_pending=" + lockDeliveryRetryPending
+                + " lock_retry_used=" + lockDeliveryRetryUsed
+                + " lock_retry_left_ms=" + (lockDeliveryRetryPending
+                ? Math.max(0L, lockDeliveryRetryAtMs - now) : 0L)
+                + " lock_retry_reason=" + lockDeliveryRetryReason
                 + "\nlearning=" + learningMessage() + " learning_source=" + identityStore.getLearningSource()
                 + " waiting_reconnect=" + waitForDisconnectToLearn
                 + "\nmanual_req_id=" + manualRequestSequence + " manual_cooldown_left_ms="
@@ -702,6 +719,7 @@ public class PassiveKeyService extends Service implements SensorEventListener {
             return lastManualControlMessage;
         }
         cancelPendingControl("用户发起" + label + "，取消自动待发请求");
+        clearLockDeliveryRetry("MANUAL_CONTROL");
         nextManualControlAtMs = now + MANUAL_CLICK_GAP_MS;
         lastDispatchAction = action;
         lastDispatchStartedAtMs = now;
@@ -827,6 +845,7 @@ public class PassiveKeyService extends Service implements SensorEventListener {
     private static String sourceLabel(String source) {
         if ("WIDGET".equals(source) || "WIDGET_FALLBACK".equals(source)) return "（官方小组件）";
         if ("NOTIFICATION".equals(source)) return "（官方通知）";
+        if ("NOTIFICATION_FALLBACK".equals(source)) return "（官方通知缓存）";
         return "";
     }
 
@@ -851,6 +870,7 @@ public class PassiveKeyService extends Service implements SensorEventListener {
     public void setAutoLockEnabled(boolean enabled) {
         autoLock = enabled;
         identityStore.setAutoLockEnabled(enabled);
+        if (!enabled) clearLockDeliveryRetry("AUTO_LOCK_DISABLED");
         if (!enabled && pendingControl.getAction() == PassiveKeyLogic.Action.LOCK) {
             cancelPendingControl("远离自动上锁已关闭");
         }
@@ -1939,6 +1959,11 @@ public class PassiveKeyService extends Service implements SensorEventListener {
             logic.onControlFailed(action, now);
             return;
         }
+        if (action == PassiveKeyLogic.Action.UNLOCK) {
+            clearLockDeliveryRetry("NEW_UNLOCK_REQUEST");
+        } else if (action == PassiveKeyLogic.Action.LOCK) {
+            clearLockDeliveryRetry("NEW_LOCK_REQUEST");
+        }
         pendingControl.begin(action, now);
         lastPendingWaitReason = "";
         lastPendingLogAtMs = 0L;
@@ -1961,7 +1986,13 @@ public class PassiveKeyService extends Service implements SensorEventListener {
      * 已通过安全门控的小组件 token。UNKNOWN 绝不回退，避免双发造成反向车控。
      */
     private DispatchOutcome dispatchControlOnce(PassiveKeyLogic.Action action, long now, boolean manual) {
+        // 发送前重读当前银河通知；当前按钮优先，历史 PendingIntent 只作为有年龄标记的备用。
+        KeyNotificationBridgeService.refreshActiveNotifications();
+        KeyNotificationBridgeService.ControlTokenStatus tokenStatus =
+                KeyNotificationBridgeService.controlTokenStatus(action, now, System.currentTimeMillis());
         WidgetTokenPolicy.Route route = controlRoute(action, now);
+        boolean staleNotificationToken = LockDeliveryPolicy.isStaleFallback(
+                tokenStatus.currentAvailable, tokenStatus.fallbackAgeMs);
         String source = "NONE";
         String diagnostic;
         KeyNotificationBridgeService.ControlResult result;
@@ -1969,8 +2000,11 @@ public class PassiveKeyService extends Service implements SensorEventListener {
             result = manual
                     ? KeyNotificationBridgeService.triggerManualControlViaNotification(action)
                     : sendNotificationControl(action);
-            source = "NOTIFICATION";
-            diagnostic = KeyNotificationBridgeService.getLastControlDiagnostic();
+            source = tokenStatus.currentAvailable
+                    ? "NOTIFICATION" : "NOTIFICATION_FALLBACK";
+            diagnostic = KeyNotificationBridgeService.getLastControlDiagnostic()
+                    + " " + tokenStatus.diagnostic()
+                    + " stale_notification_token=" + staleNotificationToken;
             if (result == KeyNotificationBridgeService.ControlResult.NOT_SENT) {
                 WidgetTokenPolicy.Route fallback = WidgetTokenPolicy.selectRoute(action, false,
                         identityStore != null && identityStore.isWidgetFallbackEnabled(),
@@ -1982,6 +2016,7 @@ public class PassiveKeyService extends Service implements SensorEventListener {
                             currentLockHint(),
                             currentLockHintAtMs(), now);
                     source = "WIDGET_FALLBACK";
+                    staleNotificationToken = false;
                     diagnostic = diagnostic + " fallback=" + WidgetTokenBridge.getLastDiagnostic();
                     DiagnosticLog.event("Control", "CONTROL_TOKEN_FALLBACK", "action=" + action
                             + " notification=NOT_SENT widget=" + result);
@@ -1992,12 +2027,14 @@ public class PassiveKeyService extends Service implements SensorEventListener {
                     currentLockHint(),
                     currentLockHintAtMs(), now);
             source = "WIDGET";
+            staleNotificationToken = false;
             diagnostic = WidgetTokenBridge.getLastDiagnostic();
         } else {
             result = KeyNotificationBridgeService.ControlResult.NOT_SENT;
             source = "NONE";
             String reason = widgetRouteReason(action, now);
-            diagnostic = "transport=NONE reason=" + reason + " widget=" + WidgetTokenBridge.getLastDiagnostic();
+            diagnostic = "transport=NONE reason=" + reason + " widget=" + WidgetTokenBridge.getLastDiagnostic()
+                    + " " + tokenStatus.diagnostic();
             DiagnosticLog.event("Control", "CONTROL_TOKEN_REJECTED", "action=" + action
                     + " reason=" + reason + " " + diagnostic);
         }
@@ -2005,7 +2042,8 @@ public class PassiveKeyService extends Service implements SensorEventListener {
         lastControlDiagnostic = diagnostic;
         DiagnosticLog.event("Control", "CONTROL_TOKEN_SOURCE", "action=" + action
                 + " source=" + source + " result=" + result + " " + diagnostic);
-        return new DispatchOutcome(result, source, diagnostic);
+        long tokenAge = tokenStatus.currentAvailable ? tokenStatus.currentAgeMs : tokenStatus.fallbackAgeMs;
+        return new DispatchOutcome(result, source, diagnostic, staleNotificationToken, tokenAge);
     }
 
     private KeyNotificationBridgeService.ControlResult sendNotificationControl(PassiveKeyLogic.Action action) {
@@ -2071,11 +2109,18 @@ public class PassiveKeyService extends Service implements SensorEventListener {
         logic.onControlSent(action, now);
         lastControlResult = result.name();
         captureActionSnapshot(action, sequence);
+        boolean lockRetryScheduled = result == KeyNotificationBridgeService.ControlResult.SENT
+                && scheduleLockDeliveryRetry(action, outcome, sequence, now);
         liveTrace.add(result == KeyNotificationBridgeService.ControlResult.UNKNOWN
                         ? LiveActivityTrace.Step.RESULT_UNKNOWN
                         : action == PassiveKeyLogic.Action.UNLOCK
                         ? LiveActivityTrace.Step.UNLOCK_SENT : LiveActivityTrace.Step.LOCK_SENT,
-                now, "req_id=" + sequence + " source=" + outcome.source);
+                now, "req_id=" + sequence + " source=" + outcome.source
+                        + " token_age_ms=" + outcome.notificationTokenAgeMs);
+        if (lockRetryScheduled) {
+            liveTrace.add(LiveActivityTrace.Step.LOCK_CONFIRMING, now,
+                    "req_id=" + sequence + " stale_token=true");
+        }
         String label = action == PassiveKeyLogic.Action.UNLOCK ? "解锁" : "上锁";
         if (result == KeyNotificationBridgeService.ControlResult.UNKNOWN) {
             lastAction = label + sourceLabel(outcome.source) + "发送结果不确定，已停止重发，请核实车锁";
@@ -2085,10 +2130,160 @@ public class PassiveKeyService extends Service implements SensorEventListener {
         }
         if (action == PassiveKeyLogic.Action.UNLOCK) unlockCount++;
         else lockCount++;
-        lastAction = label + sourceLabel(outcome.source) + "指令已交给银河（未获取车锁回执）";
+        if (action == PassiveKeyLogic.Action.LOCK) {
+            lastAction = lockRetryScheduled
+                    ? "上锁指令已交付（旧通知 token），等待车辆确认；将执行一次显式上锁复核"
+                    : "上锁指令已交付，尚未获得车锁回执";
+        } else {
+            lastAction = label + sourceLabel(outcome.source) + "指令已交给银河（未获取车锁回执）";
+        }
         appendLog("✓ " + label + sourceLabel(outcome.source) + "发送完成 #" + sequence + " 等待="
-                + pendingControl.getAgeMs(now) + "ms | " + signalDiagnostic(now));
+                + pendingControl.getAgeMs(now) + "ms | token_age_ms=" + outcome.notificationTokenAgeMs
+                + " | " + signalDiagnostic(now));
         updateNotificationIfNeeded(true);
+    }
+
+    /** 旧通知 token 只在上锁时安排一次短延迟复核，不建立新的无界队列。 */
+    private boolean scheduleLockDeliveryRetry(PassiveKeyLogic.Action action,
+                                              DispatchOutcome outcome, int requestId, long now) {
+        if (action != PassiveKeyLogic.Action.LOCK
+                || outcome.result != KeyNotificationBridgeService.ControlResult.SENT) return false;
+        String lockHint = currentLockHint();
+        boolean currentAvailable = KeyNotificationBridgeService.hasCurrentControlIntent(action);
+        if (!outcome.staleNotificationToken
+                || !LockDeliveryPolicy.shouldScheduleRetry(action, true,
+                currentAvailable, outcome.notificationTokenAgeMs, autoLock, lockHint)) {
+            DiagnosticLog.event("Control", "LOCK_RETRY_SKIPPED", "req_id=" + requestId
+                    + " lock_hint=" + (lockHint.isEmpty() ? "UNKNOWN" : lockHint)
+                    + " token_age_ms=" + outcome.notificationTokenAgeMs
+                    + " stale_token=" + outcome.staleNotificationToken);
+            return false;
+        }
+        lockDeliveryRetryPending = true;
+        lockDeliveryRetryUsed = false;
+        lockDeliverySentAtMs = now;
+        lockDeliveryRetryAtMs = now + LockDeliveryPolicy.RETRY_DELAY_MS;
+        lockDeliveryRetryRequestId = requestId;
+        lockDeliveryRetryReason = "STALE_NOTIFICATION_TOKEN";
+        DiagnosticLog.event("Control", "LOCK_RETRY_SCHEDULED", "req_id=" + requestId
+                + " delay_ms=" + LockDeliveryPolicy.RETRY_DELAY_MS
+                + " token_age_ms=" + outcome.notificationTokenAgeMs
+                + " source=" + outcome.source);
+        return true;
+    }
+
+    /** 六秒窗口内优先观察车辆锁态；没有确认且仍远场时最多补发一次显式上锁。 */
+    private void resolveLockDeliveryRetry(long now) {
+        if (!lockDeliveryRetryPending) return;
+        String lockHint = currentLockHint();
+        if (LockDeliveryPolicy.hasLockedConfirmation(lockHint)) {
+            int requestId = lockDeliveryRetryRequestId;
+            clearLockDeliveryRetry("LOCK_CONFIRMED");
+            lastAction = "车辆已确认上锁";
+            liveTrace.add(LiveActivityTrace.Step.LOCK_CONFIRMED, now, "req_id=" + requestId);
+            DiagnosticLog.event("Control", "LOCK_CONFIRMED", "req_id=" + requestId
+                    + " lock_hint=" + lockHint + " " + signalDiagnostic(now));
+            appendLog("✓ 车辆已确认上锁 #" + requestId);
+            updateNotificationIfNeeded(true);
+            return;
+        }
+        if (now < lockDeliveryRetryAtMs) return;
+
+        boolean signalFresh = lastSampleAtMs > 0L
+                && now - lastSampleAtMs <= PassiveKeyLogic.SIGNAL_STALE_MS;
+        boolean blocked = isChargingBlocked() || isDriving(now);
+        boolean identityReady = hasCompleteIdentity();
+        boolean connected = isOfficialConnected();
+        float distance = lastSmoothRssi;
+        boolean canRetry = LockDeliveryPolicy.canRetryNow(PassiveKeyLogic.Action.LOCK,
+                lockDeliveryRetryUsed, serviceEnabled, autoLock, blocked || !identityReady, connected,
+                signalFresh, distance, lockDbm, lockHint, now - lockDeliverySentAtMs);
+        if (!canRetry) {
+            int requestId = lockDeliveryRetryRequestId;
+            String reason = lockRetryBlockReason(serviceEnabled, autoLock, identityReady, blocked,
+                    connected, signalFresh, distance, lockDbm, lockHint,
+                    lockDeliveryRetryUsed, now - lockDeliverySentAtMs);
+            clearLockDeliveryRetry(reason);
+            lastAction = "上锁指令已交付，但未获得车辆确认（" + reason + "）";
+            DiagnosticLog.event("Control", "LOCK_RETRY_BLOCKED", "req_id=" + requestId
+                    + " reason=" + reason + " distance=" + distance + " lock_dbm=" + lockDbm
+                    + " connected=" + connected + " signal_fresh=" + signalFresh
+                    + " lock_hint=" + (lockHint.isEmpty() ? "UNKNOWN" : lockHint)
+                    + " " + signalDiagnostic(now));
+            appendLog("上锁未确认，未补发 #" + requestId + " 原因=" + reason);
+            updateNotificationIfNeeded(true);
+            return;
+        }
+
+        int requestId = lockDeliveryRetryRequestId;
+        lockDeliveryRetryPending = false;
+        lockDeliveryRetryUsed = true;
+        lockDeliveryRetryAtMs = 0L;
+        lastDispatchAction = PassiveKeyLogic.Action.LOCK;
+        lastDispatchStartedAtMs = now;
+        DiagnosticLog.event("Control", "LOCK_RETRY_ATTEMPT", "req_id=" + requestId
+                + " delivery_age_ms=" + (now - lockDeliverySentAtMs)
+                + " distance=" + distance + " lock_dbm=" + lockDbm
+                + " lock_hint=" + (lockHint.isEmpty() ? "UNKNOWN" : lockHint)
+                + " " + signalDiagnostic(now));
+        DispatchOutcome outcome = dispatchControlOnce(PassiveKeyLogic.Action.LOCK, now, false);
+        lastControlResult = outcome.result.name();
+        lastControlSource = outcome.source;
+        lastControlDiagnostic = outcome.diagnostic;
+        DiagnosticLog.event("Control", "LOCK_RETRY_RESULT", "req_id=" + requestId
+                + " result=" + outcome.result + " source=" + outcome.source
+                + " " + outcome.diagnostic);
+        if (outcome.result == KeyNotificationBridgeService.ControlResult.NOT_SENT) {
+            lastAction = "上锁复核未发送：" + WidgetTokenPolicy.displayReason(widgetRouteReason(
+                    PassiveKeyLogic.Action.LOCK, now));
+        } else if (outcome.result == KeyNotificationBridgeService.ControlResult.UNKNOWN) {
+            lastAction = "上锁复核结果不确定；已停止重发，请核实车锁";
+            liveTrace.add(LiveActivityTrace.Step.RESULT_UNKNOWN, now,
+                    "lock_retry req_id=" + requestId + " source=" + outcome.source);
+        } else {
+            lastAction = "已执行一次显式上锁复核，仍未获得车锁回执";
+            liveTrace.add(LiveActivityTrace.Step.LOCK_SENT, now,
+                    "lock_retry req_id=" + requestId + " source=" + outcome.source
+                            + " token_age_ms=" + outcome.notificationTokenAgeMs);
+        }
+        appendLog(lastAction + " #" + requestId + " | " + signalDiagnostic(now));
+        updateNotificationIfNeeded(true);
+    }
+
+    private static String lockRetryBlockReason(boolean serviceEnabled, boolean autoLock,
+                                               boolean identityReady, boolean blocked, boolean connected,
+                                               boolean signalFresh, float distance, float lockDbm,
+                                               String lockHint, boolean used, long elapsedMs) {
+        if (!serviceEnabled) return "SERVICE_DISABLED";
+        if (!autoLock) return "AUTO_LOCK_DISABLED";
+        if (!identityReady) return "IDENTITY_INCOMPLETE";
+        if (blocked) return "DRIVING_OR_CHARGING_BLOCKED";
+        if (used) return "RETRY_ALREADY_USED";
+        if (elapsedMs < LockDeliveryPolicy.RETRY_DELAY_MS) return "CONFIRMATION_WINDOW";
+        if (!connected) return "OFFICIAL_DISCONNECTED";
+        if (!signalFresh) return "SIGNAL_STALE";
+        if (LockDeliveryPolicy.hasLockedConfirmation(lockHint)) return "LOCK_CONFIRMED";
+        if (!Float.isFinite(distance) || !Float.isFinite(lockDbm) || distance > lockDbm) {
+            return "NO_LONGER_FAR";
+        }
+        return "NOT_ELIGIBLE";
+    }
+
+    /** 新方向、手动控制或确认锁态时撤销尚未执行的一次补发。 */
+    private void clearLockDeliveryRetry(String reason) {
+        if (!lockDeliveryRetryPending) {
+            lockDeliveryRetryUsed = false;
+            return;
+        }
+        int requestId = lockDeliveryRetryRequestId;
+        lockDeliveryRetryPending = false;
+        lockDeliveryRetryUsed = false;
+        lockDeliverySentAtMs = 0L;
+        lockDeliveryRetryAtMs = 0L;
+        lockDeliveryRetryRequestId = 0;
+        lockDeliveryRetryReason = "";
+        DiagnosticLog.event("Control", "LOCK_RETRY_CANCELLED", "req_id=" + requestId
+                + " reason=" + reason);
     }
 
     /** 每次成功交付解锁或上锁后异步保存最近三分钟，失败只记诊断，不影响车控。 */
@@ -2965,6 +3160,7 @@ public class PassiveKeyService extends Service implements SensorEventListener {
             }
             requestScanFilterRefresh();
             processPendingControl(false);
+            resolveLockDeliveryRetry(now);
             if (logic.onTick(now, notifConnected, isDriving(now) || isChargingBlocked())) {
                 appendLog("🔄 已离开车辆且蓝牙断开满 12s，已重新武装下一次靠近自动解锁");
             }

@@ -49,6 +49,32 @@ public class KeyNotificationBridgeService extends NotificationListenerService {
         UNKNOWN
     }
 
+    /** 当前通知按钮与历史缓存 token 的年龄快照，供发送前门控和日志使用。 */
+    static final class ControlTokenStatus {
+        final boolean currentAvailable;
+        final boolean fallbackAvailable;
+        final long currentAgeMs;
+        final long fallbackAgeMs;
+        final long notificationAgeMs;
+
+        ControlTokenStatus(boolean currentAvailable, boolean fallbackAvailable,
+                           long currentAgeMs, long fallbackAgeMs, long notificationAgeMs) {
+            this.currentAvailable = currentAvailable;
+            this.fallbackAvailable = fallbackAvailable;
+            this.currentAgeMs = currentAgeMs;
+            this.fallbackAgeMs = fallbackAgeMs;
+            this.notificationAgeMs = notificationAgeMs;
+        }
+
+        String diagnostic() {
+            return "notification_current=" + currentAvailable
+                    + " notification_current_age_ms=" + currentAgeMs
+                    + " notification_fallback=" + fallbackAvailable
+                    + " notification_fallback_age_ms=" + fallbackAgeMs
+                    + " notification_snapshot_age_ms=" + notificationAgeMs;
+        }
+    }
+
     private static final String TAG = "KeyNotifBridge";
     public static final String GEELY_PKG = "com.geelygalaxy.customer";
     public static final int GEELY_DK_NOTIFY_ID = 5;
@@ -73,6 +99,10 @@ public class KeyNotificationBridgeService extends NotificationListenerService {
     private static volatile PendingIntent lastKnownUnlockPi = null;
     private static volatile View lastKnownLockView = null;
     private static volatile View lastKnownUnlockView = null;
+    private static volatile long cachedLockCapturedAtMs = 0L;
+    private static volatile long cachedUnlockCapturedAtMs = 0L;
+    private static volatile long lastKnownLockCapturedAtMs = 0L;
+    private static volatile long lastKnownUnlockCapturedAtMs = 0L;
     private static volatile boolean gattAuthReady = false;
     private static volatile Context controlContext = null;
     private static volatile long lastUpdateTimestamp = 0L;
@@ -211,6 +241,10 @@ public class KeyNotificationBridgeService extends NotificationListenerService {
                 + " lock_button=" + (cachedLockPi != null ? "PI" : cachedLockView != null ? "VIEW" : "NONE")
                 + " cached_unlock=" + (lastKnownUnlockPi != null ? "PI" : lastKnownUnlockView != null ? "VIEW" : "NONE")
                 + " cached_lock=" + (lastKnownLockPi != null ? "PI" : lastKnownLockView != null ? "VIEW" : "NONE")
+                + " current_unlock_age_ms=" + tokenAge(nowMs, cachedUnlockCapturedAtMs)
+                + " current_lock_age_ms=" + tokenAge(nowMs, cachedLockCapturedAtMs)
+                + " fallback_unlock_age_ms=" + tokenAge(nowMs, lastKnownUnlockCapturedAtMs)
+                + " fallback_lock_age_ms=" + tokenAge(nowMs, lastKnownLockCapturedAtMs)
                 + " gatt_auth_ready=" + gattAuthReady
                 + " park=" + lastObservedParkStatus
                 + " park_age_ms=" + (lastObservedParkStatusAtMs == 0L ? -1L : nowMs - lastObservedParkStatusAtMs)
@@ -349,12 +383,57 @@ public class KeyNotificationBridgeService extends NotificationListenerService {
         return false;
     }
 
+    /** 当前可见通知是否仍提供该动作按钮；历史缓存不能冒充当前按钮。 */
+    static boolean hasCurrentControlIntent(PassiveKeyLogic.Action action) {
+        if (action == PassiveKeyLogic.Action.UNLOCK) {
+            return cachedUnlockCapturedAtMs > 0L
+                    && (cachedUnlockPi != null || cachedUnlockView != null);
+        }
+        if (action == PassiveKeyLogic.Action.LOCK) {
+            return cachedLockCapturedAtMs > 0L
+                    && (cachedLockPi != null || cachedLockView != null);
+        }
+        return false;
+    }
+
+    /** 返回当前按钮和历史备用 token 的年龄，不修改任何车控状态。 */
+    static ControlTokenStatus controlTokenStatus(PassiveKeyLogic.Action action,
+                                                  long nowMonoMs, long nowWallMs) {
+        boolean current = hasCurrentControlIntent(action);
+        boolean fallback = action == PassiveKeyLogic.Action.UNLOCK
+                ? lastKnownUnlockPi != null || lastKnownUnlockView != null
+                : lastKnownLockPi != null || lastKnownLockView != null;
+        long currentAt = action == PassiveKeyLogic.Action.UNLOCK
+                ? cachedUnlockCapturedAtMs : cachedLockCapturedAtMs;
+        long fallbackAt = action == PassiveKeyLogic.Action.UNLOCK
+                ? lastKnownUnlockCapturedAtMs : lastKnownLockCapturedAtMs;
+        long notificationPost = instance == null ? -1L : instance.notificationEpoch.getLatestPostTime();
+        long notificationAge = notificationPost <= 0L || nowWallMs <= 0L
+                ? -1L : Math.max(0L, nowWallMs - notificationPost);
+        return new ControlTokenStatus(current, fallback,
+                tokenAge(nowMonoMs, currentAt), tokenAge(nowMonoMs, fallbackAt), notificationAge);
+    }
+
+    /** 发送前同步重读当前活动通知，尽可能取得当前按钮而不是长期复用历史 token。 */
+    static boolean refreshActiveNotifications() {
+        KeyNotificationBridgeService svc = instance;
+        if (svc == null || !svc.listenerConnected) return false;
+        svc.scanExistingNotifications();
+        return true;
+    }
+
     /** 无NotificationListener实例时保留应用上下文用于禁控检查，不用于伪造按钮。 */
     public static void setControlContext(Context context) {
         if (context != null) {
             controlContext = context.getApplicationContext();
-            if (lastKnownUnlockPi == null) lastKnownUnlockPi = restorePendingIntent(KEY_UNLOCK_PI);
-            if (lastKnownLockPi == null) lastKnownLockPi = restorePendingIntent(KEY_LOCK_PI);
+            if (lastKnownUnlockPi == null) {
+                lastKnownUnlockPi = restorePendingIntent(KEY_UNLOCK_PI);
+                lastKnownUnlockCapturedAtMs = 0L;
+            }
+            if (lastKnownLockPi == null) {
+                lastKnownLockPi = restorePendingIntent(KEY_LOCK_PI);
+                lastKnownLockCapturedAtMs = 0L;
+            }
         }
     }
 
@@ -756,6 +835,8 @@ public class KeyNotificationBridgeService extends NotificationListenerService {
         cachedLockPi = null;
         cachedUnlockView = null;
         cachedLockView = null;
+        cachedUnlockCapturedAtMs = 0L;
+        cachedLockCapturedAtMs = 0L;
         cachedContentPi = null;
         lastButtonCaptureDiag = lastKnownUnlockPi != null || lastKnownUnlockView != null
                 ? "当前通知未就绪（缓存官方按钮可用）" : "官方钥匙通知未就绪";
@@ -983,6 +1064,19 @@ public class KeyNotificationBridgeService extends NotificationListenerService {
             diagnosticCounters.increment("notification_reflection_unavailable");
         }
 
+        if (foundUnlockBtn) {
+            cachedUnlockCapturedAtMs = parseStarted;
+            lastKnownUnlockCapturedAtMs = parseStarted;
+        } else {
+            cachedUnlockCapturedAtMs = 0L;
+        }
+        if (foundLockBtn) {
+            cachedLockCapturedAtMs = parseStarted;
+            lastKnownLockCapturedAtMs = parseStarted;
+        } else {
+            cachedLockCapturedAtMs = 0L;
+        }
+
         boolean prevConnected = geelyBleConnected;
         if (connVisible == null && textConnectionHint != null) {
             connVisible = textConnectionHint;
@@ -996,6 +1090,8 @@ public class KeyNotificationBridgeService extends NotificationListenerService {
             cachedLockPi = null;
             cachedUnlockView = null;
             cachedLockView = null;
+            cachedUnlockCapturedAtMs = 0L;
+            cachedLockCapturedAtMs = 0L;
         } else if (foundUnlockBtn || foundLockBtn) {
             stopFastRescan("notification_control_ready");
         }
@@ -1259,4 +1355,10 @@ public class KeyNotificationBridgeService extends NotificationListenerService {
             textConnectionHint = true;
         }
     }
+
+    /** 未观测时间输出 -1，避免把恢复出来的未知年龄当成刚刚捕获。 */
+    private static long tokenAge(long nowMs, long capturedAtMs) {
+        return capturedAtMs <= 0L ? -1L : Math.max(0L, nowMs - capturedAtMs);
+    }
+
 }

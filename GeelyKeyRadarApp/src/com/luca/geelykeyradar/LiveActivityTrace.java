@@ -18,6 +18,8 @@ final class LiveActivityTrace {
         LOCK_REQUESTED("上锁", "已确认离开，准备发送上锁"),
         UNLOCK_SENT("已发送", "解锁指令已交给银河"),
         LOCK_SENT("已发送", "上锁指令已交给银河"),
+        LOCK_CONFIRMING("确认", "上锁已交付，等待车辆确认"),
+        LOCK_CONFIRMED("已确认", "车辆已确认上锁"),
         RESULT_UNKNOWN("待核实", "车控发送结果不确定"),
         SCAN_LOST("断开", "车辆蓝牙信号已丢失");
 

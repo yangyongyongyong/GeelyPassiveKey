@@ -1589,7 +1589,7 @@ public class MainActivity extends Activity {
         TextView description = text(
                 compatibilityReport
                         ? "用于上报未识别的车型或蓝牙钥匙格式。提交后会先临时扫描所有 BLE 设备约10秒，并把原始广播、地址、名称、Manufacturer Data、Service UUID/Data、当前可见 GATT 与诊断日志一起上传；不会自动上传。请写明车型、手机型号和看到的现象。"
-                        : "将生成当前完整诊断ZIP并上传到 geelylog 服务。普通诊断日志已脱敏，包含固定日志UID，不包含账号、VIN、蓝牙MAC或钥匙密钥；服务端默认保留90天。异常现象为必填项。",
+                        : "将生成当前完整诊断ZIP并上传到 geelylog 服务。日志包、每一行日志和上传元数据都固定包含App版本与构建号，并包含固定日志UID；不包含账号、VIN、蓝牙MAC或钥匙密钥。服务端默认保留90天。异常现象为必填项。",
                 13, COLOR_MUTED, Typeface.NORMAL);
         content.addView(description);
         EditText note = new EditText(this);
@@ -1646,6 +1646,7 @@ public class MainActivity extends Activity {
                 : "日志上传：正在生成脱敏ZIP并上传，请保持网络连接");
         DiagnosticLog.event("Upload", "UPLOAD_REQUEST", "type="
                 + (compatibilityReport ? "compatibility" : "diagnostic")
+                + " app_version=" + DiagnosticLog.appVersion()
                 + " note_chars=" + note.length());
         refreshUi();
         LOG_UPLOAD_EXECUTOR.execute(() -> {
@@ -1663,7 +1664,8 @@ public class MainActivity extends Activity {
                     DiagnosticLog.event("Compatibility", "CAPTURE_ATTACHED", capture.diagnosticSummary());
                     snapshot = buildUploadSnapshot(uploadService);
                 }
-                temporary = File.createTempFile("passive-key-upload-", ".zip", appContext.getCacheDir());
+                temporary = File.createTempFile("passive-key-upload-" + AppBuildInfo.fileTag(appContext) + "-",
+                        ".zip", appContext.getCacheDir());
                 Future<File> archive = DiagnosticLog.export(temporary, snapshot, extraTexts);
                 File ready = archive.get();
                 result = LogUploadClient.upload(appContext, ready, reportNote);

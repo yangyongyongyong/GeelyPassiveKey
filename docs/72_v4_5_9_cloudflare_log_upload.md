@@ -39,8 +39,15 @@
 
 D1 表：
 
-- `log_uploads`：编号、安装随机 ID、固定设备 UID、时间、App/Android/机型、用户描述、ZIP、SHA-256；
+- `log_uploads`：编号、安装随机 ID、固定设备 UID、时间、App版本/构建号/Android/机型、用户描述、ZIP、SHA-256；
 - `device_upload_rates` / `ip_upload_rates`：按固定 UID 和出口 IP 限流。
+
+版本核对要求：
+
+- 诊断包逐行日志带 `app=<versionName(versionCode)>`；
+- ZIP 固定含 `build_info.txt`，`summary.txt` 顶部写 `app_version`；
+- 上传文件名含版本与构建号；
+- App 和服务端都拒绝缺少有效版本信息的日志包。
 
 固定 UID 生成方式：
 

@@ -50,6 +50,11 @@ final class NotificationEpoch {
         return token >= 0L && token == generation;
     }
 
+    /** 当前通知的墙钟发布时间，仅用于计算 token 与通知快照年龄。 */
+    synchronized long getLatestPostTime() {
+        return latestPostTime;
+    }
+
     /** 只读观测版本和移除状态，不暴露原始通知key。 */
     synchronized String diagnosticSnapshot() {
         return "notification_epoch=" + generation + " notification_post_ms=" + latestPostTime

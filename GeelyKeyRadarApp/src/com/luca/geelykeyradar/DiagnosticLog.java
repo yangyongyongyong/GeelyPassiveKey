@@ -22,6 +22,7 @@ final class DiagnosticLog {
     private static String environment = "environment=not_initialized";
     private static volatile String traceRun = "none";
     private static volatile String deviceUid = "unavailable";
+    private static volatile String appVersion = "unknown";
     private static long lastBridgeErrorAtMs;
 
     /** 每个进程初始化一次随机会话和本地脱敏盐，不写出偏好原文。 */
@@ -36,10 +37,11 @@ final class DiagnosticLog {
                 settings.edit().putString("local_salt", salt).apply();
             }
             String session = UUID.randomUUID().toString().substring(0, 8);
-            store = new DiagnosticLogStore(application.getFilesDir(), session, Process.myPid(), salt);
+            appVersion = AppBuildInfo.label(application);
+            store = new DiagnosticLogStore(application.getFilesDir(), session, Process.myPid(), salt, appVersion);
             deviceUid = DeviceUid.get(application);
             environment = "device_uid=" + deviceUid
-                    + " app=" + packageVersion(application, application.getPackageName())
+                    + " app=" + appVersion
                     + " official_app=" + packageVersion(application, GeelyBridge.GEELY_PKG)
                     + " android=" + Build.VERSION.RELEASE + " sdk=" + Build.VERSION.SDK_INT
                     + " brand=" + Build.BRAND + " model=" + Build.MODEL;
@@ -120,6 +122,11 @@ final class DiagnosticLog {
     /** 返回固定日志UID，供界面复制和上传元数据使用。 */
     static String deviceUid() {
         return deviceUid;
+    }
+
+    /** 当前进程启动时固化的安装包版本。 */
+    static String appVersion() {
+        return appVersion;
     }
 
     /** 返回仅供日志关联的本机短指纹。 */
