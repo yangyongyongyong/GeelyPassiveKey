@@ -84,8 +84,6 @@ public class PassiveKeyService extends Service implements SensorEventListener {
     private static final String AUTH_NOTIFY_UUID = "02362a13-cf3a-11e1-efde-0002a5d5c51b";
     private static final String CCCD_UUID = "00002902-0000-1000-8000-00805f9b34fb";
     private static final long SIGNAL_EXPIRE_UI_MS = 6000L;
-    private static final long SCAN_RESTART_AFTER_MS = 45000L;
-    private static final long SCAN_RESTART_THROTTLE_MS = 90000L;
     private static final long WAKE_LOCK_NEAR_MS = 5 * 60 * 1000L;
     private static final long WAKE_LOCK_BOOTSTRAP_MS = 45000L;
     private static final long WAKE_LOCK_TIMEOUT_MS = 15 * 60 * 1000L;
@@ -147,6 +145,7 @@ public class PassiveKeyService extends Service implements SensorEventListener {
     private long lastScanStartAtMs = 0L;
     private long lastScanRestartAtMs = 0L;
     private long lastScanRecoveryAtMs = 0L;
+    private int consecutiveStaleScanRestarts = 0;
     private volatile long lastSampleAtMs = 0L;
     private long lastGattRssiAtMs = 0L;
     private long lastGattReadRequestedAtMs = 0L;
@@ -1257,6 +1256,11 @@ public class PassiveKeyService extends Service implements SensorEventListener {
             diagnostics.increment("scan_callbacks");
             long now = SystemClock.elapsedRealtime();
             lastScanCallbackAtMs = now;
+            if (consecutiveStaleScanRestarts > 0) {
+                DiagnosticLog.event("Scan", "SCAN_HEALTH_RECOVERED",
+                        "stale_restarts=" + consecutiveStaleScanRestarts + " callback_age_ms=0");
+                consecutiveStaleScanRestarts = 0;
+            }
             CompatibilityCapture.Session capture = compatibilityCaptureSession;
             if (capture != null) {
                 diagnostics.increment("compatibility_scan_callbacks");
@@ -1331,6 +1335,7 @@ public class PassiveKeyService extends Service implements SensorEventListener {
                 return;
             }
             diagnostics.increment("scan_failures");
+            consecutiveStaleScanRestarts = 0;
             DiagnosticLog.event("Scan", "SCAN_CALLBACK_ERROR", "code=" + errorCode
                     + " " + scanDiagnostic(SystemClock.elapsedRealtime(), false));
             CompatibilityCapture.Session capture = compatibilityCaptureSession;
@@ -1992,7 +1997,8 @@ public class PassiveKeyService extends Service implements SensorEventListener {
                 KeyNotificationBridgeService.controlTokenStatus(action, now, System.currentTimeMillis());
         WidgetTokenPolicy.Route route = controlRoute(action, now);
         boolean staleNotificationToken = LockDeliveryPolicy.isStaleFallback(
-                tokenStatus.currentAvailable, tokenStatus.fallbackAgeMs);
+                tokenStatus.currentAvailable, tokenStatus.fallbackAgeMs,
+                tokenStatus.notificationAgeMs);
         String source = "NONE";
         String diagnostic;
         KeyNotificationBridgeService.ControlResult result;
@@ -2042,7 +2048,9 @@ public class PassiveKeyService extends Service implements SensorEventListener {
         lastControlDiagnostic = diagnostic;
         DiagnosticLog.event("Control", "CONTROL_TOKEN_SOURCE", "action=" + action
                 + " source=" + source + " result=" + result + " " + diagnostic);
-        long tokenAge = tokenStatus.currentAvailable ? tokenStatus.currentAgeMs : tokenStatus.fallbackAgeMs;
+        long tokenAge = LockDeliveryPolicy.effectiveAgeMs(
+                tokenStatus.currentAvailable ? tokenStatus.currentAgeMs : tokenStatus.fallbackAgeMs,
+                tokenStatus.notificationAgeMs);
         return new DispatchOutcome(result, source, diagnostic, staleNotificationToken, tokenAge);
     }
 
@@ -2149,10 +2157,9 @@ public class PassiveKeyService extends Service implements SensorEventListener {
         if (action != PassiveKeyLogic.Action.LOCK
                 || outcome.result != KeyNotificationBridgeService.ControlResult.SENT) return false;
         String lockHint = currentLockHint();
-        boolean currentAvailable = KeyNotificationBridgeService.hasCurrentControlIntent(action);
         if (!outcome.staleNotificationToken
                 || !LockDeliveryPolicy.shouldScheduleRetry(action, true,
-                currentAvailable, outcome.notificationTokenAgeMs, autoLock, lockHint)) {
+                outcome.staleNotificationToken, autoLock, lockHint)) {
             DiagnosticLog.event("Control", "LOCK_RETRY_SKIPPED", "req_id=" + requestId
                     + " lock_hint=" + (lockHint.isEmpty() ? "UNKNOWN" : lockHint)
                     + " token_age_ms=" + outcome.notificationTokenAgeMs
@@ -2837,16 +2844,48 @@ public class PassiveKeyService extends Service implements SensorEventListener {
         }
     }
 
-    /** 扫描维护记录在独立诊断文件，不占据关键动作的日志容量。 */
-    private void runScreenOffScanWatchdog(long now) {
-        if (screenOn || !isScanning || geelyConnected) return;
-        long lastSignalAt = Math.max(lastTargetAdvertAtMs, lastScanStartAtMs);
-        if ((now - lastSignalAt) < SCAN_RESTART_AFTER_MS) return;
-        if ((now - lastScanRestartAtMs) < SCAN_RESTART_THROTTLE_MS) return;
+    /**
+     * 扫描状态为 true 不代表 Android 仍在投递回调。以真实回调年龄判断，
+     * 不区分亮屏/息屏；连续两次无回调时重新获取 Adapter 与 Scanner 引用。
+     */
+    private void runScanHealthWatchdog(long now) {
+        ScanHealthPolicy.Action action = ScanHealthPolicy.evaluate(
+                isScanning, isOfficialConnected(), compatibilityCaptureSession != null, now,
+                lastScanStartAtMs, lastScanCallbackAtMs, lastScanRestartAtMs,
+                consecutiveStaleScanRestarts);
+        if (action == ScanHealthPolicy.Action.NONE) return;
         lastScanRestartAtMs = now;
-        appendDiagnostic("息屏扫描看门狗：45s 无车机广播，重建 BLE 扫描器");
+        consecutiveStaleScanRestarts++;
+        DiagnosticLog.event("Scan", "SCAN_HEALTH_RESTART",
+                "action=" + action + " stale_restarts=" + consecutiveStaleScanRestarts
+                        + " screen_on=" + screenOn + " " + scanDiagnostic(now, false));
+        appendDiagnostic("扫描回调看门狗：45s 无任何 BLE 回调，执行 " + action
+                + " · screen_on=" + screenOn + " stale_restarts=" + consecutiveStaleScanRestarts);
         stopBleScan();
-        startBleScan();
+        if (action == ScanHealthPolicy.Action.HARD_RESET) {
+            consecutiveStaleScanRestarts = 0;
+            reinitializeBluetoothScanner();
+            appendLog("⚠ BLE 扫描回调持续停滞，已重建系统扫描器");
+            handler.removeCallbacks(restartScanRunnable);
+            handler.postDelayed(restartScanRunnable, 1200L);
+        } else {
+            startBleScan();
+        }
+    }
+
+    /** 某些 HyperOS/OriginOS 场景只重试 startScan 仍静默无回调，需重新取得系统代理对象。 */
+    private void reinitializeBluetoothScanner() {
+        try {
+            bluetoothManager = (BluetoothManager) getSystemService(Context.BLUETOOTH_SERVICE);
+            bluetoothAdapter = bluetoothManager != null
+                    ? bluetoothManager.getAdapter() : BluetoothAdapter.getDefaultAdapter();
+            bleScanner = null;
+            DiagnosticLog.event("Scan", "SCAN_PROXY_RESET", "adapter_available="
+                    + (bluetoothAdapter != null) + " enabled="
+                    + (bluetoothAdapter != null && bluetoothAdapter.isEnabled()));
+        } catch (Throwable error) {
+            DiagnosticLog.bridgeError("Scan", "SCAN_PROXY_RESET_ERROR", error);
+        }
     }
 
     // ==================== 系统广播 / 传感器 / 定时 ====================
@@ -2964,6 +3003,9 @@ public class PassiveKeyService extends Service implements SensorEventListener {
                 releaseWakeLock();
                 if (!isScanning && bluetoothAdapter != null && bluetoothAdapter.isEnabled()) {
                     startBleScan();
+                } else {
+                    // 息屏启动的扫描可能在 HyperOS 上静默不再回调；亮屏立即给停滞扫描一次恢复机会。
+                    runScanHealthWatchdog(now);
                 }
             }
             updateNotificationIfNeeded(true);
@@ -3175,7 +3217,7 @@ public class PassiveKeyService extends Service implements SensorEventListener {
                 appendLog("银河钥匙已连接，但测距暂无新样本，无法判定远离 | " + signalDiagnostic(now));
             }
             refreshWakeLock(now);
-            runScreenOffScanWatchdog(now);
+            runScanHealthWatchdog(now);
             updateNotificationIfNeeded(false);
             handler.postDelayed(this, 500L);
         }
@@ -3347,6 +3389,7 @@ public class PassiveKeyService extends Service implements SensorEventListener {
     private String scanDiagnostic(long now, boolean resetWindow) {
         return "scanning=" + isScanning + " scan_uptime_ms=" + age(now, lastScanStartAtMs)
                 + " callback_age_ms=" + age(now, lastScanCallbackAtMs)
+                + " stale_scan_restarts=" + consecutiveStaleScanRestarts
                 + " accepted_ad_age_ms=" + age(now, lastAcceptedAdvertAtMs)
                 + " candidates=" + targetSelector.size(now) + " primary_id=" + DiagnosticLog.fingerprint(targetSelector.selectedAddress())
                 + " target_age_ms=" + targetSelector.selectionAgeMs(now) + " target_reason=" + targetSelector.lastReason()

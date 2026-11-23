@@ -239,6 +239,10 @@ public class KeyNotificationBridgeService extends NotificationListenerService {
                 + " notification_parse=" + lastParseDiagnostic
                 + " unlock_button=" + (cachedUnlockPi != null ? "PI" : cachedUnlockView != null ? "VIEW" : "NONE")
                 + " lock_button=" + (cachedLockPi != null ? "PI" : cachedLockView != null ? "VIEW" : "NONE")
+                + " unlock_view=" + viewAvailability(cachedUnlockView, lastKnownUnlockView)
+                + " lock_view=" + viewAvailability(cachedLockView, lastKnownLockView)
+                + " unlock_pi_kind=" + pendingIntentKind(cachedUnlockPi != null ? cachedUnlockPi : lastKnownUnlockPi)
+                + " lock_pi_kind=" + pendingIntentKind(cachedLockPi != null ? cachedLockPi : lastKnownLockPi)
                 + " cached_unlock=" + (lastKnownUnlockPi != null ? "PI" : lastKnownUnlockView != null ? "VIEW" : "NONE")
                 + " cached_lock=" + (lastKnownLockPi != null ? "PI" : lastKnownLockView != null ? "VIEW" : "NONE")
                 + " current_unlock_age_ms=" + tokenAge(nowMs, cachedUnlockCapturedAtMs)
@@ -500,8 +504,7 @@ public class KeyNotificationBridgeService extends NotificationListenerService {
      */
     public static ControlResult triggerUnlockViaNotification() {
         if (isControlBlocked(true, false)) return controlResult(ControlResult.NOT_SENT, "NONE", "BLOCKED", null);
-        return fireNotificationButton(firstNonNull(cachedUnlockPi, lastKnownUnlockPi),
-                firstNonNull(cachedUnlockView, lastKnownUnlockView), "解锁");
+        return triggerNotificationButton(true, "解锁");
     }
 
     /**
@@ -509,8 +512,7 @@ public class KeyNotificationBridgeService extends NotificationListenerService {
      */
     public static ControlResult triggerLockViaNotification() {
         if (isControlBlocked(false, false)) return controlResult(ControlResult.NOT_SENT, "NONE", "BLOCKED", null);
-        return fireNotificationButton(firstNonNull(cachedLockPi, lastKnownLockPi),
-                firstNonNull(cachedLockView, lastKnownLockView), "上锁");
+        return triggerNotificationButton(false, "上锁");
     }
 
     /** 手动测试复用同一个通知按钮发送通道，保留禁控检查且不创建延迟或重发任务。 */
@@ -522,50 +524,114 @@ public class KeyNotificationBridgeService extends NotificationListenerService {
         if (isControlBlocked(unlock, true)) {
             return controlResult(ControlResult.NOT_SENT, "NONE", "MANUAL_BLOCKED", null);
         }
-        return unlock ? fireNotificationButton(firstNonNull(cachedUnlockPi, lastKnownUnlockPi),
-                        firstNonNull(cachedUnlockView, lastKnownUnlockView), "手动解锁")
-                : fireNotificationButton(firstNonNull(cachedLockPi, lastKnownLockPi),
-                        firstNonNull(cachedLockView, lastKnownLockView), "手动上锁");
+        return triggerNotificationButton(unlock, unlock ? "手动解锁" : "手动上锁");
     }
 
-    /** 一次尝试只选 PI 或 View；出现不确定异常时停止，不冒险重复执行车控。 */
-    private static ControlResult fireNotificationButton(final PendingIntent pi, final View buttonView, final String actionLabel) {
-        // 1. Primary: Send the extracted PendingIntent directly (with Android 14-16 background activity/broadcast start options)
-        if (pi != null) {
-            try {
-                if (Build.VERSION.SDK_INT >= 34) {
-                    ActivityOptions opts = ActivityOptions.makeBasic();
-                    opts.setPendingIntentBackgroundActivityStartMode(
-                            ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOWED);
-                    pi.send(null, 0, null, null, null, null, opts.toBundle());
-                } else {
-                    pi.send();
-                }
-                Log.i(TAG, "✓ 已通过通知栏 PendingIntent.send() 触发银河【" + actionLabel + "】按钮");
-                return controlResult(ControlResult.SENT, "PI", actionLabel, null);
-            } catch (PendingIntent.CanceledException cancelled) {
-                Log.w(TAG, "通知 PendingIntent 已失效，等待新按钮: " + actionLabel);
-                return controlResult(ControlResult.NOT_SENT, "PI", actionLabel, cancelled);
-            } catch (Throwable uncertain) {
-                Log.w(TAG, "通知发送结果未知，停止自动重试: " + actionLabel, uncertain);
-                return controlResult(ControlResult.UNKNOWN, "PI", actionLabel, uncertain);
-            }
+    /**
+     * 官方 1.59/Android 16 上优先点击当前 RemoteViews 按钮。
+     * PendingIntent 仍可解析，但直接 send 可能只返回投递成功而官方不执行；View 点击保留官方原有响应链。
+     */
+    private static ControlResult triggerNotificationButton(boolean unlock, String actionLabel) {
+        boolean currentReady = (unlock ? cachedUnlockCapturedAtMs : cachedLockCapturedAtMs) > 0L;
+        View currentView = currentReady ? (unlock ? cachedUnlockView : cachedLockView) : null;
+        PendingIntent currentPi = currentReady ? (unlock ? cachedUnlockPi : cachedLockPi) : null;
+        View cachedView = unlock ? lastKnownUnlockView : lastKnownLockView;
+        PendingIntent cachedPi = unlock ? lastKnownUnlockPi : lastKnownLockPi;
+        NotificationTransportPolicy.Transport transport = NotificationTransportPolicy.select(
+                currentView != null, currentPi != null, cachedPi != null, cachedView != null);
+        ControlResult result = fireNotificationTransport(transport, currentView, currentPi,
+                cachedView, cachedPi, actionLabel);
+        if (transport == NotificationTransportPolicy.Transport.CURRENT_VIEW
+                && result == ControlResult.NOT_SENT) {
+            NotificationTransportPolicy.Transport fallback =
+                    NotificationTransportPolicy.pendingIntentAfterViewMiss(
+                            currentPi != null, cachedPi != null);
+            return fireNotificationTransport(fallback, currentView, currentPi,
+                    cachedView, cachedPi, actionLabel);
         }
+        return result;
+    }
 
-        // 2. Secondary fallback: 无法提取 PendingIntent 时才在主线程调用 RemoteViews 按钮。
-        if (buttonView != null) {
-            if (Looper.myLooper() == Looper.getMainLooper()) {
-                try {
-                    boolean clicked = buttonView.performClick();
-                    Log.i(TAG, "✓ 已在主线程调用通知栏按钮 View.performClick() 触发银河【" + actionLabel + "】 -> " + clicked);
-                    return controlResult(clicked ? ControlResult.SENT : ControlResult.NOT_SENT, "VIEW", actionLabel, null);
-                } catch (Throwable uncertain) {
-                    Log.w(TAG, "通知按钮执行结果未知，停止自动重试", uncertain);
-                    return controlResult(ControlResult.UNKNOWN, "VIEW", actionLabel, uncertain);
-                }
-            }
+    /** 当前 View -> 当前 PI -> 历史 PI -> 历史 View，一次尝试只执行一个通道。 */
+    private static ControlResult fireNotificationTransport(
+            NotificationTransportPolicy.Transport transport,
+            View currentView, PendingIntent currentPi,
+            View cachedView, PendingIntent cachedPi, String actionLabel) {
+        if (transport == NotificationTransportPolicy.Transport.CURRENT_VIEW) {
+            return fireNotificationView(currentView, "VIEW_CURRENT", actionLabel);
+        }
+        if (transport == NotificationTransportPolicy.Transport.CURRENT_PENDING_INTENT) {
+            return fireNotificationPendingIntent(currentPi, "PI_CURRENT", actionLabel);
+        }
+        if (transport == NotificationTransportPolicy.Transport.CACHED_PENDING_INTENT) {
+            return fireNotificationPendingIntent(cachedPi, "PI_CACHED", actionLabel);
+        }
+        if (transport == NotificationTransportPolicy.Transport.CACHED_VIEW) {
+            return fireNotificationView(cachedView, "VIEW_CACHED", actionLabel);
         }
         return controlResult(ControlResult.NOT_SENT, "NONE", actionLabel, null);
+    }
+
+    /** 可点击 View 是官方 RemoteViews 原响应链，失败才允许回到 PendingIntent。 */
+    private static ControlResult fireNotificationView(View buttonView, String transport,
+                                                      String actionLabel) {
+        if (buttonView == null || Looper.myLooper() != Looper.getMainLooper()) {
+            return controlResult(ControlResult.NOT_SENT, transport, actionLabel, null);
+        }
+        try {
+            boolean clicked = buttonView.performClick();
+            Log.i(TAG, "✓ 通知栏按钮 View.performClick() " + actionLabel + " -> " + clicked);
+            return controlResult(clicked ? ControlResult.SENT : ControlResult.NOT_SENT,
+                    transport, actionLabel, null);
+        } catch (Throwable uncertain) {
+            Log.w(TAG, "通知按钮执行结果未知，停止自动重试", uncertain);
+            return controlResult(ControlResult.UNKNOWN, transport, actionLabel, uncertain);
+        }
+    }
+
+    /** Activity 类型才附加后台启动许可；广播/服务使用普通 send，避免 OEM 静默丢弃。 */
+    private static ControlResult fireNotificationPendingIntent(PendingIntent pi, String transport,
+                                                               String actionLabel) {
+        if (pi == null) return controlResult(ControlResult.NOT_SENT, transport, actionLabel, null);
+        try {
+            if (Build.VERSION.SDK_INT >= 34 && pi.isActivity()) {
+                ActivityOptions opts = ActivityOptions.makeBasic();
+                opts.setPendingIntentBackgroundActivityStartMode(
+                        ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOWED);
+                pi.send(null, 0, null, null, null, null, opts.toBundle());
+            } else {
+                pi.send();
+            }
+            Log.i(TAG, "✓ 已通过通知栏 PendingIntent.send() 触发银河[" + actionLabel + "] "
+                    + pendingIntentKind(pi));
+            return controlResult(ControlResult.SENT, transport + "/" + pendingIntentKind(pi),
+                    actionLabel, null);
+        } catch (PendingIntent.CanceledException cancelled) {
+            Log.w(TAG, "通知 PendingIntent 已失效，等待新按钮: " + actionLabel);
+            return controlResult(ControlResult.NOT_SENT, transport, actionLabel, cancelled);
+        } catch (Throwable uncertain) {
+            Log.w(TAG, "通知发送结果未知，停止自动重试: " + actionLabel, uncertain);
+            return controlResult(ControlResult.UNKNOWN, transport, actionLabel, uncertain);
+        }
+    }
+
+    /** 只记录 token 类型和是否由官方创建，不读取或输出 Intent 正文。 */
+    private static String pendingIntentKind(PendingIntent pi) {
+        if (pi == null) return "none";
+        try {
+            String kind = pi.isActivity() ? "activity" : pi.isBroadcast() ? "broadcast"
+                    : pi.isService() ? "service" : "unknown";
+            String creator = GEELY_PKG.equals(pi.getCreatorPackage()) ? "official" : "other";
+            return kind + "-" + creator;
+        } catch (Throwable ignored) {
+            return "unknown";
+        }
+    }
+
+    private static String viewAvailability(View current, View cached) {
+        if (current != null) return "CURRENT";
+        if (cached != null) return "CACHED";
+        return "NONE";
     }
 
     /** 记录本次实际返回结果，不额外发指令、不把异常正文写入文件。 */
@@ -576,15 +642,12 @@ public class KeyNotificationBridgeService extends NotificationListenerService {
         return result;
     }
 
-    /** 当前通知按钮优先，失去通知实例时复用上次同token按钮。 */
-    private static <T> T firstNonNull(T current, T lastKnown) {
-        return current != null ? current : lastKnown;
-    }
-
     /** 将官方PendingIntent token序列化到应用私有缓存，供进程重启后仍能复用。 */
     private static void persistPendingIntent(String key, PendingIntent pendingIntent) {
         Context context = controlContext != null ? controlContext : instance;
         if (context == null || pendingIntent == null) return;
+        // Android 14+ 禁止把其他应用的 PendingIntent 直接 marshall 到磁盘；保留内存 token。
+        if (Build.VERSION.SDK_INT >= 34) return;
         Parcel parcel = Parcel.obtain();
         try {
             pendingIntent.writeToParcel(parcel, 0);

@@ -20,15 +20,42 @@ final class LockDeliveryPolicy {
                 && (fallbackTokenAgeMs < 0L || fallbackTokenAgeMs >= FALLBACK_TOKEN_STALE_MS);
     }
 
+    /**
+     * 重新解析一条旧通知并不等于获得了新鲜按钮；当前通知本身超过一分钟时仍按旧 token 处理。
+     * 历史 token 年龄与通知快照年龄取较大值，避免每轮重读把年龄重置为零。
+     */
+    static boolean isStaleFallback(boolean currentTokenAvailable, long fallbackTokenAgeMs,
+                                   long notificationAgeMs) {
+        if (currentTokenAvailable) {
+            return notificationAgeMs < 0L || notificationAgeMs >= FALLBACK_TOKEN_STALE_MS;
+        }
+        long effectiveAgeMs = effectiveAgeMs(fallbackTokenAgeMs, notificationAgeMs);
+        return effectiveAgeMs < 0L || effectiveAgeMs >= FALLBACK_TOKEN_STALE_MS;
+    }
+
+    /** 合并两个可未知的单调/墙钟年龄，任一未知时使用另一个。 */
+    static long effectiveAgeMs(long tokenAgeMs, long notificationAgeMs) {
+        if (tokenAgeMs < 0L) return notificationAgeMs;
+        if (notificationAgeMs < 0L) return tokenAgeMs;
+        return Math.max(tokenAgeMs, notificationAgeMs);
+    }
+
     /** 只有自动上锁、明确交付、旧 token 且没有已上锁证据时才安排一次确认重试。 */
     static boolean shouldScheduleRetry(PassiveKeyLogic.Action action, boolean delivered,
                                        boolean currentTokenAvailable, long fallbackTokenAgeMs,
                                        boolean autoLock, String lockHint) {
+        boolean staleToken = isStaleFallback(currentTokenAvailable, fallbackTokenAgeMs);
+        return shouldScheduleRetry(action, delivered, staleToken, autoLock, lockHint);
+    }
+
+    /** 发送结果已判定 token 新鲜度时直接复用同一结论，避免第二次重读把旧通知改成“当前”。 */
+    static boolean shouldScheduleRetry(PassiveKeyLogic.Action action, boolean delivered,
+                                       boolean staleToken, boolean autoLock, String lockHint) {
         return action == PassiveKeyLogic.Action.LOCK
                 && delivered
                 && autoLock
                 && !"LOCKED".equals(lockHint)
-                && isStaleFallback(currentTokenAvailable, fallbackTokenAgeMs);
+                && staleToken;
     }
 
     /** 到达重试时刻后，必须仍满足安全条件；任何条件变化都放弃，不累计第三次发送。 */

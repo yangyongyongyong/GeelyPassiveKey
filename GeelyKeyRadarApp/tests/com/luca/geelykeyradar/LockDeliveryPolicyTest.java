@@ -15,6 +15,16 @@ public final class LockDeliveryPolicyTest {
                 "一分钟及以上的历史 token 必须视为旧 token");
         check(!LockDeliveryPolicy.isStaleFallback(true, -1L), "当前通知提供的 token 不按历史年龄拦截");
         check(!LockDeliveryPolicy.isStaleFallback(false, 59_999L), "一分钟内的缓存 token 仍可直接交付");
+        check(!LockDeliveryPolicy.isStaleFallback(true, 0L, 59_999L),
+                "当前通知快照一分钟内仍是新鲜 token");
+        check(LockDeliveryPolicy.isStaleFallback(true, 0L, LockDeliveryPolicy.FALLBACK_TOKEN_STALE_MS),
+                "重新解析十二分钟前的通知不能把 token 年龄重置为零");
+        check(LockDeliveryPolicy.isStaleFallback(false, 1_000L, 70_000L),
+                "历史 token 与通知快照取较大年龄，任一过期都视为旧 token");
+        check(LockDeliveryPolicy.isStaleFallback(false, 70_000L, 1_000L),
+                "token 捕获年龄过期时通知刚重读也不能伪装成新鲜");
+        check(LockDeliveryPolicy.effectiveAgeMs(4_800_000L, 720_000L) == 4_800_000L,
+                "有效年龄必须取 token 与通知快照的较大值");
     }
 
     private static void retryScheduling() {
@@ -30,6 +40,9 @@ public final class LockDeliveryPolicyTest {
         check(!LockDeliveryPolicy.shouldScheduleRetry(
                         PassiveKeyLogic.Action.LOCK, true, true, 4_800_000L, true, "UNKNOWN"),
                 "当前通知按钮可用时无需旧 token 补救重试");
+        check(LockDeliveryPolicy.shouldScheduleRetry(
+                        PassiveKeyLogic.Action.LOCK, true, true, true, "UNKNOWN"),
+                "发送阶段已判定旧 token 时应安排一次上锁复核");
         check(!LockDeliveryPolicy.shouldScheduleRetry(
                         PassiveKeyLogic.Action.LOCK, true, false, 4_800_000L, false, "UNKNOWN"),
                 "用户关闭自动上锁后不得重试");
