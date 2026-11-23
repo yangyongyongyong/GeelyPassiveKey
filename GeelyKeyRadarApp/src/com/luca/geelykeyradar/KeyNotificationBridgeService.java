@@ -113,6 +113,7 @@ public class KeyNotificationBridgeService extends NotificationListenerService {
     private static volatile String lastButtonCaptureDiag = "等待解析吉利银河通知栏...";
     private static volatile Boolean textConnectionHint = null;
     private static volatile String lastControlDiagnostic = "transport=NONE result=NONE";
+    private static volatile String lastControlTransport = "NONE";
     private static volatile String lastParseDiagnostic = "NO_NOTIFICATION";
     private static final long REBIND_REQUEST_INTERVAL_MS = 2000L;
     private static final long MISSING_NOTIFICATION_RESCAN_MS = 1500L;
@@ -221,6 +222,12 @@ public class KeyNotificationBridgeService extends NotificationListenerService {
     /** 主服务在SEND_RESULT中加入实际发送通道和异常类别，与同一req_id对应。 */
     public static String getLastControlDiagnostic() {
         return lastControlDiagnostic;
+    }
+
+    /** 只有历史缓存 PI/View 才允许进入旧 token 上锁复核。 */
+    static boolean lastControlUsedCachedToken() {
+        String transport = lastControlTransport;
+        return transport.startsWith("PI_CACHED") || transport.startsWith("VIEW_CACHED");
     }
 
     /** 返回监听恢复状态，便于界面与导出日志区分“未授权”和“系统掉绑”。 */
@@ -636,6 +643,7 @@ public class KeyNotificationBridgeService extends NotificationListenerService {
 
     /** 记录本次实际返回结果，不额外发指令、不把异常正文写入文件。 */
     private static ControlResult controlResult(ControlResult result, String transport, String action, Throwable error) {
+        lastControlTransport = transport == null ? "NONE" : transport;
         lastControlDiagnostic = "transport=" + transport + " bridge_result=" + result + " bridge_action=" + action
                 + (error == null ? "" : " " + DiagnosticText.errorSummary(error));
         DiagnosticLog.detail("Notification", "BUTTON_RESULT", lastControlDiagnostic);

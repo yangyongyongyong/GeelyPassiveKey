@@ -40,22 +40,16 @@ final class LockDeliveryPolicy {
         return Math.max(tokenAgeMs, notificationAgeMs);
     }
 
-    /** 只有自动上锁、明确交付、旧 token 且没有已上锁证据时才安排一次确认重试。 */
+    /** 只有实际使用历史缓存 token 时才允许复核；当前 View 或当前 PI 成功均不得再次上锁。 */
     static boolean shouldScheduleRetry(PassiveKeyLogic.Action action, boolean delivered,
-                                       boolean currentTokenAvailable, long fallbackTokenAgeMs,
+                                       boolean staleToken, boolean cachedTokenTransport,
                                        boolean autoLock, String lockHint) {
-        boolean staleToken = isStaleFallback(currentTokenAvailable, fallbackTokenAgeMs);
-        return shouldScheduleRetry(action, delivered, staleToken, autoLock, lockHint);
-    }
-
-    /** 发送结果已判定 token 新鲜度时直接复用同一结论，避免第二次重读把旧通知改成“当前”。 */
-    static boolean shouldScheduleRetry(PassiveKeyLogic.Action action, boolean delivered,
-                                       boolean staleToken, boolean autoLock, String lockHint) {
         return action == PassiveKeyLogic.Action.LOCK
                 && delivered
                 && autoLock
                 && !"LOCKED".equals(lockHint)
-                && staleToken;
+                && staleToken
+                && cachedTokenTransport;
     }
 
     /** 到达重试时刻后，必须仍满足安全条件；任何条件变化都放弃，不累计第三次发送。 */

@@ -29,25 +29,25 @@ public final class LockDeliveryPolicyTest {
 
     private static void retryScheduling() {
         check(LockDeliveryPolicy.shouldScheduleRetry(
-                        PassiveKeyLogic.Action.LOCK, true, false, 4_800_000L, true, "UNKNOWN"),
-                "长时间旧 token 且未确认锁态时应安排一次显式上锁重试");
+                        PassiveKeyLogic.Action.LOCK, true, true, true, true, "UNKNOWN"),
+                "旧缓存 token 且未确认锁态时应安排一次显式上锁重试");
         check(LockDeliveryPolicy.shouldScheduleRetry(
-                        PassiveKeyLogic.Action.LOCK, true, false, -1L, true, ""),
-                "持久化恢复的未知年龄 token 也应安排重试");
+                        PassiveKeyLogic.Action.LOCK, true, true, true, true, ""),
+                "持久化恢复的旧 token 也应安排重试");
         check(!LockDeliveryPolicy.shouldScheduleRetry(
-                        PassiveKeyLogic.Action.UNLOCK, true, false, 4_800_000L, true, "UNKNOWN"),
+                        PassiveKeyLogic.Action.UNLOCK, true, true, true, true, "UNKNOWN"),
                 "解锁绝不能重试");
         check(!LockDeliveryPolicy.shouldScheduleRetry(
-                        PassiveKeyLogic.Action.LOCK, true, true, 4_800_000L, true, "UNKNOWN"),
-                "当前通知按钮可用时无需旧 token 补救重试");
+                        PassiveKeyLogic.Action.LOCK, true, true, false, true, "UNKNOWN"),
+                "当前 View/PI 成功交付时不得再次上锁");
         check(LockDeliveryPolicy.shouldScheduleRetry(
-                        PassiveKeyLogic.Action.LOCK, true, true, true, "UNKNOWN"),
-                "发送阶段已判定旧 token 时应安排一次上锁复核");
+                        PassiveKeyLogic.Action.LOCK, true, true, true, true, "UNKNOWN"),
+                "发送阶段已判定旧缓存 token 时应安排一次上锁复核");
         check(!LockDeliveryPolicy.shouldScheduleRetry(
-                        PassiveKeyLogic.Action.LOCK, true, false, 4_800_000L, false, "UNKNOWN"),
+                        PassiveKeyLogic.Action.LOCK, true, true, true, false, "UNKNOWN"),
                 "用户关闭自动上锁后不得重试");
         check(!LockDeliveryPolicy.shouldScheduleRetry(
-                        PassiveKeyLogic.Action.LOCK, true, false, 4_800_000L, true, "LOCKED"),
+                        PassiveKeyLogic.Action.LOCK, true, true, true, true, "LOCKED"),
                 "已观测到上锁状态时不得重试");
     }
 

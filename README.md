@@ -10,9 +10,9 @@
 
 > 一张图看懂：扫描本车 → 连接触发 → 银河鉴权 → 靠近解锁 → 离开确认上锁。连接触发阈值不等于靠近解锁阈值。
 
-当前源码版本为 **v4.6.8-min（构建 608）**：新增扫描回调健康看门狗，45 秒无真实 BLE 回调即重建扫描器，亮屏时立即复核，连续停滞时重新获取系统 Adapter/Scanner；官方银河 1.59/Android 16 的通知车控改为当前 RemoteViews 按钮优先、PendingIntent 兜底，并将 token 年龄与通知快照年龄取较大值，旧通知重新解析不再伪装成新鲜 token。v4.6.7 的上锁交付确认继续保留：旧通知 token 交付后最多执行一次显式上锁复核，并区分“已交付”与“车辆已确认”。通用 GATT 连接增量学习、星愿 `Geely_Auto/GeelyAuto` 兼容、10 秒车型兼容原始抓取和可选官方小组件备用继续保留。默认参数保持连接 `≥ -95 dBm`、靠近解锁 `≥ -75 dBm`、离开上锁 `≤ -85 dBm`、离开确认 `2.0 秒`，升级不会覆盖用户配置。详见 [v4.6.8日志修复](docs/82_20261122_scan_health_and_geely_159_notification.md)、[v4.6.7上锁交付确认](docs/81_v4_6_7_lock_delivery_confirmation.md)、[v4.6.5通用GATT连接选择](docs/77_v4_6_5_gatt_connection_delta.md)、[官方小组件备用控制](docs/79_official_widget_fallback.md) 与 [v4.6.4星愿GATT名称修复](docs/76_v4_6_4_geelyauto_gatt_alias.md)。
+当前源码版本为 **v4.6.9-min（构建 609）**：修复旧通知复核在当前 RemoteViews 按钮已成功交付后仍多锁一次的问题；现在只有实际使用历史缓存 token 才允许最多一次上锁复核。通知缺失时新增保守 GATT 学习兜底：仅当系统里存在唯一明确命名为 `GeelyAuto` / `Geely_Auto` / 吉利车名的 LE 连接时才保存本车，多个吉利连接或普通耳机、手表仍拒绝猜测。v4.6.8 的扫描回调健康看门狗、官方银河 1.59/Android 16 当前按钮优先、通知快照年龄校验继续保留。默认参数保持连接 `≥ -95 dBm`、靠近解锁 `≥ -75 dBm`、离开上锁 `≤ -85 dBm`、离开确认 `2.0 秒`，升级不会覆盖用户配置。详见 [v4.6.9重复上锁与无通知GATT](docs/83_v4_6_9_duplicate_lock_and_notificationless_gatt.md)、[v4.6.8日志修复](docs/82_20261122_scan_health_and_geely_159_notification.md)、[v4.6.7上锁交付确认](docs/81_v4_6_7_lock_delivery_confirmation.md) 与 [v4.6.5通用GATT连接选择](docs/77_v4_6_5_gatt_connection_delta.md)。
 
-当前源码 `v4.6.8-min` 继续使用稳定签名证书 `279948c5d7401188fb72c218e954fc088b8d9cd5eb1aece6dd077b19c08145c4`。本地构建继续使用稳定密钥；正式发布后仍由 Actions 自动预热、校验 Cloudflare 更新镜像。升级保留用户已保存配置。v4.2.2 的单 MiuiService、15 秒通知补扫、GATT `cmdId=5` 提前就绪与 PendingIntent 回退继续保留，详见 [v4.2.2说明](docs/58_v4_2_2_long_absence_weak_connect.md)、[v4.2.1说明](docs/57_v4_2_1_lockscreen_fast_rescan.md) 和 [v4.2.0说明](docs/56_v4_2_0_fast_auth_and_notification_fallback.md)。
+当前源码 `v4.6.9-min` 继续使用稳定签名证书 `279948c5d7401188fb72c218e954fc088b8d9cd5eb1aece6dd077b19c08145c4`。本地构建继续使用稳定密钥；正式发布后仍由 Actions 自动预热、校验 Cloudflare 更新镜像。升级保留用户已保存配置。v4.2.2 的单 MiuiService、15 秒通知补扫、GATT `cmdId=5` 提前就绪与 PendingIntent 回退继续保留，详见 [v4.2.2说明](docs/58_v4_2_2_long_absence_weak_connect.md)、[v4.2.1说明](docs/57_v4_2_1_lockscreen_fast_rescan.md) 和 [v4.2.0说明](docs/56_v4_2_0_fast_auth_and_notification_fallback.md)。
 
 ---
 
@@ -63,7 +63,7 @@
 | 机制 | 作用 |
 | :--- | :--- |
 | **阈值解释清晰** | 每项有永久标签、作用说明、单位、范围与调节方向；非法输入就地提示，推荐值仅填草稿，保存后生效。 |
-| **版本可见** | 维护 → 关于中显示 `版本：v4.6.8-min（构建 608）`，从实际安装包读取，未来升级无需改界面字符串。 |
+| **版本可见** | 维护 → 关于中显示 `版本：v4.6.9-min（构建 609）`，从实际安装包读取，未来升级无需改界面字符串。 |
 | **首包提前连接** | 已学完整本车名＋一致厂商/VIN线索不必等第二条命名广播；只是交给官方鉴权，不提前保存MAC或计RSSI，同地址正在ACL握手时不重复注入。 |
 | **多车隔离** | 学习后替换协议宽过滤，明确身份冲突先拒绝；匿名弱线索只找车，不改MAC/混RSSI。 |
 | **官方就绪即处理** | 官方钥匙通知变成「已连接」立即处理一次接近机会，已有请求仅完成它。GATT 测距已连不会提前冒充官方鉴权就绪。 |
@@ -227,6 +227,7 @@ APK 不入库（`.gitignore` 排除 `*.apk`），从 [Releases](https://github.c
 | [79](docs/79_official_widget_fallback.md) | **官方小组件备用控制**：通知优先、Widget锁态门控、手动绑定配置、单次发送与失败关闭 |
 | [80](docs/80_cloud_vehicle_status_gateway.md) | **官方云端车况网关验证**：车况接口、HMAC签名、`appId`/`tenantId`/`gl_user_id`、官方会话、root边界与只读接入方案；关键反编译节选见 [docs/reverse_engineering/geely_1_56_1/decompiled/cloud_gateway/](docs/reverse_engineering/geely_1_56_1/decompiled/cloud_gateway/) |
 | [81](docs/81_v4_6_7_lock_delivery_confirmation.md) | **v4.6.7上锁交付确认**：通知token年龄、发送前重读、旧token一次显式上锁复核、已交付/已确认分离与日志版本固化 |
+| [83](docs/83_v4_6_9_duplicate_lock_and_notificationless_gatt.md) | **v4.6.9日志修复**：当前按钮成功不再重复上锁、通知缺失时仅学习唯一吉利车名GATT连接 |
 | [82](docs/82_20261122_scan_health_and_geely_159_notification.md) | **2026-11-22日志修复**：扫描回调停滞看门狗、官方1.59/Android16按钮View优先、通知token年龄取快照最大值 |
 | [76](docs/76_v4_6_4_geelyauto_gatt_alias.md) | **v4.6.4星愿GATT修复**：真实GATT名GeelyAuto、唯一连接绑定与地址轮换 |
 | [75](docs/75_v4_6_3_starwish_and_update_chain.md) | **v4.6.3星愿兼容**：Geely_Auto发现/真实连接绑定、最高版本更新选择与发布默认值 |
@@ -258,7 +259,7 @@ APK 不入库（`.gitignore` 排除 `*.apk`），从 [Releases](https://github.c
 ANDROID_KEYSTORE=/path/to/existing.keystore SKIP_INSTALL=1 bash GeelyKeyRadarApp/build.sh
 ```
 
-先跑状态机、RSSI完整流程、曲线序列、GATT鉴权帧、待发请求、通知版本、日志轮转、诊断导出、学习资格、身份匹配、单目标选择、硬件过滤和官方就绪门控、扫描健康、通知发送通道、预连接门控、阈值表单校验、车机只读回执、授权全检及更新策略 **26组Java测试＋1组APK命名回归**，再 `aapt2` → `javac` → `d8` → `apksigner`。上例仅构建，不操作手机；显式去掉 `SKIP_INSTALL=1` 才尝试原有安装流程。产物：`GeelyKeyRadarApp/GeelyPassiveKey-v4.6.8-min-608.apk`。后续命名统一为 `GeelyPassiveKey-v<versionName>-<versionCode>.apk`，不再生成无版本别名。
+先跑状态机、RSSI完整流程、曲线序列、GATT鉴权帧、待发请求、通知版本、日志轮转、诊断导出、学习资格、身份匹配、单目标选择、硬件过滤和官方就绪门控、扫描健康、通知发送通道、无通知GATT筛选、预连接门控、阈值表单校验、车机只读回执、授权全检及更新策略 **26组Java测试＋1组APK命名回归**，再 `aapt2` → `javac` → `d8` → `apksigner`。上例仅构建，不操作手机；显式去掉 `SKIP_INSTALL=1` 才尝试原有安装流程。产物：`GeelyKeyRadarApp/GeelyPassiveKey-v4.6.9-min-609.apk`。后续命名统一为 `GeelyPassiveKey-v<versionName>-<versionCode>.apk`，不再生成无版本别名。
 
 仅查询本次版本的预期产物路径（不编译、不安装）：
 

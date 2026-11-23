@@ -311,15 +311,18 @@ public class PassiveKeyService extends Service implements SensorEventListener {
         final String source;
         final String diagnostic;
         final boolean staleNotificationToken;
+        final boolean usedCachedNotificationToken;
         final long notificationTokenAgeMs;
 
         DispatchOutcome(KeyNotificationBridgeService.ControlResult result, String source,
                         String diagnostic, boolean staleNotificationToken,
+                        boolean usedCachedNotificationToken,
                         long notificationTokenAgeMs) {
             this.result = result;
             this.source = source == null || source.isEmpty() ? "NONE" : source;
             this.diagnostic = diagnostic == null ? "" : diagnostic;
             this.staleNotificationToken = staleNotificationToken;
+            this.usedCachedNotificationToken = usedCachedNotificationToken;
             this.notificationTokenAgeMs = notificationTokenAgeMs;
         }
     }
@@ -1043,7 +1046,7 @@ public class PassiveKeyService extends Service implements SensorEventListener {
     /** 更换车辆前取消旧请求和测距状态。 */
     public void resetLearnedVehicle() {
         boolean connectedNow = isOfficialConnected();
-        VehicleIdentity connectedEvidence = findIdentityFromConnectedGatt();
+        VehicleIdentity connectedEvidence = findIdentityFromConnectedGatt(connectedNow);
         cancelPendingControl("重新学习本车");
         KeyNotificationBridgeService.markGattAuthReady(false);
         clearGattAuthObservation("reset_learning", false);
@@ -1650,18 +1653,21 @@ public class PassiveKeyService extends Service implements SensorEventListener {
                 + " " + wakeGate.diagnosticSnapshot(now));
     }
 
-    /** 官方在线后优先采用唯一GATT/ACL真实连接；近期实际注入且由银河确认的候选作为受限兜底。 */
+    /** 优先采用唯一GATT真实连接；通知在线时再用 ACL/注入候选作为受限兜底。 */
     private void maybeLearnVehicle(long now) {
-        if (!serviceEnabled || !hasBluetoothPermission() || !isOfficialConnected()) return;
+        if (!serviceEnabled || !hasBluetoothPermission()) return;
         if (lastLearnAttemptAtMs > 0L && now - lastLearnAttemptAtMs < 1000L) return;
         lastLearnAttemptAtMs = now;
+        boolean notificationConnected = isOfficialConnected();
 
         // GATT 连接列表最接近“官方 App 真正连上的那辆车”，优先使用。
-        VehicleIdentity verified = findIdentityFromConnectedGatt();
+        VehicleIdentity verified = findIdentityFromConnectedGatt(notificationConnected);
         if (verified != null) {
             adoptConnectedIdentity(verified, VehicleLearningState.CONNECTED, now);
             return;
         }
+        // ACL与注入候选没有通知锁态交叉证据，通知缺失时仍保持保守。
+        if (!notificationConnected) return;
         // 部分 ROM 不向第三方暴露系统 GATT 列表，但同一 MAC 的 ACL 事件仍可作为真实连接证据。
         VehicleIdentity aclVerified = findIdentityFromRecentAclPeer(now);
         if (aclVerified != null) {
@@ -1756,13 +1762,15 @@ public class PassiveKeyService extends Service implements SensorEventListener {
      * 从系统真实 GATT 连接选择本车，不再用车型名称作为学习白名单。
      * 优先选择官方连接前后新增的唯一 LE 设备；名称仅在多个连接的唯一消歧时使用。
      */
-    private VehicleIdentity findIdentityFromConnectedGatt() {
-        if (!hasBluetoothPermission() || !isOfficialConnected()) return null;
+    private VehicleIdentity findIdentityFromConnectedGatt(boolean notificationConnected) {
+        if (!hasBluetoothPermission()) return null;
         long now = SystemClock.elapsedRealtime();
         List<ConnectedPeerSelector.Peer> peers = currentGattPeers();
-        ConnectedPeerSelector.Selection selection =
-                ConnectedPeerSelector.select(peers, gattBaselineAddresses);
+        ConnectedPeerSelector.Selection selection = notificationConnected
+                ? ConnectedPeerSelector.select(peers, gattBaselineAddresses)
+                : ConnectedPeerSelector.selectRecognizedVehicleWithoutNotification(peers);
         DiagnosticLog.detail("Learning", "GATT_PEER_SELECTION", selection.diagnostic()
+                + " notification_connected=" + notificationConnected
                 + " addr_id=" + DiagnosticLog.fingerprint(selection.address));
         if (!selection.selected()) return null;
         BluetoothDevice device = findGattDevice(selection.address);
@@ -2046,12 +2054,17 @@ public class PassiveKeyService extends Service implements SensorEventListener {
         }
         lastControlSource = source;
         lastControlDiagnostic = diagnostic;
+        boolean usedCachedNotificationToken = result == KeyNotificationBridgeService.ControlResult.SENT
+                && source.startsWith("NOTIFICATION")
+                && KeyNotificationBridgeService.lastControlUsedCachedToken();
         DiagnosticLog.event("Control", "CONTROL_TOKEN_SOURCE", "action=" + action
-                + " source=" + source + " result=" + result + " " + diagnostic);
+                + " source=" + source + " result=" + result
+                + " cached_transport=" + usedCachedNotificationToken + " " + diagnostic);
         long tokenAge = LockDeliveryPolicy.effectiveAgeMs(
                 tokenStatus.currentAvailable ? tokenStatus.currentAgeMs : tokenStatus.fallbackAgeMs,
                 tokenStatus.notificationAgeMs);
-        return new DispatchOutcome(result, source, diagnostic, staleNotificationToken, tokenAge);
+        return new DispatchOutcome(result, source, diagnostic, staleNotificationToken,
+                usedCachedNotificationToken, tokenAge);
     }
 
     private KeyNotificationBridgeService.ControlResult sendNotificationControl(PassiveKeyLogic.Action action) {
@@ -2159,11 +2172,13 @@ public class PassiveKeyService extends Service implements SensorEventListener {
         String lockHint = currentLockHint();
         if (!outcome.staleNotificationToken
                 || !LockDeliveryPolicy.shouldScheduleRetry(action, true,
-                outcome.staleNotificationToken, autoLock, lockHint)) {
+                outcome.staleNotificationToken, outcome.usedCachedNotificationToken,
+                autoLock, lockHint)) {
             DiagnosticLog.event("Control", "LOCK_RETRY_SKIPPED", "req_id=" + requestId
                     + " lock_hint=" + (lockHint.isEmpty() ? "UNKNOWN" : lockHint)
                     + " token_age_ms=" + outcome.notificationTokenAgeMs
-                    + " stale_token=" + outcome.staleNotificationToken);
+                    + " stale_token=" + outcome.staleNotificationToken
+                    + " cached_transport=" + outcome.usedCachedNotificationToken);
             return false;
         }
         lockDeliveryRetryPending = true;
@@ -2641,7 +2656,7 @@ public class PassiveKeyService extends Service implements SensorEventListener {
     private String resolveGattAddress() {
         // 车机蓝牙地址可能轮换。先用系统 GATT 连接列表按名称/同MAC候选证据校正，
         // 再回退到已保存地址；否则地址变化后会一直挂不上 RSSI 通道。
-        VehicleIdentity verified = findIdentityFromConnectedGatt();
+        VehicleIdentity verified = findIdentityFromConnectedGatt(isOfficialConnected());
         if (verified != null) {
             adoptConnectedIdentity(verified, VehicleLearningState.CONNECTED, SystemClock.elapsedRealtime());
             return verified.address;
@@ -3045,7 +3060,7 @@ public class PassiveKeyService extends Service implements SensorEventListener {
                 }
             } catch (Throwable ignored) {
             }
-            VehicleIdentity verified = findIdentityFromConnectedGatt();
+            VehicleIdentity verified = findIdentityFromConnectedGatt(true);
             if (verified == null || !bdAddr.equalsIgnoreCase(verified.address)) return;
             lastObservedBleMac = bdAddr;
             if (dev != null) lastObservedCarDevice = dev;
@@ -3092,7 +3107,7 @@ public class PassiveKeyService extends Service implements SensorEventListener {
             maybeStartAuthObserver(device, now);
             // ACL先于官方鉴权到达时只记录握手事实；官方就绪后再学习唯一可见GATT设备。
             if (isOfficialConnected()) {
-                VehicleIdentity verified = findIdentityFromConnectedGatt();
+                VehicleIdentity verified = findIdentityFromConnectedGatt(true);
                 if (verified != null) {
                     if (addr.equalsIgnoreCase(verified.address)) {
                         adoptConnectedIdentity(verified, VehicleLearningState.ACL, now);
@@ -3207,7 +3222,7 @@ public class PassiveKeyService extends Service implements SensorEventListener {
                 appendLog("🔄 已离开车辆且蓝牙断开满 12s，已重新武装下一次靠近自动解锁");
             }
             ensureGattAttached(now);
-            if (notifConnected && (!hasCompleteIdentity() || wakeGate.needsVerifiedEarlyPeer())) {
+            if (!hasCompleteIdentity() || (notifConnected && wakeGate.needsVerifiedEarlyPeer())) {
                 maybeLearnVehicle(now);
             }
             if (notifConnected && (lastSampleAtMs == 0L || (now - lastSampleAtMs) > SIGNAL_EXPIRE_UI_MS)

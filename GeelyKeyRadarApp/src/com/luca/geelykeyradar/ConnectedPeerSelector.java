@@ -119,6 +119,27 @@ final class ConnectedPeerSelector {
                 currentLe.size(), freshLe.size(), allUnbonded.size());
     }
 
+    /**
+     * 官方通知缺失时的保守学习路径：只接受唯一明确命名为 GeelyAuto/吉利车名的 LE GATT。
+     * 有多个吉利连接时拒绝，其他唯一的耳机/手表等设备也不能被误当作车辆。
+     */
+    static Selection selectRecognizedVehicleWithoutNotification(Collection<Peer> currentPeers) {
+        Map<String, Peer> current = dedupe(currentPeers);
+        List<Peer> currentLe = new ArrayList<>();
+        for (Peer peer : current.values()) if (peer.le()) currentLe.add(peer);
+        List<Peer> recognized = new ArrayList<>();
+        for (Peer peer : currentLe) {
+            if (VehicleBeacon.isRecognizableVehicleName(peer.name)) recognized.add(peer);
+        }
+        if (recognized.size() == 1) {
+            return selection(recognized.get(0), "UNIQUE_RECOGNIZED_VEHICLE_WITHOUT_NOTIFICATION",
+                    currentLe, recognized, unbonded(currentLe));
+        }
+        return new Selection("", recognized.isEmpty() ? "NO_RECOGNIZED_VEHICLE"
+                        : "AMBIGUOUS_RECOGNIZED_VEHICLE",
+                currentLe.size(), recognized.size(), unbonded(currentLe).size());
+    }
+
     private static Map<String, Peer> dedupe(Collection<Peer> peers) {
         Map<String, Peer> result = new LinkedHashMap<>();
         if (peers == null) return result;
