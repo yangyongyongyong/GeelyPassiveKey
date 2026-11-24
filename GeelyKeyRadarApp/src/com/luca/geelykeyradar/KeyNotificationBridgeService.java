@@ -115,7 +115,6 @@ public class KeyNotificationBridgeService extends NotificationListenerService {
     private static volatile String lastControlDiagnostic = "transport=NONE result=NONE";
     private static volatile String lastControlTransport = "NONE";
     private static volatile String lastParseDiagnostic = "NO_NOTIFICATION";
-    private static final long REBIND_REQUEST_INTERVAL_MS = 2000L;
     private static final long MISSING_NOTIFICATION_RESCAN_MS = 1500L;
     private static final long FAST_RESCAN_INTERVAL_MS = 50L;
     public static final long FAST_RESCAN_WINDOW_MS = 15000L;
@@ -124,6 +123,7 @@ public class KeyNotificationBridgeService extends NotificationListenerService {
     private static final String KEY_LOCK_PI = "lock_pi";
     private static long listenerDownSinceMs = 0L;
     private static long lastRebindRequestAtMs = 0L;
+    private static int listenerRebindAttempts = 0;
     private static long lastMissingRescanAtMs = 0L;
     private static volatile long pendingFastRescanDurationMs = 0L;
     private static volatile String lastRecoveryDiagnostic = "listener_recovery=waiting";
@@ -284,19 +284,24 @@ public class KeyNotificationBridgeService extends NotificationListenerService {
         try {
             KeyNotificationBridgeService cur = instance;
             if (cur != null && cur.listenerConnected) {
+                listenerDownSinceMs = 0L;
+                listenerRebindAttempts = 0;
+                lastRecoveryDiagnostic = "listener_recovery=connected";
                 cur.scanExistingNotifications();
                 return;
             }
             if (!isNotificationListenerEnabled(context)) {
+                listenerDownSinceMs = 0L;
+                listenerRebindAttempts = 0;
+                lastRecoveryDiagnostic = "listener_recovery=access_disabled";
                 return;
             }
+            long now = SystemClock.elapsedRealtime();
             if (listenerDownSinceMs == 0L) {
-                listenerDownSinceMs = SystemClock.elapsedRealtime();
-                lastRecoveryDiagnostic = "listener_recovery=rebinding";
+                listenerDownSinceMs = now;
                 DiagnosticLog.event("Notification", "LISTENER_DOWN", "recovery_started=true source=ensure_rebound");
             }
-            requestRebindThrottled(new ComponentName(context, KeyNotificationBridgeService.class),
-                    "ensure_rebound");
+            requestRecoveryIfDue(context, "ensure_rebound", now);
         } catch (Throwable t) {
             DiagnosticLog.bridgeError("Notification", "LISTENER_REBIND_ERROR", t);
             Log.w(TAG, "ensureRebound warning: " + t.getMessage());
@@ -304,20 +309,24 @@ public class KeyNotificationBridgeService extends NotificationListenerService {
     }
 
     /**
-     * 周期性自愈：持续请求系统重绑；部分 ROM 会拒绝无图形界面的重绑，
-     * 此时明确标记需要用户到系统通知使用权页重新开关，已连接时补扫现有通知。
+     * 周期性自愈：按 0/2/5/10/30/60/300 秒退避请求系统重绑。
+     * 十秒后明确标记需要用户重新开关通知使用权，但保留五分钟一次的廉价重试，避免永久放弃。
      */
     public static void recoverIfNeeded(Context context) {
         if (context == null) return;
-        if (!isNotificationListenerEnabled(context)) {
+        long now = SystemClock.elapsedRealtime();
+        boolean accessEnabled = isNotificationListenerEnabled(context);
+        boolean connected = isListenerConnected();
+        if (!accessEnabled) {
             listenerDownSinceMs = 0L;
-            lastRecoveryDiagnostic = "listener_recovery=access_disabled";
+            listenerRebindAttempts = 0;
+            lastRecoveryDiagnostic = NotificationRecoveryPolicy.recoveryStatus(false, false, 0L);
             return;
         }
-        long now = SystemClock.elapsedRealtime();
-        if (isListenerConnected()) {
+        if (connected) {
             listenerDownSinceMs = 0L;
-            lastRecoveryDiagnostic = "listener_recovery=connected";
+            listenerRebindAttempts = 0;
+            lastRecoveryDiagnostic = NotificationRecoveryPolicy.recoveryStatus(true, true, 0L);
             rescanIfMissing(now);
             return;
         }
@@ -326,31 +335,38 @@ public class KeyNotificationBridgeService extends NotificationListenerService {
             DiagnosticLog.event("Notification", "LISTENER_DOWN", "recovery_started=true");
         }
         long downMs = Math.max(0L, now - listenerDownSinceMs);
-        if (downMs >= 10000L) {
-            lastRecoveryDiagnostic = "listener_recovery=needs_user_access_toggle";
-        } else {
-            lastRecoveryDiagnostic = "listener_recovery=rebinding";
-        }
-        ComponentName cn = new ComponentName(context, KeyNotificationBridgeService.class);
-        requestRebindThrottled(cn, "down_ms=" + downMs);
+        lastRecoveryDiagnostic = NotificationRecoveryPolicy.recoveryStatus(true, false, downMs);
+        requestRecoveryIfDue(context, "down_ms=" + downMs, now);
     }
 
     /** 手动测试发现监听掉绑时立即再请求一次重绑，随后由界面引导系统授权页修复。 */
     public static void requestImmediateRecovery(Context context) {
-        if (context == null || !isNotificationListenerEnabled(context)) return;
-        lastRebindRequestAtMs = 0L;
-        requestRebindThrottled(new ComponentName(context, KeyNotificationBridgeService.class),
-                "manual_request");
+        if (context == null || !isNotificationListenerEnabled(context) || isListenerConnected()) return;
+        long now = SystemClock.elapsedRealtime();
+        if (listenerDownSinceMs == 0L) listenerDownSinceMs = now;
+        requestRebindNow(new ComponentName(context, KeyNotificationBridgeService.class), "manual_request");
     }
 
-    /** 普通重绑请求按两秒节流，避免每五百毫秒向系统重复请求。 */
-    private static void requestRebindThrottled(ComponentName componentName, String reason) {
+    private static void requestRecoveryIfDue(Context context, String reason, long now) {
+        long downMs = listenerDownSinceMs <= 0L ? 0L : Math.max(0L, now - listenerDownSinceMs);
+        long sinceLastRequest = lastRebindRequestAtMs <= 0L
+                ? -1L : Math.max(0L, now - lastRebindRequestAtMs);
+        if (!NotificationRecoveryPolicy.shouldRequestRebind(true, false, downMs,
+                sinceLastRequest, listenerRebindAttempts)) {
+            return;
+        }
+        requestRebindNow(new ComponentName(context, KeyNotificationBridgeService.class), reason);
+    }
+
+    /** 所有系统重绑请求只从这里发出，统一记录尝试次数和实际时间。 */
+    private static void requestRebindNow(ComponentName componentName, String reason) {
         long now = SystemClock.elapsedRealtime();
-        if ((now - lastRebindRequestAtMs) < REBIND_REQUEST_INTERVAL_MS) return;
         lastRebindRequestAtMs = now;
+        listenerRebindAttempts++;
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-                DiagnosticLog.event("Notification", "LISTENER_REBIND_REQUEST", "reason=" + reason);
+                DiagnosticLog.event("Notification", "LISTENER_REBIND_REQUEST",
+                        "reason=" + reason + " attempt=" + listenerRebindAttempts);
                 NotificationListenerService.requestRebind(componentName);
             }
         } catch (Throwable t) {
@@ -743,6 +759,8 @@ public class KeyNotificationBridgeService extends NotificationListenerService {
         if (instance != this) return;
         listenerConnected = true;
         listenerDownSinceMs = 0L;
+        listenerRebindAttempts = 0;
+        lastRebindRequestAtMs = 0L;
         lastRecoveryDiagnostic = "listener_recovery=connected";
         DiagnosticLog.event("Notification", "LISTENER_CONNECTED", diagnosticSnapshot(SystemClock.elapsedRealtime()));
         notificationEpoch.invalidate();
@@ -772,12 +790,8 @@ public class KeyNotificationBridgeService extends NotificationListenerService {
         notificationEpoch.invalidate();
         Log.w(TAG, "KeyNotificationBridgeService onListenerDisconnected -> requesting rebind");
         clearOfficialNotification();
-        try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-                requestRebind(new ComponentName(this, KeyNotificationBridgeService.class));
-            }
-        } catch (Throwable ignored) {
-        }
+        requestRebindNow(new ComponentName(this, KeyNotificationBridgeService.class),
+                "listener_disconnected");
     }
 
     /** 只解析官方钥匙通知，普通业务通知不触发车控或重新拉起主服务。 */

@@ -184,6 +184,8 @@ public class PassiveKeyService extends Service implements SensorEventListener {
     private volatile long lastGeelyConnectedAtMs = 0L;
     private volatile long lastNotificationUpdateAtMs = 0L;
     private long lastListenerRebindAtMs = 0L;
+    private long lastInteractiveResumeAtMs = 0L;
+    private long lastInteractiveWakeAtMs = 0L;
     private long lastUpdateAutoCheckAtMs = 0L;
     private volatile long lastZoneLogAtMs = 0L;
     private volatile long lastLearnAttemptAtMs = 0L;
@@ -1353,11 +1355,19 @@ public class PassiveKeyService extends Service implements SensorEventListener {
             }
             isScanning = false;
             long now = SystemClock.elapsedRealtime();
+            boolean hardFailure = ScanFailurePolicy.requiresHardReset(errorCode);
+            if (hardFailure) {
+                lastScanRestartAtMs = now;
+                consecutiveStaleScanRestarts++;
+                reinitializeBluetoothScanner();
+                DiagnosticLog.event("Scan", "SCAN_FAILURE_HARD_RECOVERY", "code=" + errorCode
+                        + " stale_restarts=" + consecutiveStaleScanRestarts);
+            }
             if (!gattConnected || (now - lastGattRssiAtMs) > PassiveKeyLogic.SIGNAL_STALE_MS) {
                 logic.onSignalLost(now);
                 cancelPendingControl("扫描失败且没有新鲜连接态信号");
             }
-            long delay = (errorCode == ScanCallback.SCAN_FAILED_SCANNING_TOO_FREQUENTLY) ? 6500L : 1800L;
+            long delay = ScanFailurePolicy.retryDelayMs(errorCode);
             appendLog("BLE 扫描失败 errorCode=" + errorCode + "，" + delay + "ms 后重试");
             handler.removeCallbacks(restartScanRunnable);
             handler.postDelayed(restartScanRunnable, delay);
@@ -1877,6 +1887,8 @@ public class PassiveKeyService extends Service implements SensorEventListener {
 
         boolean chargingBlocked = isChargingBlocked();
         boolean driving = isDriving(now) || chargingBlocked;
+        boolean confirmedLocked = UnlockRecoveryPolicy.hasFreshConfirmedLock(
+                currentLockHint(), currentLockHintAtMs(), now);
         PassiveKeyLogic.Action action = logic.onSample(
                 effective,
                 smooth,
@@ -1885,7 +1897,8 @@ public class PassiveKeyService extends Service implements SensorEventListener {
                 driving,
                 autoUnlock && !chargingBlocked && hasCompleteIdentity(),
                 autoLock && !chargingBlocked && hasCompleteIdentity(),
-                source.startsWith("GATT") ? "GATT" : "SCAN"
+                source.startsWith("GATT") ? "GATT" : "SCAN",
+                confirmedLocked
         );
         recordDecision(action, now);
 
@@ -2863,9 +2876,10 @@ public class PassiveKeyService extends Service implements SensorEventListener {
      * 扫描状态为 true 不代表 Android 仍在投递回调。以真实回调年龄判断，
      * 不区分亮屏/息屏；连续两次无回调时重新获取 Adapter 与 Scanner 引用。
      */
-    private void runScanHealthWatchdog(long now) {
+    private void runScanHealthWatchdog(long now, boolean forceInteractive) {
         ScanHealthPolicy.Action action = ScanHealthPolicy.evaluate(
-                isScanning, isOfficialConnected(), compatibilityCaptureSession != null, now,
+                isScanning, isOfficialConnected(), compatibilityCaptureSession != null,
+                screenOn, forceInteractive, now,
                 lastScanStartAtMs, lastScanCallbackAtMs, lastScanRestartAtMs,
                 consecutiveStaleScanRestarts);
         if (action == ScanHealthPolicy.Action.NONE) return;
@@ -2873,16 +2887,18 @@ public class PassiveKeyService extends Service implements SensorEventListener {
         consecutiveStaleScanRestarts++;
         DiagnosticLog.event("Scan", "SCAN_HEALTH_RESTART",
                 "action=" + action + " stale_restarts=" + consecutiveStaleScanRestarts
-                        + " screen_on=" + screenOn + " " + scanDiagnostic(now, false));
-        appendDiagnostic("扫描回调看门狗：45s 无任何 BLE 回调，执行 " + action
-                + " · screen_on=" + screenOn + " stale_restarts=" + consecutiveStaleScanRestarts);
+                        + " screen_on=" + screenOn + " forced=" + forceInteractive
+                        + " " + scanDiagnostic(now, false));
+        appendDiagnostic("扫描回调看门狗：回调停滞，执行 " + action
+                + " · screen_on=" + screenOn + " forced=" + forceInteractive
+                + " stale_restarts=" + consecutiveStaleScanRestarts);
         stopBleScan();
         if (action == ScanHealthPolicy.Action.HARD_RESET) {
             consecutiveStaleScanRestarts = 0;
             reinitializeBluetoothScanner();
             appendLog("⚠ BLE 扫描回调持续停滞，已重建系统扫描器");
             handler.removeCallbacks(restartScanRunnable);
-            handler.postDelayed(restartScanRunnable, 1200L);
+            handler.postDelayed(restartScanRunnable, forceInteractive ? 100L : 1200L);
         } else {
             startBleScan();
         }
@@ -2944,6 +2960,48 @@ public class PassiveKeyService extends Service implements SensorEventListener {
     public void onAccuracyChanged(Sensor sensor, int accuracy) {
     }
 
+    /** 亮屏/解锁是系统允许前台恢复的窗口：硬恢复停滞扫描，并补拉一次官方连接。 */
+    private void handleInteractiveResume(long now, String reason) {
+        if (lastInteractiveResumeAtMs > 0L && now - lastInteractiveResumeAtMs < 1000L) return;
+        lastInteractiveResumeAtMs = now;
+        screenOn = true;
+        releaseWakeLock();
+        if (!isScanning && bluetoothAdapter != null && bluetoothAdapter.isEnabled()) {
+            startBleScan();
+        }
+        runScanHealthWatchdog(now, true);
+        KeyNotificationBridgeService.requestImmediateRecovery(this);
+        handler.removeCallbacks(interactiveWakeRunnable);
+        handler.postDelayed(interactiveWakeRunnable, 350L);
+        appendDiagnostic("亮屏恢复窗口已触发: " + reason);
+    }
+
+    private final Runnable interactiveWakeRunnable = this::retryOfficialWakeOnInteractive;
+
+    /** 扫描已看到本车但后台 startService 未拉起银河时，利用亮屏窗口补发一次真实 ScanResult。 */
+    private void retryOfficialWakeOnInteractive() {
+        if (!running || !serviceEnabled || !hasCompleteIdentity()) return;
+        GeelyAdvertisement ad = lastWakeAttemptAd != null ? lastWakeAttemptAd : currentAd;
+        if (ad == null) return;
+        long now = SystemClock.elapsedRealtime();
+        long adAge = age(now, lastTargetAdvertAtMs);
+        boolean aclSeen = wakeGate.hasRecentAclHandshake(ad.address, now);
+        long sinceLastAttempt = lastInteractiveWakeAtMs == 0L
+                ? -1L : Math.max(0L, now - lastInteractiveWakeAtMs);
+        if (!InteractiveWakePolicy.shouldWake(serviceEnabled, isOfficialConnected(), true, aclSeen,
+                adAge, sinceLastAttempt)) {
+            return;
+        }
+        lastInteractiveWakeAtMs = now;
+        DiagnosticLog.event("Bridge", "WAKE_INTERACTIVE_RETRY",
+                "reason=interactive addr_id=" + DiagnosticLog.fingerprint(ad.address)
+                        + " ad_age_ms=" + adAge + " acl_seen=" + aclSeen
+                        + " " + targetSelector.observationDiagnostic(ad, now));
+        GeelyBridge.wakeAndConnect(this, ad.scanResult, ad.carId());
+        KeyNotificationBridgeService.requestFastRescan(this, KeyNotificationBridgeService.FAST_RESCAN_WINDOW_MS);
+        scheduleWakeFallback(ad, now);
+    }
+
     private void registerSystemReceiver() {
         try {
             IntentFilter filter = new IntentFilter();
@@ -2956,6 +3014,7 @@ public class PassiveKeyService extends Service implements SensorEventListener {
             filter.addAction(Intent.ACTION_POWER_DISCONNECTED);
             filter.addAction(Intent.ACTION_SCREEN_ON);
             filter.addAction(Intent.ACTION_SCREEN_OFF);
+            filter.addAction(Intent.ACTION_USER_PRESENT);
             if (Build.VERSION.SDK_INT >= 33) {
                 registerReceiver(systemReceiver, filter, Context.RECEIVER_EXPORTED);
             } else {
@@ -3014,14 +3073,10 @@ public class PassiveKeyService extends Service implements SensorEventListener {
                 }
             } else if (Intent.ACTION_SCREEN_ON.equals(action)) {
                 DiagnosticLog.event("Power", "SCREEN_ON", "run=" + serviceRun + " " + signalDiagnostic(now));
-                screenOn = true;
-                releaseWakeLock();
-                if (!isScanning && bluetoothAdapter != null && bluetoothAdapter.isEnabled()) {
-                    startBleScan();
-                } else {
-                    // 息屏启动的扫描可能在 HyperOS 上静默不再回调；亮屏立即给停滞扫描一次恢复机会。
-                    runScanHealthWatchdog(now);
-                }
+                handleInteractiveResume(now, "screen_on");
+            } else if (Intent.ACTION_USER_PRESENT.equals(action)) {
+                DiagnosticLog.event("Power", "USER_PRESENT", "run=" + serviceRun + " " + signalDiagnostic(now));
+                handleInteractiveResume(now, "user_present");
             }
             updateNotificationIfNeeded(true);
         }
@@ -3232,7 +3287,7 @@ public class PassiveKeyService extends Service implements SensorEventListener {
                 appendLog("银河钥匙已连接，但测距暂无新样本，无法判定远离 | " + signalDiagnostic(now));
             }
             refreshWakeLock(now);
-            runScanHealthWatchdog(now);
+            runScanHealthWatchdog(now, false);
             updateNotificationIfNeeded(false);
             handler.postDelayed(this, 500L);
         }

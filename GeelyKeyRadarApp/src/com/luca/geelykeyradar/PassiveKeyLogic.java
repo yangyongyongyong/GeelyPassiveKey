@@ -152,7 +152,7 @@ final class PassiveKeyLogic {
         return onSample(approachDbm, distanceDbm, nowMs, officialConnected, driving, autoUnlock, autoLock, "RSSI");
     }
 
-    /** 同一测量来源内确认靠近和远离，广播切换到GATT的强度差不能当成人在离开。 */
+    /** 兼容旧调用：没有明确锁态证据时，RSSI 深谷回流不得补发第二次解锁。 */
     synchronized Action onSample(
             float approachDbm,
             float distanceDbm,
@@ -162,6 +162,25 @@ final class PassiveKeyLogic {
             boolean autoUnlock,
             boolean autoLock,
             String source
+    ) {
+        return onSample(approachDbm, distanceDbm, nowMs, officialConnected, driving,
+                autoUnlock, autoLock, source, false);
+    }
+
+    /**
+     * 同一测量来源内确认靠近和远离，广播切换到GATT的强度差不能当成人在离开。
+     * confirmedLocked 必须来自新鲜官方锁态；RSSI 本身不能证明车辆仍处于已上锁状态。
+     */
+    synchronized Action onSample(
+            float approachDbm,
+            float distanceDbm,
+            long nowMs,
+            boolean officialConnected,
+            boolean driving,
+            boolean autoUnlock,
+            boolean autoLock,
+            String source,
+            boolean confirmedLocked
     ) {
         if (!Float.isFinite(approachDbm) || !Float.isFinite(distanceDbm)
                 || (lastSampleAtMs > 0L && nowMs <= lastSampleAtMs)) {
@@ -215,7 +234,8 @@ final class PassiveKeyLogic {
         // 官方钥匙常会一直保持连接。长时间静置后先出现明显深谷，再恢复到解锁阈值，
         // 才允许同一连接内的第二次靠近纠偏；普通口袋/多径抖动没有完整“深谷+回升”不会放行。
         if (officialConnected && approachLatched && pendingAction == Action.NONE) {
-            Action recovery = evaluateRelockRecovery(approachDbm, distanceDbm, nowMs, driving, autoUnlock);
+            Action recovery = evaluateRelockRecovery(
+                    approachDbm, distanceDbm, nowMs, driving, autoUnlock, confirmedLocked);
             if (recovery == Action.UNLOCK) {
                 return sampleDecision(Action.UNLOCK, "RELOCK_RECOVERY_THRESHOLD_REACHED", nowMs);
             }
@@ -686,7 +706,11 @@ final class PassiveKeyLogic {
 
     /** 官方持续连接时，只有解锁后静置至少60秒、跌破解锁阈值2dB，再恢复并上升8dB才补发。 */
     private Action evaluateRelockRecovery(float approachDbm, float distanceDbm, long nowMs,
-                                          boolean driving, boolean autoUnlock) {
+                                          boolean driving, boolean autoUnlock, boolean confirmedLocked) {
+        if (!confirmedLocked) {
+            resetRelockRecoveryEvidence(relockRecoveryUsed);
+            return relockDecision(Action.NONE, "CONFIRMED_LOCK_STATE_REQUIRED", nowMs);
+        }
         if (driving || !autoUnlock || pendingAction != Action.NONE || relockRecoveryUsed
                 || lastUnlockSentAtMs == 0L || unlockRequests >= MAX_REQUESTS_PER_ACTION) {
             resetRelockRecoveryConfirmation();
@@ -801,6 +825,11 @@ final class PassiveKeyLogic {
     /** 返回最近真实执行过的样本分支；只读诊断不重新执行状态机。 */
     synchronized String getLastSampleDecision() {
         return lastSampleDecision;
+    }
+
+    /** 返回最近一次 RSSI 深谷回流纠偏分支，供日志与测试核对。 */
+    synchronized String getLastRelockDecision() {
+        return lastRelockDecision;
     }
 
     /** 返回最近官方就绪事件走过的分支，避免定时tick覆盖这条原因。 */

@@ -132,7 +132,11 @@ javac -source 11 -target 11 -d "$TEST_DIR" \
     "$APP_DIR/src/com/luca/geelykeyradar/ConnectedPeerSelector.java" \
     "$APP_DIR/src/com/luca/geelykeyradar/VehicleScanPolicy.java" \
     "$APP_DIR/src/com/luca/geelykeyradar/ScanHealthPolicy.java" \
+    "$APP_DIR/src/com/luca/geelykeyradar/ScanFailurePolicy.java" \
+    "$APP_DIR/src/com/luca/geelykeyradar/InteractiveWakePolicy.java" \
     "$APP_DIR/src/com/luca/geelykeyradar/OfficialReadyGate.java" \
+    "$APP_DIR/src/com/luca/geelykeyradar/NotificationRecoveryPolicy.java" \
+    "$APP_DIR/src/com/luca/geelykeyradar/UnlockRecoveryPolicy.java" \
     "$APP_DIR/src/com/luca/geelykeyradar/NotificationTransportPolicy.java" \
     "$APP_DIR/src/com/luca/geelykeyradar/WidgetTokenPolicy.java" \
     "$APP_DIR/src/com/luca/geelykeyradar/LockDeliveryPolicy.java" \
@@ -141,7 +145,7 @@ javac -source 11 -target 11 -d "$TEST_DIR" \
     "$APP_DIR/src/com/luca/geelykeyradar/UpdatePolicy.java" \
     "$APP_DIR/src/com/luca/geelykeyradar/LogUploadPolicy.java" \
     "$APP_DIR/tests/com/luca/geelykeyradar/"*Test.java
-for TEST_CLASS in PassiveKeyLogicTest RssiPipelineTest RssiChartSeriesTest GattAuthFrameParserTest PendingControlTest NotificationEpochTest RotatingFileLogTest DiagnosticsTest CompatibilityAdDecoderTest VehicleLearningStateTest VehicleIdentityTest VehicleTargetSelectorTest VehicleWakeGateTest ConnectedPeerSelectorTest VehicleScanPolicyTest ScanHealthPolicyTest NotificationTransportPolicyTest OfficialReadyGateTest WidgetTokenPolicyTest LockDeliveryPolicyTest ThresholdSettingsFormTest VehicleParamCodecTest PermissionAuditTest UpdatePolicyTest LiveActivityTest LogUploadPolicyTest; do
+for TEST_CLASS in PassiveKeyLogicTest RssiPipelineTest RssiChartSeriesTest GattAuthFrameParserTest PendingControlTest NotificationEpochTest RotatingFileLogTest DiagnosticsTest CompatibilityAdDecoderTest VehicleLearningStateTest VehicleIdentityTest VehicleTargetSelectorTest VehicleWakeGateTest ConnectedPeerSelectorTest VehicleScanPolicyTest ScanHealthPolicyTest ScanFailurePolicyTest InteractiveWakePolicyTest NotificationRecoveryPolicyTest UnlockRecoveryPolicyTest NotificationTransportPolicyTest OfficialReadyGateTest WidgetTokenPolicyTest LockDeliveryPolicyTest ThresholdSettingsFormTest VehicleParamCodecTest PermissionAuditTest UpdatePolicyTest LiveActivityTest LogUploadPolicyTest; do
     java -ea -cp "$TEST_DIR" "com.luca.geelykeyradar.$TEST_CLASS"
 done
 

@@ -46,6 +46,7 @@ public final class PassiveKeyLogicTest {
         manualLockResetRestoresAutomaticControl();
         relockRecoveryAfterLongQuietValleyAndReturn();
         relockRecoveryNeedsQuietDipAndRealRise();
+        relockRecoveryRejectsUnconfirmedLockState();
         nativeApproachLockRecoversOnceWhileStillNear();
         nativeApproachLockRejectsStaleOrManualLock();
         projectDefaultsMatchAdjustedSettings();
@@ -652,18 +653,18 @@ public final class PassiveKeyLogicTest {
     private static void relockRecoveryAfterLongQuietValleyAndReturn() {
         PassiveKeyLogic logic = nearSession();
         for (long time = 5_000L; time <= 61_000L; time += 5_000L) {
-            check(logic.onSample(-60f, time, true, false, true, true) == PassiveKeyLogic.Action.NONE,
+            check(logic.onSample(-60f, -60f, time, true, false, true, true, "RSSI", true) == PassiveKeyLogic.Action.NONE,
                     "持续近场不应重复解锁");
         }
-        check(logic.onSample(-78f, 62_000L, true, false, true, true) == PassiveKeyLogic.Action.NONE,
+        check(logic.onSample(-78f, -78f, 62_000L, true, false, true, true, "RSSI", true) == PassiveKeyLogic.Action.NONE,
                 "深谷只建立回流资格，不立即解锁");
-        check(logic.onSample(-64f, 63_000L, true, false, true, true) == PassiveKeyLogic.Action.UNLOCK,
+        check(logic.onSample(-64f, -64f, 63_000L, true, false, true, true, "RSSI", true) == PassiveKeyLogic.Action.UNLOCK,
                 "同连接内深谷后强回升应补一次解锁");
         check(logic.getLastSampleDecision().equals("RELOCK_RECOVERY_THRESHOLD_REACHED"),
                 "导出日志应区分长时间重靠近纠偏");
         logic.onControlSent(PassiveKeyLogic.Action.UNLOCK, 63_005L);
         for (long time = 64_000L; time <= 80_000L; time += 1_000L) {
-            check(logic.onSample(-60f, time, true, false, true, true) == PassiveKeyLogic.Action.NONE,
+            check(logic.onSample(-60f, -60f, time, true, false, true, true, "RSSI", true) == PassiveKeyLogic.Action.NONE,
                     "纠偏解锁后同一会话不得第三次发送");
         }
     }
@@ -671,23 +672,38 @@ public final class PassiveKeyLogicTest {
     /** 未满60秒、没有跌破阈值2dB，或回升不足8dB时都不能制造第二次解锁。 */
     private static void relockRecoveryNeedsQuietDipAndRealRise() {
         PassiveKeyLogic early = nearSession();
-        check(early.onSample(-78f, 20_000L, true, false, true, true) == PassiveKeyLogic.Action.NONE,
+        check(early.onSample(-78f, -78f, 20_000L, true, false, true, true, "RSSI", true) == PassiveKeyLogic.Action.NONE,
                 "60秒内的深谷不能建立资格");
-        check(early.onSample(-60f, 21_000L, true, false, true, true) == PassiveKeyLogic.Action.NONE,
+        check(early.onSample(-60f, -60f, 21_000L, true, false, true, true, "RSSI", true) == PassiveKeyLogic.Action.NONE,
                 "静置时间不足时不能补解锁");
 
         PassiveKeyLogic noDip = nearSession();
         for (long time = 5_000L; time <= 65_000L; time += 5_000L) {
-            noDip.onSample(-68f, time, true, false, true, true);
+            noDip.onSample(-68f, -68f, time, true, false, true, true, "RSSI", true);
         }
-        check(noDip.onSample(-60f, 66_000L, true, false, true, true) == PassiveKeyLogic.Action.NONE,
+        check(noDip.onSample(-60f, -60f, 66_000L, true, false, true, true, "RSSI", true) == PassiveKeyLogic.Action.NONE,
                 "始终在近场波动、没有跌破解锁阈值2dB时不能补解锁");
 
         PassiveKeyLogic shallowRise = nearSession();
-        check(shallowRise.onSample(-78f, 62_000L, true, false, true, true) == PassiveKeyLogic.Action.NONE,
+        check(shallowRise.onSample(-78f, -78f, 62_000L, true, false, true, true, "RSSI", true) == PassiveKeyLogic.Action.NONE,
                 "建立深谷");
-        check(shallowRise.onSample(-71f, 63_000L, true, false, true, true) == PassiveKeyLogic.Action.NONE,
+        check(shallowRise.onSample(-71f, -71f, 63_000L, true, false, true, true, "RSSI", true) == PassiveKeyLogic.Action.NONE,
                 "回升不足8dB时不能解锁");
+    }
+
+    /** 没有新鲜 LOCKED 状态时，长时间深谷回流不能制造第二次解锁。 */
+    private static void relockRecoveryRejectsUnconfirmedLockState() {
+        PassiveKeyLogic logic = nearSession();
+        for (long time = 5_000L; time <= 61_000L; time += 5_000L) {
+            check(logic.onSample(-60f, time, true, false, true, true) == PassiveKeyLogic.Action.NONE,
+                    "持续近场不应重复解锁");
+        }
+        check(logic.onSample(-78f, 62_000L, true, false, true, true) == PassiveKeyLogic.Action.NONE,
+                "无锁态证据时深谷只能记录，不得建立补解锁资格");
+        check(logic.onSample(-64f, 63_000L, true, false, true, true) == PassiveKeyLogic.Action.NONE,
+                "车辆仍显示已解锁时不得因 RSSI 回升再次解锁");
+        check(logic.getLastRelockDecision().equals("CONFIRMED_LOCK_STATE_REQUIRED"),
+                "日志必须明确说明缺少已锁确认");
     }
 
     /** 收到车机0x0159时，即使当前仅-70dBm，只要仍在近场且解锁已交付就允许一次当场纠偏。 */

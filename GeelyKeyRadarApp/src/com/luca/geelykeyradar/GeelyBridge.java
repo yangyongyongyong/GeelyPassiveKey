@@ -123,7 +123,7 @@ final class GeelyBridge {
             miui.setComponent(new ComponentName(GEELY_PKG, GEELY_MIUI_SERVICE));
             boolean accepted = context.bindService(miui, KEEP_ALIVE_CONNECTION,
                     Context.BIND_AUTO_CREATE | Context.BIND_IMPORTANT);
-            keepAliveBound = true;
+            keepAliveBound = accepted;
             DiagnosticLog.detail("Bridge", "KEEPALIVE_BIND_REQUEST", "component=MiuiService accepted=" + accepted);
             Log.i(TAG, "已绑定银河 MiuiService 保活");
         } catch (Throwable t) {
@@ -163,10 +163,11 @@ final class GeelyBridge {
         DiagnosticLog.detail("Bridge", "WAKE_BEGIN", "wake_id=" + wakeId
                 + " addr_id=" + DiagnosticLog.fingerprint(mac) + " rssi=" + scanResult.getRssi());
 
+        // 先绑定官方钥匙服务，再投递真实 ScanResult；后台窗口收紧时绑定更容易让进程就绪。
+        bindKeepAlive(context);
+
         // 当前1.56.1只保留Manifest声明的单一MiuiService入口；旧Receiver/GLDk/未导出服务均由兜底另行处理。
         sendMiuiService(context, ACTION_MIUI_SERVICE, safeCarId, scanResult, wakeId);
-
-        bindKeepAlive(context);
     }
 
     /** 主MiuiService约1秒仍无ACL时，仅补发一次未在Manifest声明的兼容action。 */
