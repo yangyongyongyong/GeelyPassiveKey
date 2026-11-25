@@ -1,9 +1,10 @@
 package com.luca.geelykeyradar;
 
-/** 通知监听失联恢复退避与用户介入状态回归。 */
+/** 通知监听失联恢复退避、防连击冷却与用户介入状态回归。 */
 public final class NotificationRecoveryPolicyTest {
     public static void main(String[] args) {
         retriesAreBoundedAndBackedOff();
+        immediateRebindHonorsCooldown();
         statusRequestsUserActionAfterTenSeconds();
         connectionAndAccessGatesWin();
         System.out.println("NotificationRecoveryPolicyTest passed");
@@ -30,6 +31,23 @@ public final class NotificationRecoveryPolicyTest {
                 "长期失败后退避到五分钟");
     }
 
+    private static void immediateRebindHonorsCooldown() {
+        check(NotificationRecoveryPolicy.shouldRequestImmediateRebind(true, false, -1L, false),
+                "首次交互恢复应立即允许重绑");
+        check(!NotificationRecoveryPolicy.shouldRequestImmediateRebind(
+                        true, false, NotificationRecoveryPolicy.IMMEDIATE_REBIND_COOLDOWN_MS - 1L, false),
+                "五秒内 onResume/亮屏/解锁不得同秒连续触发 requestRebind");
+        check(NotificationRecoveryPolicy.shouldRequestImmediateRebind(
+                        true, false, NotificationRecoveryPolicy.IMMEDIATE_REBIND_COOLDOWN_MS, false),
+                "达到五秒冷却后允许再次交互恢复");
+        check(!NotificationRecoveryPolicy.shouldRequestImmediateRebind(
+                        true, false, NotificationRecoveryPolicy.USER_CLICK_COOLDOWN_MS - 1L, true),
+                "用户连点按钮一点五秒内仍应防抖");
+        check(NotificationRecoveryPolicy.shouldRequestImmediateRebind(
+                        true, false, NotificationRecoveryPolicy.USER_CLICK_COOLDOWN_MS, true),
+                "用户显式点击超过一点五秒应允许重绑");
+    }
+
     private static void statusRequestsUserActionAfterTenSeconds() {
         check("listener_recovery=rebinding".equals(
                         NotificationRecoveryPolicy.recoveryStatus(true, false, 9_999L)),
@@ -44,6 +62,10 @@ public final class NotificationRecoveryPolicyTest {
                 "系统设置未授权时不应继续 requestRebind");
         check(!NotificationRecoveryPolicy.shouldRequestRebind(true, true, 60_000L, -1L, 0),
                 "监听已连接时不得再重绑");
+        check(!NotificationRecoveryPolicy.shouldRequestImmediateRebind(false, false, -1L, true),
+                "系统设置未授权时立即恢复也必须拒绝");
+        check(!NotificationRecoveryPolicy.shouldRequestImmediateRebind(true, true, -1L, true),
+                "监听已连接时立即恢复也必须拒绝");
         check("listener_recovery=access_disabled".equals(
                         NotificationRecoveryPolicy.recoveryStatus(false, false, 60_000L)),
                 "未授权状态必须可诊断");

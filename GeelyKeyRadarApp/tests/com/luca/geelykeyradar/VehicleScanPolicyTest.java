@@ -8,6 +8,8 @@ public final class VehicleScanPolicyTest {
         manufacturerPrefixIsDiscoveryOnly();
         manualHintUsesTailMask();
         learningIsFilteredAndBudgeted();
+        geelyAutoGattLearningAllowsBothNameVariants();
+        compatibilityCaptureBlocksFilterRefresh();
         System.out.println("VehicleScanPolicyTest passed");
     }
 
@@ -106,6 +108,37 @@ public final class VehicleScanPolicyTest {
         check(budget.delayMs(31000) == 0, "最老启动离开窗口后可重配置");
         budget.started(31000);
         check(budget.delayMs(31001) > 0, "刚完成重建时不立即再重建");
+    }
+
+
+    /** 星愿通过 GATT 学到 GeelyAuto 且无厂商签名时，仍必须同时放行 GeelyAuto 与 Geely_Auto。 */
+    private static void geelyAutoGattLearningAllowsBothNameVariants() {
+        VehicleIdentity identity = new VehicleIdentity("AA:00:00:00:00:99", "GeelyAuto", "", "", "", -1, 1000L);
+        VehicleScanPolicy.Plan plan = VehicleScanPolicy.build(identity);
+        check("TRACKING".equals(plan.mode), "已有真实MAC时进入TRACKING");
+        int nameCount = 0;
+        for (VehicleScanPolicy.Rule rule : plan.rules) {
+            if (rule.kind == VehicleScanPolicy.Kind.NAME) nameCount++;
+        }
+        check(nameCount == 2 && plan.rules.size() == 3, "应包含地址和两种 GeelyAuto/Geely_Auto 名称规则");
+        check(plan.matches(VehicleBeacon.parse("BB:00:00:00:00:01", "GeelyAuto", -70, 1000L, null, null, null, false)),
+                "必须匹配 GeelyAuto 广播");
+        check(plan.matches(VehicleBeacon.parse("BB:00:00:00:00:01", "Geely_Auto", -70, 1000L, null, null, null, false)),
+                "必须匹配 Geely_Auto 广播");
+        check(!plan.matches(VehicleBeacon.parse("BB:00:00:00:00:02", "OtherCar", -70, 1000L, null, null, null, false)),
+                "非目标名称和地址不得匹配");
+    }
+
+    /** 10 秒兼容抓包期间禁止后台过滤重配置打断原始抓取。 */
+    private static void compatibilityCaptureBlocksFilterRefresh() {
+        check(!VehicleScanPolicy.shouldRefreshScanFilters(true, true, true, true, "TRACKING|a", "COMPATIBILITY_RAW"),
+                "兼容抓包期间不得触发过滤重配置");
+        check(VehicleScanPolicy.shouldRefreshScanFilters(true, true, true, false, "TRACKING|a", "LEARNING|b"),
+                "非兼容抓包且过滤计划变化时允许重配置");
+        check(!VehicleScanPolicy.shouldRefreshScanFilters(true, true, true, false, "TRACKING|a", "TRACKING|a"),
+                "过滤计划未变化时不得重配置");
+        check(!VehicleScanPolicy.shouldRefreshScanFilters(true, true, false, false, "TRACKING|a", "STOPPED"),
+                "未扫描时不得重配置");
     }
 
     /** 构造厂商前缀一致且末两位可控的短合成广告。 */

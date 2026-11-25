@@ -461,7 +461,7 @@ public class PermissionGuideActivity extends Activity {
         if (row != null && row.isWaiting()) {
             return infoCard("授权没有被撤销",
                     "系统设置里的允许记录仍在，只是 NotificationListenerService 尚未绑定。"
-                            + "覆盖安装、强行停止或低内存回收后很常见。App 正在每 2 秒请求系统重绑，"
+                            + "覆盖安装、强行停止或低内存回收后很常见。App 正在按退避间隔请求系统重绑，"
                             + "通常会在几秒内自动恢复。",
                     COLOR_AMBER_SOFT, COLOR_AMBER);
         }
@@ -469,7 +469,7 @@ public class PermissionGuideActivity extends Activity {
             return infoCard("授权还在，监听未绑定",
                     "“已允许”只代表系统保留了授权记录，不代表当前进程已经收到通知。"
                             + "如果自动重试超过 10 秒仍未恢复，请在系统页把“银河无感钥匙通知桥接”"
-                            + "关闭一次再打开；这不是重新授权，而是强制 vivo 重新绑定服务。",
+                            + "关闭一次再打开；这不是重新授权，而是强制系统重新绑定服务。",
                     COLOR_RED_SOFT, COLOR_RED);
         }
         return infoCard("需要开启通知使用权",
@@ -632,7 +632,7 @@ public class PermissionGuideActivity extends Activity {
                         toast("无法打开银河 App");
                     }
                 } else {
-                    toast("请先安装并登录银河 App");
+                    toast("当前容器未检测到银河 App；若使用鸿蒙卓易通或隐私空间，请与银河装在同一空间");
                 }
                 break;
             default:
@@ -693,7 +693,7 @@ public class PermissionGuideActivity extends Activity {
             case LISTENER: {
                 PermissionAudit.Row row = result.row(PermissionAudit.Item.LISTENER);
                 if (row != null && row.isWaiting()) {
-                    KeyNotificationBridgeService.requestImmediateRecovery(this);
+                    KeyNotificationBridgeService.requestUserTriggeredRecovery(this);
                     toast("已立即请求系统重新绑定通知桥接");
                     handler.postDelayed(this::refreshUi, 500L);
                 } else {

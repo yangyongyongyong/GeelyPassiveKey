@@ -10,6 +10,7 @@ import android.appwidget.AppWidgetProviderInfo;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
+import android.content.res.Resources;
 import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
@@ -39,17 +40,7 @@ final class WidgetTokenBridge {
     private static final long CONFIRM_FIRST_DELAY_MS = 600L;
     private static final long CONFIRM_SECOND_DELAY_MS = 1600L;
 
-    // 官方 1.56.1 resources.arsc 中的布局/图标 ID。
-    private static final int ID_WG_VIEW_FUN_LOADING = 0x7f0a2123;
-    private static final int ID_WG_VIEW_FUN_STATUS = 0x7f0a2124;
-    private static final int ID_WG_MIDDLE_CONFIRM_OK = 0x7f0a20fd;
-    private static final int ID_WG_BTN_SETTING = 0x7f0a20da;
-    private static final int ID_WG_LL_APP_ADDITION = 0x7f0a20f7;
-    private static final int[] LOCK_ICON_IDS = {
-            0x7f0f039e, // car_wg_funicon_door_lock_off_black
-            0x7f0f039f, // car_wg_funicon_door_lock_off_white
-            0x7f0f03a0  // car_wg_funicon_door_lock_on
-    };
+    private static WidgetRemoteViewsSpec remoteViewsSpec;
 
     private static final Object STATE_LOCK = new Object();
     private static final ComponentName PROVIDER = new ComponentName(GEELY_PKG, WG_PROVIDER);
@@ -295,7 +286,8 @@ final class WidgetTokenBridge {
             synchronized (STATE_LOCK) {
                 providerInfo = info;
             }
-            if (appWidgetManager.bindAppWidgetIdIfAllowed(widgetId, PROVIDER)) {
+            if (isWidgetBoundToProvider(appWidgetManager, widgetId)
+                    || appWidgetManager.bindAppWidgetIdIfAllowed(widgetId, PROVIDER)) {
                 attachHost(info);
                 return null;
             }
@@ -352,7 +344,8 @@ final class WidgetTokenBridge {
                 }
                 return false;
             }
-            if (!appWidgetManager.bindAppWidgetIdIfAllowed(widgetId, PROVIDER)) {
+            if (!isWidgetBoundToProvider(appWidgetManager, widgetId)
+                    && !appWidgetManager.bindAppWidgetIdIfAllowed(widgetId, PROVIDER)) {
                 synchronized (STATE_LOCK) {
                     status = "系统未允许绑定官方小组件";
                     lastDiagnostic = "widget=bind_denied id=" + widgetId;
@@ -446,7 +439,8 @@ final class WidgetTokenBridge {
         synchronized (STATE_LOCK) {
             providerInfo = info;
         }
-        boolean bound = appWidgetManager.bindAppWidgetIdIfAllowed(widgetId, PROVIDER);
+        boolean bound = isWidgetBoundToProvider(appWidgetManager, widgetId)
+                || appWidgetManager.bindAppWidgetIdIfAllowed(widgetId, PROVIDER);
         synchronized (STATE_LOCK) {
             status = bound ? "已绑定，等待官方车锁控件" : "需要允许绑定官方小组件";
             lastDiagnostic = "widget=" + (bound ? "bound id=" + widgetId : "bind_permission_required id=" + widgetId);
@@ -500,10 +494,40 @@ final class WidgetTokenBridge {
     private static void ensureHostLocked() {
         if (appContext == null) return;
         if (appWidgetManager == null) appWidgetManager = AppWidgetManager.getInstance(appContext);
-        if (host == null) host = new AppWidgetHost(appContext, HOST_ID);
+        if (host == null) host = new BridgeHost(appContext, HOST_ID);
         if (widgetId < 0) {
             int[] existing = host.getAppWidgetIds();
-            widgetId = existing != null && existing.length > 0 ? existing[0] : host.allocateAppWidgetId();
+            int chosen = -1;
+            if (existing != null) {
+                for (int candidate : existing) {
+                    if (isWidgetBoundToProvider(appWidgetManager, candidate)) {
+                        chosen = candidate;
+                        break;
+                    }
+                }
+                if (chosen < 0 && existing.length > 0) {
+                    chosen = existing[0];
+                }
+                for (int candidate : existing) {
+                    if (candidate != chosen) {
+                        try {
+                            host.deleteAppWidgetId(candidate);
+                        } catch (Throwable ignored) {
+                        }
+                    }
+                }
+            }
+            widgetId = chosen >= 0 ? chosen : host.allocateAppWidgetId();
+        }
+    }
+
+    private static boolean isWidgetBoundToProvider(AppWidgetManager manager, int id) {
+        if (manager == null || id < 0) return false;
+        try {
+            AppWidgetProviderInfo existingInfo = manager.getAppWidgetInfo(id);
+            return existingInfo != null && PROVIDER.equals(existingInfo.provider);
+        } catch (Throwable ignored) {
+            return false;
         }
     }
 
@@ -596,6 +620,7 @@ final class WidgetTokenBridge {
             hostView = null;
             appWidgetManager = null;
             providerInfo = null;
+            remoteViewsSpec = null;
             widgetId = -1;
             lockClickToken = null;
             lockConfirmToken = null;
@@ -623,9 +648,26 @@ final class WidgetTokenBridge {
         }
     }
 
-    /** 从 AppWidgetHostView 的私有字段读取官方 RemoteViews；这是现有通知桥接同类的受控反射。 */
+    private static void onHostViewRemoteViewsUpdated(BridgeHostView view, RemoteViews remoteViews) {
+        synchronized (STATE_LOCK) {
+            if (!started || hostView != view) return;
+        }
+        try {
+            inspectRemoteViews(remoteViews, false);
+        } catch (Throwable t) {
+            synchronized (STATE_LOCK) {
+                lastDiagnostic = "widget=remoteviews_error " + t.getClass().getSimpleName();
+            }
+        }
+    }
+
+    /** 优先使用 AppWidgetHostView.updateAppWidget 公开回调捕获的 RemoteViews，失败时再回退私有字段反射。 */
     private static RemoteViews findRemoteViews(Object view) {
         if (view == null) return null;
+        if (view instanceof BridgeHostView) {
+            RemoteViews direct = ((BridgeHostView) view).capturedRemoteViews;
+            if (direct != null) return direct;
+        }
         for (Class<?> c = view.getClass(); c != null && c != Object.class; c = c.getSuperclass()) {
             for (String fieldName : new String[]{"mLastInflatedRemoteViews", "mRemoteViews"}) {
                 try {
@@ -649,8 +691,9 @@ final class WidgetTokenBridge {
             if (!force && identity == lastRemoteViewsIdentity) return;
             lastRemoteViewsIdentity = identity;
         }
+        WidgetRemoteViewsSpec spec = getOrResolveRemoteViewsSpec();
         Visit visit = new Visit();
-        scanRemoteViews(root, visit);
+        scanRemoteViews(root, visit, spec);
         boolean click = visit.lockClick != null;
         boolean confirm = visit.lockConfirm != null;
         long now = SystemClock.elapsedRealtime();
@@ -686,9 +729,47 @@ final class WidgetTokenBridge {
         }
     }
 
-    private static void scanRemoteViews(RemoteViews rv, Visit visit) {
+    private static WidgetRemoteViewsSpec getOrResolveRemoteViewsSpec() {
+        Context ctx;
+        synchronized (STATE_LOCK) {
+            if (remoteViewsSpec != null) return remoteViewsSpec;
+            ctx = appContext;
+        }
+        WidgetRemoteViewsSpec resolved = resolveRemoteViewsSpec(ctx);
+        synchronized (STATE_LOCK) {
+            if (remoteViewsSpec == null) remoteViewsSpec = resolved;
+            return remoteViewsSpec;
+        }
+    }
+
+    private static WidgetRemoteViewsSpec resolveRemoteViewsSpec(Context context) {
+        if (context == null) return WidgetRemoteViewsSpec.defaults();
+        try {
+            Context pkgCtx = context.createPackageContext(GEELY_PKG, Context.CONTEXT_IGNORE_SECURITY);
+            Resources res = pkgCtx.getResources();
+            int loadingId = res.getIdentifier(WidgetRemoteViewsSpec.NAME_VIEW_FUN_LOADING, "id", GEELY_PKG);
+            int statusId = res.getIdentifier(WidgetRemoteViewsSpec.NAME_VIEW_FUN_STATUS, "id", GEELY_PKG);
+            int confirmOkId = res.getIdentifier(WidgetRemoteViewsSpec.NAME_CONFIRM_OK, "id", GEELY_PKG);
+            int settingId = res.getIdentifier(WidgetRemoteViewsSpec.NAME_BTN_SETTING, "id", GEELY_PKG);
+            int appAdditionId = res.getIdentifier(WidgetRemoteViewsSpec.NAME_LL_APP_ADDITION, "id", GEELY_PKG);
+            int lockOffBlackId = resolveDrawableId(res, WidgetRemoteViewsSpec.NAME_ICON_LOCK_OFF_BLACK);
+            int lockOffWhiteId = resolveDrawableId(res, WidgetRemoteViewsSpec.NAME_ICON_LOCK_OFF_WHITE);
+            int lockOnId = resolveDrawableId(res, WidgetRemoteViewsSpec.NAME_ICON_LOCK_ON);
+            return WidgetRemoteViewsSpec.create(loadingId, statusId, confirmOkId, settingId,
+                    appAdditionId, lockOffBlackId, lockOffWhiteId, lockOnId);
+        } catch (Throwable ignored) {
+            return WidgetRemoteViewsSpec.defaults();
+        }
+    }
+
+    private static int resolveDrawableId(Resources res, String name) {
+        int id = res.getIdentifier(name, "drawable", GEELY_PKG);
+        return id != 0 ? id : res.getIdentifier(name, "mipmap", GEELY_PKG);
+    }
+
+    private static void scanRemoteViews(RemoteViews rv, Visit visit, WidgetRemoteViewsSpec spec) {
         if (rv == null || !visit.visited.add(rv)) return;
-        String lockHint = lockHintFromIcon(rv);
+        String lockHint = lockHintFromIcon(rv, spec);
         try {
             Field actionsField = RemoteViews.class.getDeclaredField("mActions");
             actionsField.setAccessible(true);
@@ -696,25 +777,24 @@ final class WidgetTokenBridge {
             if (!(raw instanceof Iterable)) return;
             for (Object action : (Iterable<?>) raw) {
                 if (action == null) continue;
-                int viewId = readInt(action, "mViewId");
+                int viewId = readViewId(action);
                 PendingIntent actionPendingIntent = readPendingIntent(action);
-                if (viewId == ID_WG_BTN_SETTING && actionPendingIntent != null) {
+                if (spec.isSettingView(viewId) && actionPendingIntent != null) {
                     visit.config = actionPendingIntent;
-                } else if (viewId == ID_WG_LL_APP_ADDITION && visit.config == null
+                } else if (spec.isAppAdditionView(viewId) && visit.config == null
                         && actionPendingIntent != null) {
                     visit.config = actionPendingIntent;
                 }
                 PendingIntent pi = actionPendingIntent;
                 if (pi != null) {
-                    if (viewId == ID_WG_MIDDLE_CONFIRM_OK) visit.lockConfirm = pi;
-                    if ((viewId == ID_WG_VIEW_FUN_STATUS || viewId == ID_WG_VIEW_FUN_LOADING)
-                            && lockHint != null) {
+                    if (spec.isConfirmOkView(viewId)) visit.lockConfirm = pi;
+                    if (spec.isFunStatusView(viewId) && lockHint != null) {
                         visit.lockClick = pi;
                         visit.lockHint = lockHint;
                     }
                 }
                 Object nested = readField(action, "mNestedViews");
-                if (nested instanceof RemoteViews) scanRemoteViews((RemoteViews) nested, visit);
+                if (nested instanceof RemoteViews) scanRemoteViews((RemoteViews) nested, visit, spec);
             }
         } catch (Throwable ignored) {
         }
@@ -725,7 +805,7 @@ final class WidgetTokenBridge {
      * WidgetFunTypeIcon 在 onStatus 时显示 car_wg_funicon_door_lock_on（开锁图标）。
      * 因此 on 资源表示 UNLOCKED，两个 off 资源表示 LOCKED。
      */
-    private static String lockHintFromIcon(RemoteViews rv) {
+    private static String lockHintFromIcon(RemoteViews rv, WidgetRemoteViewsSpec spec) {
         String result = null;
         try {
             Field actionsField = RemoteViews.class.getDeclaredField("mActions");
@@ -739,9 +819,7 @@ final class WidgetTokenBridge {
                 Object value = readField(action, "mValue");
                 if (!(value instanceof Number)) continue;
                 int resourceId = ((Number) value).intValue();
-                String candidate = resourceId == LOCK_ICON_IDS[2] ? "UNLOCKED"
-                        : (resourceId == LOCK_ICON_IDS[0] || resourceId == LOCK_ICON_IDS[1]
-                        ? "LOCKED" : null);
+                String candidate = spec.lockHintForDrawable(resourceId);
                 if (candidate == null) continue;
                 if (result != null && !result.equals(candidate)) return null;
                 result = candidate;
@@ -749,6 +827,11 @@ final class WidgetTokenBridge {
         } catch (Throwable ignored) {
         }
         return result;
+    }
+
+    private static int readViewId(Object action) {
+        int id = readInt(action, "mViewId");
+        return id != 0 ? id : readInt(action, "viewId");
     }
 
     private static PendingIntent readPendingIntent(Object action) {
@@ -826,6 +909,40 @@ final class WidgetTokenBridge {
             pendingIntent.send(null, 0, null, null, null, null, options.toBundle());
         } else {
             pendingIntent.send();
+        }
+    }
+
+    private static final class BridgeHost extends AppWidgetHost {
+        BridgeHost(Context context, int hostId) {
+            super(context, hostId);
+        }
+
+        @Override
+        protected AppWidgetHostView onCreateView(Context context, int appWidgetId,
+                                                 AppWidgetProviderInfo appWidget) {
+            return new BridgeHostView(context);
+        }
+    }
+
+    private static final class BridgeHostView extends AppWidgetHostView {
+        volatile RemoteViews capturedRemoteViews;
+
+        BridgeHostView(Context context) {
+            super(context);
+        }
+
+        @Override
+        public void updateAppWidget(RemoteViews remoteViews) {
+            if (remoteViews != null) {
+                capturedRemoteViews = remoteViews;
+            }
+            try {
+                super.updateAppWidget(remoteViews);
+            } catch (Throwable ignored) {
+            }
+            if (remoteViews != null) {
+                onHostViewRemoteViewsUpdated(this, remoteViews);
+            }
         }
     }
 

@@ -1000,7 +1000,7 @@ public class MainActivity extends Activity {
                     + "通知监听：" + notificationStatusText(notificationAccess, listenerConnected) + "\n"
                     + "系统通知权限：" + yesNo(notificationRuntimePermission) + "\n"
                     + "电池白名单：" + yesNo(batteryWhitelisted) + "\n"
-                    + "银河 App：" + (geelyInstalled ? "已安装" : "未安装"));
+                    + "银河 App：" + (geelyInstalled ? "已安装" : "当前空间未检测到（鸿蒙/隐私空间需与银河装在同一容器）"));
             identityView.setText("等待服务启动");
             VehicleIdentityStore store = new VehicleIdentityStore(this);
             thresholdView.setText(ThresholdSettingsForm.configuredSummary(

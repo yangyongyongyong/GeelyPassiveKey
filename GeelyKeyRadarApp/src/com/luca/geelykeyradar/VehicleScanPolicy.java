@@ -79,7 +79,15 @@ final class VehicleScanPolicy {
             }
             String name = VehicleBeacon.isRecognizableVehicleName(identity.name) ? identity.name
                     : (identity.vinTail3.length() == 3 ? "GeelyVehicle" + identity.vinTail3 : "");
-            if (VehicleBeacon.isRecognizableVehicleName(name)) rules.add(simple(Kind.NAME, name));
+            if (VehicleBeacon.isRecognizableVehicleName(name)) {
+                if (VehicleBeacon.isGeelyAutoName(name)) {
+                    // 星愿/熊猫等车型在 GATT 与 BLE 广播层可能混用 GeelyAuto 与 Geely_Auto，双拼写一并放行。
+                    rules.add(simple(Kind.NAME, "GeelyAuto"));
+                    rules.add(simple(Kind.NAME, "Geely_Auto"));
+                } else {
+                    rules.add(simple(Kind.NAME, name));
+                }
+            }
             if (identity.hasUsableSignature()) {
                 byte[] prefix = identity.manufacturerPrefix();
                 if (VehicleDiscoverySignature.isUsableForTail(prefix, identity.effectiveTail2())) {
@@ -110,6 +118,13 @@ final class VehicleScanPolicy {
         rules.add(simple(Kind.NAME, "Geely_Auto"));
         rules.add(simple(Kind.NAME, "GeelyAuto"));
         return new Plan("LEARNING", rules);
+    }
+
+    /** 兼容抓包期间不得触发过滤重配置，否则会打断 10 秒无过滤原始抓取。 */
+    static boolean shouldRefreshScanFilters(boolean running, boolean serviceEnabled, boolean scanning,
+                                            boolean compatibilityCapture, String desiredKey, String activeKey) {
+        if (!running || !serviceEnabled || !scanning || compatibilityCapture) return false;
+        return desiredKey != null && !desiredKey.equals(activeKey);
     }
 
     /** 地址、名称及UUID规则不携带无关厂商字段，避免误用列表AND语义。 */

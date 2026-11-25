@@ -339,12 +339,27 @@ public class KeyNotificationBridgeService extends NotificationListenerService {
         requestRecoveryIfDue(context, "down_ms=" + downMs, now);
     }
 
-    /** 手动测试发现监听掉绑时立即再请求一次重绑，随后由界面引导系统授权页修复。 */
+    /** 交互恢复（切回前台/亮屏/解锁/手动发送前）保留冷却间隔，避免同秒连轰系统绑定队列。 */
     public static void requestImmediateRecovery(Context context) {
+        requestImmediateRecoveryInternal(context, false, "interactive_recovery");
+    }
+
+    /** 用户在引导页显式点击“立即重试绑定”时使用较短防抖冷却。 */
+    public static void requestUserTriggeredRecovery(Context context) {
+        requestImmediateRecoveryInternal(context, true, "manual_request");
+    }
+
+    private static void requestImmediateRecoveryInternal(Context context, boolean userTriggered, String reason) {
         if (context == null || !isNotificationListenerEnabled(context) || isListenerConnected()) return;
         long now = SystemClock.elapsedRealtime();
         if (listenerDownSinceMs == 0L) listenerDownSinceMs = now;
-        requestRebindNow(new ComponentName(context, KeyNotificationBridgeService.class), "manual_request");
+        long sinceLastRequest = lastRebindRequestAtMs <= 0L
+                ? -1L : Math.max(0L, now - lastRebindRequestAtMs);
+        if (!NotificationRecoveryPolicy.shouldRequestImmediateRebind(
+                true, false, sinceLastRequest, userTriggered)) {
+            return;
+        }
+        requestRebindNow(new ComponentName(context, KeyNotificationBridgeService.class), reason);
     }
 
     private static void requestRecoveryIfDue(Context context, String reason, long now) {

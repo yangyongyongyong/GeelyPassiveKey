@@ -186,6 +186,7 @@ public class PassiveKeyService extends Service implements SensorEventListener {
     private long lastListenerRebindAtMs = 0L;
     private long lastInteractiveResumeAtMs = 0L;
     private long lastInteractiveWakeAtMs = 0L;
+    private long lastWakeUnavailableLogAtMs = 0L;
     private long lastUpdateAutoCheckAtMs = 0L;
     private volatile long lastZoneLogAtMs = 0L;
     private volatile long lastLearnAttemptAtMs = 0L;
@@ -625,6 +626,7 @@ public class PassiveKeyService extends Service implements SensorEventListener {
             finishCompatibilityCapture("bluetooth_unavailable");
             return;
         }
+        handler.removeCallbacks(refreshScanFiltersRunnable);
         try {
             stopBleScan();
             bleScanner = bluetoothAdapter.getBluetoothLeScanner();
@@ -1207,12 +1209,15 @@ public class PassiveKeyService extends Service implements SensorEventListener {
     }
 
     private final Runnable refreshScanFiltersRunnable = new Runnable() {
-        /** 合并身份补全产生的重配置，等待启动预算时保留旧扫描，不制造扫描空窗。 */
+        /** 合并身份补全产生的重配置，等待启动预算时保留旧扫描，不制造扫描空窗；兼容抓包期间禁止重配置。 */
         @Override
         public void run() {
-            if (!running || !serviceEnabled || !isScanning) return;
             VehicleScanPolicy.Plan desired = VehicleScanPolicy.build(identity);
-            if (desired.key.equals(activeScanPlanKey)) return;
+            if (!VehicleScanPolicy.shouldRefreshScanFilters(
+                    running, serviceEnabled, isScanning,
+                    compatibilityCaptureSession != null, desired.key, activeScanPlanKey)) {
+                return;
+            }
             long delay = SCAN_RESTART_BUDGET.delayMs(SystemClock.elapsedRealtime());
             if (delay > 0L) {
                 handler.postDelayed(this, delay);
@@ -1225,10 +1230,14 @@ public class PassiveKeyService extends Service implements SensorEventListener {
         }
     };
 
-    /** 仅在实际过滤内容变化时请求重建，不在每个广播回调中反复stop/start。 */
+    /** 仅在实际过滤内容变化且未处于兼容原始抓包时请求重建，不在每个广播回调中反复stop/start。 */
     private void requestScanFilterRefresh() {
-        if (!running || !serviceEnabled || !isScanning) return;
-        if (VehicleScanPolicy.build(identity).key.equals(activeScanPlanKey)) return;
+        VehicleScanPolicy.Plan desired = VehicleScanPolicy.build(identity);
+        if (!VehicleScanPolicy.shouldRefreshScanFilters(
+                running, serviceEnabled, isScanning,
+                compatibilityCaptureSession != null, desired.key, activeScanPlanKey)) {
+            return;
+        }
         if (!handler.hasCallbacks(refreshScanFiltersRunnable)) {
             handler.postDelayed(refreshScanFiltersRunnable, 750L);
         }
@@ -1518,6 +1527,16 @@ public class PassiveKeyService extends Service implements SensorEventListener {
 
     /** 所有预连接共用单目标预算和按地址ACL保护；提前连接与可信测距严格分开。 */
     private void maybeWakeGeely(GeelyAdvertisement ad, long now, boolean advertisedName) {
+        if (!GeelyBridge.isGeelyInstalled(this)) {
+            if (InteractiveWakePolicy.shouldLogUnavailable(lastWakeUnavailableLogAtMs, now)) {
+                lastWakeUnavailableLogAtMs = now;
+                DiagnosticLog.event("Bridge", "WAKE_UNAVAILABLE",
+                        "official_app_installed=false reason=official_app_missing addr_id="
+                                + (ad == null ? "none" : DiagnosticLog.fingerprint(ad.address)));
+                appendDiagnostic("当前容器未检测到银河 App，已跳过唤醒（鸿蒙跨容器不可互调）");
+            }
+            return;
+        }
         updateVehicleAbsenceState(now);
         VehicleWakeGate.Result result = wakeGate.claim(ad, identity, serviceEnabled && running,
                 geelyConnected, advertisedName, now, true, longAbsenceSessionStartedAtMs);
@@ -2988,8 +3007,15 @@ public class PassiveKeyService extends Service implements SensorEventListener {
         boolean aclSeen = wakeGate.hasRecentAclHandshake(ad.address, now);
         long sinceLastAttempt = lastInteractiveWakeAtMs == 0L
                 ? -1L : Math.max(0L, now - lastInteractiveWakeAtMs);
-        if (!InteractiveWakePolicy.shouldWake(serviceEnabled, isOfficialConnected(), true, aclSeen,
-                adAge, sinceLastAttempt)) {
+        boolean officialInstalled = GeelyBridge.isGeelyInstalled(this);
+        if (!InteractiveWakePolicy.shouldWake(serviceEnabled, officialInstalled, isOfficialConnected(),
+                true, aclSeen, adAge, sinceLastAttempt)) {
+            if (!officialInstalled && InteractiveWakePolicy.shouldLogUnavailable(lastWakeUnavailableLogAtMs, now)) {
+                lastWakeUnavailableLogAtMs = now;
+                DiagnosticLog.event("Bridge", "WAKE_UNAVAILABLE",
+                        "official_app_installed=false reason=interactive_official_app_missing addr_id="
+                                + DiagnosticLog.fingerprint(ad.address));
+            }
             return;
         }
         lastInteractiveWakeAtMs = now;

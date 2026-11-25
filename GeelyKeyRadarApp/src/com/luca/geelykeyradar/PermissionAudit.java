@@ -32,7 +32,7 @@ final class PermissionAudit {
         SERVICE(Priority.REQUIRED, "无感服务",
                 "扫描、判定和自动解闭锁的总开关"),
         GEELY_APP(Priority.REQUIRED, "银河 App",
-                "钥匙凭证、鉴权和车控按钮都在官方 App 内"),
+                "钥匙凭证、鉴权和车控按钮都在同空间官方 App 内（鸿蒙须装在同一容器）"),
         BATTERY(Priority.RECOMMENDED, "电池白名单",
                 "锁屏后减少被省电策略冻结或清理"),
         VENDOR_BACKGROUND(Priority.RECOMMENDED, "厂商后台与自启动",
