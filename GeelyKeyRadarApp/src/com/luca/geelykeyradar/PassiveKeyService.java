@@ -1349,7 +1349,6 @@ public class PassiveKeyService extends Service implements SensorEventListener {
                 return;
             }
             diagnostics.increment("scan_failures");
-            consecutiveStaleScanRestarts = 0;
             DiagnosticLog.event("Scan", "SCAN_CALLBACK_ERROR", "code=" + errorCode
                     + " " + scanDiagnostic(SystemClock.elapsedRealtime(), false));
             CompatibilityCapture.Session capture = compatibilityCaptureSession;
@@ -2913,7 +2912,7 @@ public class PassiveKeyService extends Service implements SensorEventListener {
                 + " stale_restarts=" + consecutiveStaleScanRestarts);
         stopBleScan();
         if (action == ScanHealthPolicy.Action.HARD_RESET) {
-            consecutiveStaleScanRestarts = 0;
+            // 仅在真正收到 ScanCallback 后清零计数，保持离车零回调退避，避免每 10 秒重建触发系统限频。
             reinitializeBluetoothScanner();
             appendLog("⚠ BLE 扫描回调持续停滞，已重建系统扫描器");
             handler.removeCallbacks(restartScanRunnable);
@@ -3067,6 +3066,7 @@ public class PassiveKeyService extends Service implements SensorEventListener {
                     logic.reset();
                     startBleScan();
                 } else if (state == BluetoothAdapter.STATE_OFF) {
+                    consecutiveStaleScanRestarts = 0;
                     appendLog("系统蓝牙已关闭，暂停扫描并禁止误锁");
                     cancelPendingControl("系统蓝牙已关闭");
                     clearWakeState();
