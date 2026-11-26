@@ -14,6 +14,9 @@ final class VehicleTargetSelector<T extends VehicleBeacon> {
     static final long FAILED_COOLDOWN_MS = 30000L;
     static final long TARGET_FRESH_MS = 3000L;
     static final long NAME_CONFIRM_MS = 600L;
+    static final int STABLE_HINT_FIRST_PACKET_MIN_RSSI = -76;
+    static final int STABLE_HINT_CONFIRMED_MIN_RSSI = -83;
+    static final int STABLE_HINT_CONFIRMED_SIGHTINGS = 3;
     static final int MAX_CANDIDATES = 32;
 
     private final Map<String, Entry<T>> entries = new LinkedHashMap<>();
@@ -171,8 +174,12 @@ final class VehicleTargetSelector<T extends VehicleBeacon> {
                 && match(known, saved, nowMs) == VehicleIdentity.Match.ADDRESS) return "LEARNED_ADDRESS_FRESH";
         VehicleIdentity.Match currentMatch = match(known, entry, nowMs);
         if (!advertisedName) {
-            if (currentMatch == VehicleIdentity.Match.HINT && ad.rssi >= -70
-                    && known.stableDiscoveryMatches(ad)) return "STABLE_HINT_HIGH_RSSI";
+            if (currentMatch == VehicleIdentity.Match.HINT && known.stableDiscoveryMatches(ad)
+                    && (ad.rssi >= STABLE_HINT_FIRST_PACKET_MIN_RSSI
+                    || (entry.sightings >= STABLE_HINT_CONFIRMED_SIGHTINGS
+                    && ad.rssi >= STABLE_HINT_CONFIRMED_MIN_RSSI))) {
+                return "STABLE_HINT_HIGH_RSSI";
+            }
             return "NO_FRESH_FULL_NAME";
         }
         if (!VehicleBeacon.isGeelyVehicleName(known.name) || !known.name.equalsIgnoreCase(ad.name)) {

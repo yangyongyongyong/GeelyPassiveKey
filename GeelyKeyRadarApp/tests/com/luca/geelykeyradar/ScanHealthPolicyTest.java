@@ -39,12 +39,12 @@ public final class ScanHealthPolicyTest {
         check(ScanHealthPolicy.evaluate(true, false, false,
                         afterHardReset + 35_000L, afterHardReset, 20_000L, afterHardReset, 2)
                         == ScanHealthPolicy.Action.NONE,
-                "HARD_RESET 后仍零回调时 35 秒内必须退避静默，避免触发 Android 5次/30秒 扫描限频");
+                "HARD_RESET 后仍零回调时未满 180 秒必须退避静默，避免触发限频或走近时撞上重建窗口");
         check(ScanHealthPolicy.evaluate(true, false, false,
                         afterHardReset + ScanHealthPolicy.IDLE_BACKOFF_STALE_MS,
                         afterHardReset, 20_000L, afterHardReset, 2)
                         == ScanHealthPolicy.Action.RESTART,
-                "离车退避满 60 秒后允许一次轻量巡检");
+                "离车退避满 180 秒后允许一次轻量巡检");
         check(ScanHealthPolicy.evaluate(true, false, false,
                         afterHardReset + ScanHealthPolicy.IDLE_BACKOFF_STALE_MS * 2L,
                         afterHardReset + ScanHealthPolicy.IDLE_BACKOFF_STALE_MS,

@@ -115,18 +115,34 @@ public final class VehicleWakeGateTest {
                 "手填完整尾号不是已学地址和厂商证据");
     }
 
-    /** 已学身份下强信号稳定掩码匿名包可在首包唤醒官方，但仍不能进入RSSI。 */
+    /** 车多丢 SCAN_RSP 时，-76 首包或同MAC连续三包 -83 稳定掩码被动帧可提前唤醒官方，仍不得供RSSI。 */
     private static void strongStableHintStartsEarlyWithoutRssi() {
         VehicleIdentity known = known();
         VehicleTargetSelector<VehicleBeacon> targets = new VehicleTargetSelector<>();
         VehicleWakeGate<VehicleBeacon> gate = new VehicleWakeGate<>(targets);
-        VehicleBeacon hint = beacon(NEW, "", -68, 1000, CHANGED_PREFIX);
+        VehicleBeacon hint = beacon(NEW, "", -76, 1000, CHANGED_PREFIX);
         targets.observe(hint, 1000);
         check(gate.claim(hint, known, true, false, false, 1000)
                         == VehicleWakeGate.Result.SEND_EARLY_HINT,
-                "-68稳定尾号匿名首包允许提前交给官方");
+                "-76稳定尾号匿名首包允许提前交给官方");
         check(!targets.authorizesRssi(known, hint), "匿名提前唤醒仍不得供给RSSI");
         check(known.mergeWith(hint) == known, "匿名提前唤醒不得覆盖地址");
+
+        VehicleTargetSelector<VehicleBeacon> multiTargets = new VehicleTargetSelector<>();
+        VehicleWakeGate<VehicleBeacon> multiGate = new VehicleWakeGate<>(multiTargets);
+        VehicleBeacon p1 = beacon(NEW, "", -82, 1000, CHANGED_PREFIX);
+        VehicleBeacon p2 = beacon(NEW, "", -81, 1300, CHANGED_PREFIX);
+        VehicleBeacon p3 = beacon(NEW, "", -80, 1600, CHANGED_PREFIX);
+        multiTargets.observe(p1, 1000);
+        check(multiGate.claim(p1, known, true, false, false, 1000) == VehicleWakeGate.Result.NOT_SELECTED,
+                "远距离单包匿名HINT不应盲目唤醒");
+        multiTargets.observe(p2, 1300);
+        check(multiGate.claim(p2, known, true, false, false, 1300) == VehicleWakeGate.Result.NOT_SELECTED,
+                "两包匿名HINT在-81dBm仍需等待第三次确认");
+        multiTargets.observe(p3, 1600);
+        check(multiGate.claim(p3, known, true, false, false, 1600) == VehicleWakeGate.Result.SEND_EARLY_HINT,
+                "车多丢失SCAN_RSP时，连续三包同MAC稳定01FE在-80dBm可提前唤醒官方");
+        check(!multiTargets.authorizesRssi(known, p3), "三包稳定匿名唤醒仍不得供给RSSI");
     }
 
     /** 同尾不同全名、厂商ID不一致、短前缀或无厂商数据均不能走快速路径。 */

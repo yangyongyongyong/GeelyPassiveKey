@@ -10,9 +10,9 @@
 
 > 一张图看懂：扫描本车 → 连接触发 → 银河鉴权 → 靠近解锁 → 离开确认上锁。连接触发阈值不等于靠近解锁阈值。
 
-当前源码版本为 **v4.6.12-min（构建 612）**：基于 v4.6.9 的 6 份用户日志完成加固。扫描回调停滞窗口收紧为后台 10 秒、亮屏 4 秒，并支持亮屏/解锁强制重建扫描器；扫描错误码 2/3/5 直接硬恢复；亮屏时会在安全门控下补拉一次银河连接；通知监听重绑改为有界退避；RSSI 深谷回流只有在 90 秒内存在明确 `LOCKED` 锁态时才允许第二次解锁。v4.6.9 的防重复上锁、无通知 GATT 学习和官方通知当前按钮优先继续保留。默认参数保持连接 `≥ -95 dBm`、靠近解锁 `≥ -75 dBm`、离开上锁 `≤ -85 dBm`、离开确认 `2.0 秒`，升级不会覆盖用户配置。v4.6.12 修复离车期间 BLE 扫描看门狗 10 秒过频重启触发系统限频、导致亮屏后出现 ~6.4 秒空白的问题（后台放宽至 30 秒并支持零回调 60 秒退避，亮屏不打断 8 秒内新鲜扫描）。v4.6.11 在此基础上修复 Android 17 官方小组件 `updateAppWidget` 捕获与动态资源 ID 解析、兼容抓包期间误切过滤、星愿 `GeelyAuto`/`Geely_Auto` 双拼写硬件放行、鸿蒙跨容器未安装银河时唤醒循环及通知监听交互恢复冷却。详见 [v4.6.11小组件与星愿兼容修复](docs/85_v4_6_11_widget_starwish_and_container_fixes.md)、[v4.6.10上报加固](docs/84_v4_6_10_feedback_hardening_and_avd.md)、[v4.6.9重复上锁与无通知GATT](docs/83_v4_6_9_duplicate_lock_and_notificationless_gatt.md) 与 [v4.6.8日志修复](docs/82_20261122_scan_health_and_geely_159_notification.md)。
+当前源码版本为 **v4.6.13-min（构建 613）**：基于 v4.6.9 的 6 份用户日志完成加固。扫描回调停滞窗口收紧为后台 10 秒、亮屏 4 秒，并支持亮屏/解锁强制重建扫描器；扫描错误码 2/3/5 直接硬恢复；亮屏时会在安全门控下补拉一次银河连接；通知监听重绑改为有界退避；RSSI 深谷回流只有在 90 秒内存在明确 `LOCKED` 锁态时才允许第二次解锁。v4.6.9 的防重复上锁、无通知 GATT 学习和官方通知当前按钮优先继续保留。默认参数保持连接 `≥ -95 dBm`、靠近解锁 `≥ -75 dBm`、离开上锁 `≤ -85 dBm`、离开确认 `2.0 秒`，升级不会覆盖用户配置。v4.6.13 针对周围车辆密集易丢主动 `SCAN_RSP` 的场景，放宽同厂商同尾号纯被动 `0x01FE` 提前唤醒门槛（首包 `-76 dBm` / 连收 3 包 `-83 dBm`），将 `ACL_CONNECTED` 后的旁路 GATT 观察延迟 1.5 秒以避让官方 V2 鉴权，并把离车零回调巡检退避至 180 秒。v4.6.12 修复离车期间 BLE 扫描看门狗 10 秒过频重启触发系统限频、导致亮屏后出现 ~6.4 秒空白的问题（后台放宽至 30 秒并支持零回调 60 秒退避，亮屏不打断 8 秒内新鲜扫描）。v4.6.11 在此基础上修复 Android 17 官方小组件 `updateAppWidget` 捕获与动态资源 ID 解析、兼容抓包期间误切过滤、星愿 `GeelyAuto`/`Geely_Auto` 双拼写硬件放行、鸿蒙跨容器未安装银河时唤醒循环及通知监听交互恢复冷却。详见 [v4.6.11小组件与星愿兼容修复](docs/85_v4_6_11_widget_starwish_and_container_fixes.md)、[v4.6.10上报加固](docs/84_v4_6_10_feedback_hardening_and_avd.md)、[v4.6.9重复上锁与无通知GATT](docs/83_v4_6_9_duplicate_lock_and_notificationless_gatt.md) 与 [v4.6.8日志修复](docs/82_20261122_scan_health_and_geely_159_notification.md)。
 
-当前源码 `v4.6.12-min` 继续使用稳定签名证书 `279948c5d7401188fb72c218e954fc088b8d9cd5eb1aece6dd077b19c08145c4`。本地构建继续使用稳定密钥；正式发布后仍由 Actions 自动预热、校验 Cloudflare 更新镜像。升级保留用户已保存配置。v4.2.2 的单 MiuiService、15 秒通知补扫、GATT `cmdId=5` 提前就绪与 PendingIntent 回退继续保留，详见 [v4.2.2说明](docs/58_v4_2_2_long_absence_weak_connect.md)、[v4.2.1说明](docs/57_v4_2_1_lockscreen_fast_rescan.md) 和 [v4.2.0说明](docs/56_v4_2_0_fast_auth_and_notification_fallback.md)。
+当前源码 `v4.6.13-min` 继续使用稳定签名证书 `279948c5d7401188fb72c218e954fc088b8d9cd5eb1aece6dd077b19c08145c4`。本地构建继续使用稳定密钥；正式发布后仍由 Actions 自动预热、校验 Cloudflare 更新镜像。升级保留用户已保存配置。v4.2.2 的单 MiuiService、15 秒通知补扫、GATT `cmdId=5` 提前就绪与 PendingIntent 回退继续保留，详见 [v4.2.2说明](docs/58_v4_2_2_long_absence_weak_connect.md)、[v4.2.1说明](docs/57_v4_2_1_lockscreen_fast_rescan.md) 和 [v4.2.0说明](docs/56_v4_2_0_fast_auth_and_notification_fallback.md)。
 
 ---
 
@@ -63,7 +63,7 @@
 | 机制 | 作用 |
 | :--- | :--- |
 | **阈值解释清晰** | 每项有永久标签、作用说明、单位、范围与调节方向；非法输入就地提示，推荐值仅填草稿，保存后生效。 |
-| **版本可见** | 维护 → 关于中显示 `版本：v4.6.12-min（构建 612）`，从实际安装包读取，未来升级无需改界面字符串。 |
+| **版本可见** | 维护 → 关于中显示 `版本：v4.6.13-min（构建 613）`，从实际安装包读取，未来升级无需改界面字符串。 |
 | **首包提前连接** | 已学完整本车名＋一致厂商/VIN线索不必等第二条命名广播；只是交给官方鉴权，不提前保存MAC或计RSSI，同地址正在ACL握手时不重复注入。 |
 | **多车隔离** | 学习后替换协议宽过滤，明确身份冲突先拒绝；匿名弱线索只找车，不改MAC/混RSSI。 |
 | **官方就绪即处理** | 官方钥匙通知变成「已连接」立即处理一次接近机会，已有请求仅完成它。GATT 测距已连不会提前冒充官方鉴权就绪。 |
@@ -231,6 +231,7 @@ APK 不入库（`.gitignore` 排除 `*.apk`），从 [Releases](https://github.c
 | [84](docs/84_v4_6_10_feedback_hardening_and_avd.md) | **v4.6.10上报加固**：扫描快速恢复、亮屏补拉、监听退避、锁态门控、30组Java测试与AVD冒烟 |
 | [85](docs/85_v4_6_11_widget_starwish_and_container_fixes.md) | **v4.6.11兼容加固**：小组件回调/动态ID、星愿抓包与双名称过滤、跨容器唤醒拦截与监听冷却 |
 | [86](docs/86_v4_6_12_scan_watchdog_backoff.md) | **v4.6.12扫描退避**：修复离车10秒看门狗过频重启导致的亮屏6秒扫描空白 |
+| [87](docs/87_v4_6_13_dense_ble_early_wake.md) | **v4.6.13车多提速**：放宽被动01FE提前唤醒、ACL初期避让官方GATT与180s离车巡检 |
 | [82](docs/82_20261122_scan_health_and_geely_159_notification.md) | **2026-11-22日志修复**：扫描回调停滞看门狗、官方1.59/Android16按钮View优先、通知token年龄取快照最大值 |
 | [76](docs/76_v4_6_4_geelyauto_gatt_alias.md) | **v4.6.4星愿GATT修复**：真实GATT名GeelyAuto、唯一连接绑定与地址轮换 |
 | [75](docs/75_v4_6_3_starwish_and_update_chain.md) | **v4.6.3星愿兼容**：Geely_Auto发现/真实连接绑定、最高版本更新选择与发布默认值 |
@@ -262,7 +263,7 @@ APK 不入库（`.gitignore` 排除 `*.apk`），从 [Releases](https://github.c
 ANDROID_KEYSTORE=/path/to/existing.keystore SKIP_INSTALL=1 bash GeelyKeyRadarApp/build.sh
 ```
 
-先跑状态机、RSSI完整流程、曲线序列、GATT鉴权帧、待发请求、通知版本、日志轮转、诊断导出、学习资格、身份匹配、单目标选择、硬件过滤和官方就绪门控、扫描健康与失败恢复、亮屏补拉、通知监听退避、锁态门控、通知发送通道、无通知GATT筛选、预连接门控、阈值表单校验、车机只读回执、授权全检及更新策略 **31组Java测试＋1组APK命名回归**，再 `aapt2` → `javac` → `d8` → `apksigner`。上例仅构建，不操作手机；显式去掉 `SKIP_INSTALL=1` 才尝试原有安装流程。产物：`GeelyKeyRadarApp/GeelyPassiveKey-v4.6.12-min-612.apk`。后续命名统一为 `GeelyPassiveKey-v<versionName>-<versionCode>.apk`，不再生成无版本别名。
+先跑状态机、RSSI完整流程、曲线序列、GATT鉴权帧、待发请求、通知版本、日志轮转、诊断导出、学习资格、身份匹配、单目标选择、硬件过滤和官方就绪门控、扫描健康与失败恢复、亮屏补拉、通知监听退避、锁态门控、通知发送通道、无通知GATT筛选、预连接门控、阈值表单校验、车机只读回执、授权全检及更新策略 **31组Java测试＋1组APK命名回归**，再 `aapt2` → `javac` → `d8` → `apksigner`。上例仅构建，不操作手机；显式去掉 `SKIP_INSTALL=1` 才尝试原有安装流程。产物：`GeelyKeyRadarApp/GeelyPassiveKey-v4.6.13-min-613.apk`。后续命名统一为 `GeelyPassiveKey-v<versionName>-<versionCode>.apk`，不再生成无版本别名。
 
 仅查询本次版本的预期产物路径（不编译、不安装）：
 
@@ -295,11 +296,11 @@ GitHub Release 仅上传签名 APK、APK 的 SHA-256 和 `update.json`，不上�
 
 ```bash
 # 方式一：推送与 Manifest 版本一致的标签
-git tag v4.6.12-min
-git push origin v4.6.12-min
+git tag v4.6.13-min
+git push origin v4.6.13-min
 ```
 
-方式二：在 GitHub Actions 手动运行 `Android Release`。`tag` 输入可留空，workflow 会从 `AndroidManifest.xml` 自动生成 `v4.6.12-min` 并创建对应标签，不需要预先创建 tag；如果填写了不匹配的标签会明确失败。
+方式二：在 GitHub Actions 手动运行 `Android Release`。`tag` 输入可留空，workflow 会从 `AndroidManifest.xml` 自动生成 `v4.6.13-min` 并创建对应标签，不需要预先创建 tag；如果填写了不匹配的标签会明确失败。
 
 Actions 使用以下仓库 Secrets：`ANDROID_KEYSTORE_BASE64`、`ANDROID_KEYSTORE_PASS`、`ANDROID_KEY_ALIAS`、`ANDROID_KEY_PASS`；可选 `ANDROID_CERT_SHA256` 用于阻止换签名。版本、标签、密钥、证书或 Cloudflare 镜像预热校验失败时流水线失败。
 

@@ -10,8 +10,8 @@ final class ScanHealthPolicy {
 
     /** 后台首次停滞检查放宽到 30 秒，确保 30 秒滑窗内最多重建一次，远离 Android 5次/30秒 限频阈值。 */
     static final long STALE_CALLBACK_MS = 30_000L;
-    /** 连续 RESTART+HARD_RESET 仍零回调说明大概率离车，后台退避到 60 秒一次。 */
-    static final long IDLE_BACKOFF_STALE_MS = 60_000L;
+    /** 连续 RESTART+HARD_RESET 仍零回调说明大概率离车，后台退避到 180 秒一次，减少走近时撞上重建窗口。 */
+    static final long IDLE_BACKOFF_STALE_MS = 180_000L;
     /** 亮屏/解锁后若当前扫描已静默满 8 秒才重建；刚启动不足 8 秒的扫描不再被打断。 */
     static final long INTERACTIVE_STALE_CALLBACK_MS = 8_000L;
     static final long RESTART_THROTTLE_MS = 25_000L;

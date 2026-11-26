@@ -79,6 +79,7 @@ public class PassiveKeyService extends Service implements SensorEventListener {
     private static final long GATT_CONNECT_TIMEOUT_MS = 3500L;
     private static final long GATT_POLL_MS = 500L;
     private static final long WAKE_FALLBACK_MS = 1200L;
+    private static final long AUTH_OBSERVE_DELAY_MS = 1500L;
     private static final long AUTH_OBSERVE_TIMEOUT_MS = 7000L;
     private static final String AUTH_SERVICE_UUID = "02362aff-cf3a-11e1-efde-0002a5d5c51b";
     private static final String AUTH_NOTIFY_UUID = "02362a13-cf3a-11e1-efde-0002a5d5c51b";
@@ -2464,6 +2465,17 @@ public class PassiveKeyService extends Service implements SensorEventListener {
         }
     };
 
+    private BluetoothDevice pendingAuthObserverDevice;
+    private final Runnable authObserverStartRunnable = new Runnable() {
+        @Override
+        public void run() {
+            BluetoothDevice dev = pendingAuthObserverDevice;
+            pendingAuthObserverDevice = null;
+            if (dev == null || !running || !serviceEnabled || geelyConnected) return;
+            maybeStartAuthObserver(dev, SystemClock.elapsedRealtime());
+        }
+    };
+
     private final Runnable authObservationTimeoutRunnable = new Runnable() {
         /** 超时只结束实验性观察，不伪造鉴权成功或车控资格。 */
         @Override
@@ -2476,6 +2488,14 @@ public class PassiveKeyService extends Service implements SensorEventListener {
             closeGatt("鉴权观察超时");
         }
     };
+
+    /** ACL 建立前 1.5 秒让给官方 App 完成 V2 鉴权，减少车多空口拥堵下的 GATT 竞争。 */
+    private void scheduleAuthObserver(BluetoothDevice device) {
+        handler.removeCallbacks(authObserverStartRunnable);
+        pendingAuthObserverDevice = device;
+        if (device == null || geelyConnected || gattAuthSuccessObserved || activeGatt != null) return;
+        handler.postDelayed(authObserverStartRunnable, AUTH_OBSERVE_DELAY_MS);
+    }
 
     /** ACL已到且存在单在途目标时，提前挂载官方通知特征做只读鉴权观察。 */
     private void maybeStartAuthObserver(BluetoothDevice device, long now) {
@@ -2513,6 +2533,8 @@ public class PassiveKeyService extends Service implements SensorEventListener {
 
     /** 清理提前观察状态；仅在ACL/蓝牙/身份真正失效时清除全局鉴权就绪。 */
     private void clearGattAuthObservation(String reason, boolean clearReady) {
+        handler.removeCallbacks(authObserverStartRunnable);
+        pendingAuthObserverDevice = null;
         handler.removeCallbacks(authObservationTimeoutRunnable);
         boolean wasActive = authObservationActive;
         authObservationActive = false;
@@ -2608,9 +2630,12 @@ public class PassiveKeyService extends Service implements SensorEventListener {
 
     /** 官方通知或GATT鉴权任一先就绪时，复用同一client切换到RSSI轮询。 */
     private void promoteAuthObserverToRssi() {
+        handler.removeCallbacks(authObserverStartRunnable);
+        pendingAuthObserverDevice = null;
         if (activeGatt == null || !gattConnected) return;
         authObservationActive = false;
         authObserverNotifyReady = false;
+        lastGattAttemptAtMs = SystemClock.elapsedRealtime();
         handler.removeCallbacks(authObservationTimeoutRunnable);
         gattReadPending = false;
         handler.removeCallbacks(gattRssiPollRunnable);
@@ -2623,7 +2648,7 @@ public class PassiveKeyService extends Service implements SensorEventListener {
         if (bluetoothAdapter == null || !bluetoothAdapter.isEnabled()) return;
         if (activeGatt != null) {
             long lastProgress = Math.max(lastGattRssiAtMs, lastGattAttemptAtMs);
-            if (gattConnected && (now - lastProgress) > SIGNAL_EXPIRE_UI_MS) {
+            if (gattConnected && !authObservationActive && (now - lastProgress) > SIGNAL_EXPIRE_UI_MS) {
                 appendLog("连接态 RSSI 已停更，重建测距通道 | " + signalDiagnostic(now));
                 boolean freshBroadcast = lastSampleAtMs > 0L
                         && (now - lastSampleAtMs) <= PassiveKeyLogic.SIGNAL_STALE_MS
@@ -3185,7 +3210,7 @@ public class PassiveKeyService extends Service implements SensorEventListener {
         if (connected) {
             wakeGate.onAclConnected(addr, now);
             KeyNotificationBridgeService.requestFastRescan(this, KeyNotificationBridgeService.FAST_RESCAN_WINDOW_MS);
-            maybeStartAuthObserver(device, now);
+            scheduleAuthObserver(device);
             // ACL先于官方鉴权到达时只记录握手事实；官方就绪后再学习唯一可见GATT设备。
             if (isOfficialConnected()) {
                 VehicleIdentity verified = findIdentityFromConnectedGatt(true);
