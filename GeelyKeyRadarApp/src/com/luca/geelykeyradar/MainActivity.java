@@ -274,8 +274,12 @@ public class MainActivity extends Activity {
         startPassiveKeyService();
         bindPassiveKeyService();
         VehicleIdentityStore widgetStore = new VehicleIdentityStore(this);
-        if (widgetStore.isServiceEnabled() && widgetStore.isWidgetFallbackEnabled()) {
-            WidgetTokenBridge.start(this);
+        if (widgetStore.isWidgetFallbackEnabled()) {
+            if (WidgetTokenBridge.isStarted()) {
+                WidgetTokenBridge.refreshNow();
+            } else if (widgetStore.isServiceEnabled()) {
+                WidgetTokenBridge.start(this);
+            }
         }
         if (KeyNotificationBridgeService.isNotificationListenerEnabled(this)
                 && !KeyNotificationBridgeService.isListenerConnected()) {
@@ -1250,7 +1254,8 @@ public class MainActivity extends Activity {
         if (WidgetTokenBridge.openConfig(this)) {
             Toast.makeText(this, "请在官方配置页手动选择车辆和车锁控件，完成后返回", Toast.LENGTH_LONG).show();
         } else {
-            Toast.makeText(this, "尚未绑定官方小组件，或官方 App 未提供配置页", Toast.LENGTH_LONG).show();
+            Toast.makeText(this, "未读取到官方小组件配置入口（"
+                    + WidgetTokenBridge.getLastDiagnostic() + "）", Toast.LENGTH_LONG).show();
         }
         refreshUi();
     }

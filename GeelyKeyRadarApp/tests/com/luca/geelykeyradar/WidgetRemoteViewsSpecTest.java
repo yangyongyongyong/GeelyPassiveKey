@@ -1,11 +1,12 @@
 package com.luca.geelykeyradar;
 
-/** 官方小组件静态与跨版本动态资源 ID 识别回归。 */
+/** 官方小组件静态、动态资源 ID 与公开 View Drawable 图标识别回归。 */
 public final class WidgetRemoteViewsSpecTest {
     public static void main(String[] args) {
         legacyIdsAreSupported();
         dynamicIdsSurviveResourceShift();
         zeroAndUnrelatedIdsAreIgnored();
+        normalizedIconPixelsDistinguishLockStates();
         System.out.println("WidgetRemoteViewsSpecTest passed");
     }
 
@@ -53,6 +54,40 @@ public final class WidgetRemoteViewsSpecTest {
         check(!spec.isFunStatusView(0) && !spec.isConfirmOkView(0), "0 资源 ID 不得误匹配");
         check(spec.lockHintForDrawable(0) == null && spec.lockHintForDrawable(0x12345678) == null,
                 "其他非车锁图标不得伪造锁态");
+    }
+
+    private static void normalizedIconPixelsDistinguishLockStates() {
+        int[] offBlack = new int[256];
+        int[] offWhite = new int[256];
+        int[] onGreen = new int[256];
+        int[] unrelated = new int[256];
+        for (int i = 0; i < 256; i++) {
+            int row = i / 16;
+            int col = i % 16;
+            boolean body = row >= 6 && row <= 13 && col >= 4 && col <= 11;
+            boolean closedShackle = row >= 2 && row <= 5 && (col == 5 || col == 10 || (row == 2 && col >= 5 && col <= 10));
+            boolean openShackle = row >= 2 && row <= 5 && (col == 9 || col == 13 || (row == 2 && col >= 9 && col <= 13));
+            if (body || closedShackle) {
+                offBlack[i] = 0xFF1E1E1E;
+                offWhite[i] = 0xFFF5F5F5;
+            }
+            if (body || openShackle) {
+                onGreen[i] = 0xFF2ED47A;
+            }
+            if (row >= 4 && row <= 12 && col >= 3 && col <= 12) {
+                unrelated[i] = 0xFF4285F4;
+            }
+        }
+        check("LOCKED".equals(WidgetRemoteViewsSpec.matchNormalizedIconPixels(offBlack, offBlack, offWhite, onGreen)),
+                "黑色闭锁图标轮廓必须识别为 LOCKED");
+        check("LOCKED".equals(WidgetRemoteViewsSpec.matchNormalizedIconPixels(offWhite, offBlack, offWhite, onGreen)),
+                "白色闭锁图标轮廓必须识别为 LOCKED");
+        check("UNLOCKED".equals(WidgetRemoteViewsSpec.matchNormalizedIconPixels(onGreen, offBlack, offWhite, onGreen)),
+                "开锁图标轮廓必须识别为 UNLOCKED");
+        check(WidgetRemoteViewsSpec.matchNormalizedIconPixels(unrelated, offBlack, offWhite, onGreen) == null,
+                "其他车控图标不得误识别为车锁状态");
+        check(WidgetRemoteViewsSpec.matchNormalizedIconPixels(new int[256], offBlack, offWhite, onGreen) == null,
+                "全透明图标不得返回锁态");
     }
 
     private static void check(boolean condition, String message) {

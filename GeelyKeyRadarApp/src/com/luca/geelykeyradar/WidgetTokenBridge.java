@@ -11,34 +11,43 @@ import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.content.res.Resources;
+import android.graphics.Bitmap;
+import android.graphics.Canvas;
+import android.graphics.drawable.Drawable;
 import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
 import android.util.Log;
+import android.view.View;
+import android.view.ViewGroup;
+import android.widget.FrameLayout;
+import android.widget.ImageView;
 import android.widget.RemoteViews;
 
 import java.lang.reflect.Field;
+import java.lang.reflect.Method;
 import java.util.Collections;
 import java.util.IdentityHashMap;
-import java.util.List;
 import java.util.Set;
 
 /**
- * 官方银河桌面小组件 token 桥接。
+ * 官方银河 / 吉利桌面小组件 token 桥接。
  *
- * WgProviderMiddle 本身仍由官方 App 创建 PendingIntent；本类只负责通过 AppWidgetHost
- * 取得官方 RemoteViews，并按官方 LOCK 图标识别控件。它不是 BLE/GATT 连接器，也不伪造
- * 官方 token。
+ * WgProviderMiddle / Wg_Middle 本身仍由官方 App 创建 PendingIntent；
+ * 本类通过 AppWidgetHostView.updateAppWidget 公开回调取得官方 RemoteViews，
+ * 优先直接遍历已膨胀的公开 View 树并从系统 pending_intent_tag 提取 PendingIntent，
+ * 避免 Android 14-17 隐藏 API（mNestedViews / mResponse）被系统拦截。
  */
 final class WidgetTokenBridge {
     private static final String TAG = "WidgetTokenBridge";
-    private static volatile String activeOfficialPkg = OfficialBrandPolicy.PKG_GALAXY;
     private static final int HOST_ID = 0x4752;
     private static final long CONFIRM_FIRST_DELAY_MS = 600L;
     private static final long CONFIRM_SECOND_DELAY_MS = 1600L;
 
+    private static volatile String activeOfficialPkg = OfficialBrandPolicy.PKG_GALAXY;
     private static WidgetRemoteViewsSpec remoteViewsSpec;
+    private static IconReferenceCache iconReferenceCache;
 
     private static final Object STATE_LOCK = new Object();
     private static volatile ComponentName PROVIDER = new ComponentName(
@@ -54,6 +63,7 @@ final class WidgetTokenBridge {
     private static OfficialControlToken lockClickToken;
     private static OfficialControlToken lockConfirmToken;
     private static PendingIntent configLaunchIntent;
+    private static View configLaunchView;
     private static String observedLockHint = "";
     private static long observedLockHintAtMs;
     private static long lastRemoteViewsIdentity;
@@ -97,12 +107,10 @@ final class WidgetTokenBridge {
         }
     }
 
-    /** 停止当前进程内的监听，保留系统组件；用户关闭通道时另行删除 host。 */
     static void stop() {
         stopInternal(false);
     }
 
-    /** 用户关闭时删除本应用独占的 AppWidget host，避免残留不可见组件。 */
     static void stopAndDelete(Context context) {
         if (context != null) {
             new VehicleIdentityStore(context.getApplicationContext()).setWidgetFallbackEnabled(false);
@@ -110,7 +118,6 @@ final class WidgetTokenBridge {
         stopInternal(true);
     }
 
-    /** 设置页启用后调用；调用前应已写入 enabled=true。 */
     static void enableAndStart(Context context) {
         if (context == null) return;
         new VehicleIdentityStore(context.getApplicationContext()).setWidgetFallbackEnabled(true);
@@ -130,6 +137,13 @@ final class WidgetTokenBridge {
         }
     }
 
+    static boolean hasConfigEntry() {
+        synchronized (STATE_LOCK) {
+            return configLaunchIntent != null || configLaunchView != null
+                    || (providerInfo != null && providerInfo.configure != null);
+        }
+    }
+
     static boolean hasLockToken() {
         synchronized (STATE_LOCK) {
             return lockClickToken != null && lockClickToken.isUsable();
@@ -143,7 +157,6 @@ final class WidgetTokenBridge {
         }
     }
 
-    /** 官方小组件锁图标提供的新鲜锁态；与通知文字锁态按时间取最新。 */
     static String getObservedLockHint() {
         synchronized (STATE_LOCK) {
             return observedLockHint;
@@ -180,7 +193,6 @@ final class WidgetTokenBridge {
         }
     }
 
-    /** 当官方锁态新鲜且目标状态相反时，Widget LOCK 切换才可用。 */
     static boolean canUseFor(PassiveKeyLogic.Action action, String lockHint,
                              long lockHintAtMs, long nowMs) {
         return WidgetTokenPolicy.canUseToggle(action, lockHint, lockHintAtMs, nowMs)
@@ -194,7 +206,6 @@ final class WidgetTokenBridge {
         return hasLockToken() ? "" : "WIDGET_TOKEN_MISSING";
     }
 
-    /** 重新读取当前 host 的 RemoteViews；设置页可手动触发。 */
     static void refreshNow() {
         synchronized (STATE_LOCK) {
             if (!started || hostView == null) return;
@@ -202,11 +213,6 @@ final class WidgetTokenBridge {
         inspectRemoteViewsIfPresent(true);
     }
 
-    /**
-     * 发送官方 LOCK 切换 token。先发送 WIDGET_CLICK；如果官方小组件随后更新出
-     * 新鲜 CONFIRM token，则在短延迟内发送确认。没有观察到确认时，点击本身可能已经是
-     * 官方直接执行路径，但也可能只是打开了二次确认；因此返回 UNKNOWN，绝不自动重发点击。
-     */
     static KeyNotificationBridgeService.ControlResult triggerToggle(
             PassiveKeyLogic.Action action, String lockHint, long lockHintAtMs, long nowMs) {
         OfficialControlToken click;
@@ -228,7 +234,6 @@ final class WidgetTokenBridge {
             sendPendingIntent(click.pendingIntent);
             final long sentAt = SystemClock.elapsedRealtime();
             synchronized (STATE_LOCK) {
-                // 点击已消费当前 RemoteViews 的 token；同一快照不再重复发送。
                 lockClickToken = null;
                 lockConfirmToken = null;
                 lastDiagnostic = "widget=click_sent confirm=pending";
@@ -240,7 +245,6 @@ final class WidgetTokenBridge {
                 mainHandler.postDelayed(() -> sendConfirmIfUpdated(sentAt), CONFIRM_FIRST_DELAY_MS);
                 mainHandler.postDelayed(() -> sendConfirmIfUpdated(sentAt), CONFIRM_SECOND_DELAY_MS);
             }
-            // 只有点击 token；二次确认是否出现无法同步得知，不能报告确定成功。
             return KeyNotificationBridgeService.ControlResult.UNKNOWN;
         } catch (PendingIntent.CanceledException cancelled) {
             synchronized (STATE_LOCK) {
@@ -261,10 +265,6 @@ final class WidgetTokenBridge {
         }
     }
 
-    /**
-     * 首次绑定交给系统权限对话框，不在后台静默调用 bindAppWidgetIdIfAllowed 后假装成功。
-     * 已获系统绑定授权时直接附着 host 并返回 null。
-     */
     static Intent buildBindIntent(Context context) {
         if (context == null) return null;
         Context app = context.getApplicationContext();
@@ -279,7 +279,7 @@ final class WidgetTokenBridge {
             AppWidgetProviderInfo info = findProvider();
             if (info == null) {
                 synchronized (STATE_LOCK) {
-                    status = "未找到银河官方小组件";
+                    status = "未找到官方小组件";
                     lastDiagnostic = "widget=provider_not_visible";
                 }
                 return null;
@@ -311,7 +311,6 @@ final class WidgetTokenBridge {
         }
     }
 
-    /** 接收系统绑定结果；只有 RESULT_OK 且系统允许该 provider 时才附着。 */
     static boolean onBindResult(Context context, int resultCode, Intent data) {
         if (context == null) return false;
         if (resultCode != Activity.RESULT_OK) {
@@ -340,7 +339,7 @@ final class WidgetTokenBridge {
             AppWidgetProviderInfo info = findProvider();
             if (info == null) {
                 synchronized (STATE_LOCK) {
-                    status = "未找到银河官方小组件";
+                    status = "未找到官方小组件";
                     lastDiagnostic = "widget=provider_not_visible";
                 }
                 return false;
@@ -368,7 +367,6 @@ final class WidgetTokenBridge {
         }
     }
 
-    /** 官方小组件配置页；不自动替用户选择车辆或点击控件。 */
     static Intent buildConfigureIntent(Context context) {
         if (context == null) return null;
         try {
@@ -394,17 +392,33 @@ final class WidgetTokenBridge {
         }
     }
 
-    /** 用户点击后打开官方配置页；优先使用 RemoteViews 中的官方 PendingIntent。 */
+    /** 用户点击后打开官方配置页；优先使用从官方小组件视图提取的 PendingIntent / 按钮视图。 */
     static boolean openConfig(Context context) {
         if (context == null) return false;
-        PendingIntent official = getConfigLaunchIntent();
+        refreshNow();
+        PendingIntent official;
+        View fallbackView;
+        synchronized (STATE_LOCK) {
+            official = configLaunchIntent;
+            fallbackView = configLaunchView;
+        }
         if (official != null) {
             try {
                 sendPendingIntent(official);
-                DiagnosticLog.event("Widget", "CONFIG_OPEN_PI", "source=remoteviews");
+                DiagnosticLog.event("Widget", "CONFIG_OPEN_PI", "source=inflated_view");
                 return true;
             } catch (Throwable error) {
                 DiagnosticLog.bridgeError("Widget", "CONFIG_OPEN_PI_ERROR", error);
+            }
+        }
+        if (fallbackView != null) {
+            try {
+                if (fallbackView.performClick()) {
+                    DiagnosticLog.event("Widget", "CONFIG_OPEN_VIEW_CLICK", "");
+                    return true;
+                }
+            } catch (Throwable error) {
+                DiagnosticLog.bridgeError("Widget", "CONFIG_OPEN_VIEW_ERROR", error);
             }
         }
         Intent configure = buildConfigureIntent(context);
@@ -422,8 +436,7 @@ final class WidgetTokenBridge {
         }
     }
 
-    /** 查找当前官方 provider，不把其他车型同名组件混入。 */
-    private static void attachOrRequestBinding() throws Exception {
+    private static void attachOrRequestBinding() {
         synchronized (STATE_LOCK) {
             if (appWidgetManager == null) appWidgetManager = AppWidgetManager.getInstance(appContext);
             ensureHostLocked();
@@ -431,7 +444,7 @@ final class WidgetTokenBridge {
         AppWidgetProviderInfo info = findProvider();
         if (info == null) {
             synchronized (STATE_LOCK) {
-                status = "未找到银河官方小组件";
+                status = "未找到官方小组件";
                 lastDiagnostic = "widget=provider_not_visible";
                 started = false;
             }
@@ -497,6 +510,7 @@ final class WidgetTokenBridge {
         String pkg = OfficialTarget.resolveConfiguredPackage(appContext);
         if (!pkg.equals(activeOfficialPkg)) {
             remoteViewsSpec = null;
+            iconReferenceCache = null;
         }
         activeOfficialPkg = pkg;
         PROVIDER = new ComponentName(pkg, OfficialBrandPolicy.widgetProviderForPackage(pkg));
@@ -554,13 +568,13 @@ final class WidgetTokenBridge {
             appWidgetManager = AppWidgetManager.getInstance(appContext);
         }
         try {
-            List<AppWidgetProviderInfo> providers = appWidgetManager.getInstalledProviders();
+            java.util.List<AppWidgetProviderInfo> providers = appWidgetManager.getInstalledProviders();
             AppWidgetProviderInfo match = findProvider(providers);
             if (match != null) return match;
         } catch (Throwable ignored) {
         }
         try {
-            List<AppWidgetProviderInfo> scoped =
+            java.util.List<AppWidgetProviderInfo> scoped =
                     appWidgetManager.getInstalledProvidersForPackage(activeOfficialPkg, null);
             return findProvider(scoped);
         } catch (Throwable ignored) {
@@ -568,7 +582,7 @@ final class WidgetTokenBridge {
         }
     }
 
-    private static AppWidgetProviderInfo findProvider(List<AppWidgetProviderInfo> providers) {
+    private static AppWidgetProviderInfo findProvider(java.util.List<AppWidgetProviderInfo> providers) {
         if (providers == null) return null;
         for (AppWidgetProviderInfo provider : providers) {
             if (provider != null && PROVIDER.equals(provider.provider)) return provider;
@@ -577,18 +591,19 @@ final class WidgetTokenBridge {
     }
 
     private static void inspectRemoteViewsIfPresent(boolean force) {
+        AppWidgetHostView view;
         synchronized (STATE_LOCK) {
             if (!started || hostView == null) return;
+            view = hostView;
         }
         try {
-            AppWidgetHostView view;
-            synchronized (STATE_LOCK) {
-                view = hostView;
-            }
             RemoteViews views = findRemoteViews(view);
-            if (views != null) inspectRemoteViews(views, force);
-            else synchronized (STATE_LOCK) {
-                lastDiagnostic = "widget=waiting_remoteviews";
+            if (views != null || view.getChildCount() > 0) {
+                inspectHostAndRemoteViews(view, views, force);
+            } else {
+                synchronized (STATE_LOCK) {
+                    lastDiagnostic = "widget=waiting_remoteviews";
+                }
             }
         } catch (Throwable t) {
             synchronized (STATE_LOCK) {
@@ -632,10 +647,12 @@ final class WidgetTokenBridge {
             appWidgetManager = null;
             providerInfo = null;
             remoteViewsSpec = null;
+            iconReferenceCache = null;
             widgetId = -1;
             lockClickToken = null;
             lockConfirmToken = null;
             configLaunchIntent = null;
+            configLaunchView = null;
             observedLockHint = "";
             observedLockHintAtMs = 0L;
             lastRemoteViewsIdentity = 0L;
@@ -664,7 +681,7 @@ final class WidgetTokenBridge {
             if (!started || hostView != view) return;
         }
         try {
-            inspectRemoteViews(remoteViews, false);
+            inspectHostAndRemoteViews(view, remoteViews, false);
         } catch (Throwable t) {
             synchronized (STATE_LOCK) {
                 lastDiagnostic = "widget=remoteviews_error " + t.getClass().getSimpleName();
@@ -672,7 +689,6 @@ final class WidgetTokenBridge {
         }
     }
 
-    /** 优先使用 AppWidgetHostView.updateAppWidget 公开回调捕获的 RemoteViews，失败时再回退私有字段反射。 */
     private static RemoteViews findRemoteViews(Object view) {
         if (view == null) return null;
         if (view instanceof BridgeHostView) {
@@ -695,48 +711,259 @@ final class WidgetTokenBridge {
         return null;
     }
 
-    /** 递归扫描官方 RemoteViews；锁图标用于避免把其他车控图标误当成 LOCK。 */
-    private static void inspectRemoteViews(RemoteViews root, boolean force) throws Exception {
-        long identity = System.identityHashCode(root);
+    /**
+     * 优先遍历公开膨胀后的 View 树（AppWidgetHostView / RemoteViews.apply）提取配置入口、
+     * 车锁点击与确认 PendingIntent，规避 Android 14+ 隐藏 API 封锁。
+     */
+    private static void inspectHostAndRemoteViews(AppWidgetHostView view, RemoteViews root, boolean force) {
+        long identity = root != null ? System.identityHashCode(root)
+                : (view != null ? System.identityHashCode(view) : 0L);
         synchronized (STATE_LOCK) {
             if (!force && identity == lastRemoteViewsIdentity) return;
             lastRemoteViewsIdentity = identity;
         }
         WidgetRemoteViewsSpec spec = getOrResolveRemoteViewsSpec();
+        IconReferenceCache icons = getOrBuildIconReferences(spec);
         Visit visit = new Visit();
-        scanRemoteViews(root, visit, spec);
+
+        if (view != null && view.getChildCount() > 0) {
+            scanInflatedViewTree(view, spec, icons, visit);
+        }
+        if (root != null && visit.config == null && visit.lockClick == null && visit.lockConfirm == null) {
+            try {
+                Context ctx = getOfficialPkgContext();
+                FrameLayout container = new FrameLayout(ctx);
+                View applied = root.apply(ctx, container);
+                if (applied != null) {
+                    scanInflatedViewTree(applied, spec, icons, visit);
+                }
+            } catch (Throwable ignored) {
+            }
+        }
+        if (root != null && Build.VERSION.SDK_INT < 30
+                && visit.config == null && visit.lockClick == null && visit.lockConfirm == null) {
+            scanLegacyRemoteViews(root, visit, spec);
+        }
+
         boolean click = visit.lockClick != null;
         boolean confirm = visit.lockConfirm != null;
+        boolean hasConfig = visit.config != null || visit.configView != null;
         long now = SystemClock.elapsedRealtime();
+        String prevDiag;
+        String nextDiag;
         synchronized (STATE_LOCK) {
-            // RemoteViews 是整份快照；新快照没有 LOCK 控件时必须撤销旧 token，
-            // 避免官方控件正在 loading/切车时复用上一帧的点击。
-            // 二次确认界面存在时禁止再次点击 LOCK，先完成/取消确认再由新快照恢复。
+            prevDiag = lastDiagnostic;
             lockClickToken = !confirm && click
                     ? OfficialControlToken.widgetToggle(visit.lockClick, now) : null;
             lockConfirmToken = confirm ? OfficialControlToken.widgetToggle(visit.lockConfirm, now) : null;
             if (visit.config != null) configLaunchIntent = visit.config;
+            if (visit.configView != null) configLaunchView = visit.configView;
             if (visit.lockHint != null) {
                 observedLockHint = visit.lockHint;
                 observedLockHintAtMs = now;
             }
             if (lockConfirmToken != null && lockClickToken == null) {
                 status = "官方小组件等待确认";
-                lastDiagnostic = "widget=confirm_pending confirm=PI lock_hint="
-                        + (observedLockHint.isEmpty() ? "UNKNOWN" : observedLockHint);
+                lastDiagnostic = "widget=confirm_pending confirm=PI config=" + hasConfig
+                        + " lock_hint=" + (observedLockHint.isEmpty() ? "UNKNOWN" : observedLockHint);
             } else if (lockClickToken != null) {
                 status = "官方小组件车锁 token 已就绪";
                 lastDiagnostic = "widget=ready click=PI confirm=" + (lockConfirmToken != null ? "PI" : "pending")
+                        + " config=" + hasConfig
                         + " lock_hint=" + (observedLockHint.isEmpty() ? "UNKNOWN" : observedLockHint)
                         + " token_age_ms=" + Math.max(0L, now - lockClickToken.capturedAtMs);
             } else {
-                status = "等待官方车锁控件（请在银河完成车辆选择）";
-                lastDiagnostic = "widget=waiting_lock_control click=false confirm=false";
+                status = hasConfig
+                        ? "已找到官方配置入口（请在官方配置页选择车辆与车锁）"
+                        : "等待官方车锁控件（请在官方 App 完成车辆选择）";
+                lastDiagnostic = "widget=waiting_lock_control click=false confirm=false config=" + hasConfig;
+            }
+            nextDiag = lastDiagnostic;
+        }
+        if (!nextDiag.equals(prevDiag) && (click || confirm || hasConfig)) {
+            DiagnosticLog.event("Widget", "REMOTEVIEWS_READY", "click=" + click
+                    + " confirm=" + confirm + " config=" + hasConfig + " " + nextDiag);
+        }
+    }
+
+    private static void scanInflatedViewTree(View node, WidgetRemoteViewsSpec spec,
+                                             IconReferenceCache icons, Visit visit) {
+        if (node == null) return;
+        int viewId = node.getId();
+        if (viewId != View.NO_ID && viewId != 0) {
+            if (spec.isSettingView(viewId)) {
+                PendingIntent pi = extractPendingIntentFromInflatedView(node);
+                if (pi != null) visit.config = pi;
+                if (pi != null || node.hasOnClickListeners() || node.isClickable()) {
+                    visit.configView = node;
+                }
+            } else if (spec.isAppAdditionView(viewId)) {
+                PendingIntent pi = extractPendingIntentFromInflatedView(node);
+                if (visit.config == null && pi != null) visit.config = pi;
+                if (visit.configView == null && (pi != null || node.hasOnClickListeners() || node.isClickable())) {
+                    visit.configView = node;
+                }
+            } else if (spec.isConfirmOkView(viewId)) {
+                PendingIntent pi = extractPendingIntentFromInflatedView(node);
+                if (pi != null) visit.lockConfirm = pi;
+            } else if (spec.isFunStatusView(viewId)) {
+                PendingIntent pi = extractPendingIntentFromInflatedView(node);
+                if (pi != null) {
+                    String hint = detectLockHintForItem(node, icons);
+                    if (hint != null) {
+                        visit.lockClick = pi;
+                        visit.lockHint = hint;
+                    }
+                }
             }
         }
-        if (click || confirm) {
-            DiagnosticLog.event("Widget", "REMOTEVIEWS_READY", "click=" + click
-                    + " confirm=" + confirm + " " + lastDiagnostic);
+        if (node instanceof ViewGroup) {
+            ViewGroup vg = (ViewGroup) node;
+            int count = vg.getChildCount();
+            for (int i = 0; i < count; i++) {
+                scanInflatedViewTree(vg.getChildAt(i), spec, icons, visit);
+            }
+        }
+    }
+
+    private static String detectLockHintForItem(View funView, IconReferenceCache icons) {
+        if (funView == null || icons == null || !icons.isUsable()) return null;
+        String direct = matchImageDrawable(funView, icons);
+        if (direct != null) return direct;
+        if (funView.getParent() instanceof ViewGroup) {
+            return searchImageDrawableInContainer((ViewGroup) funView.getParent(), icons, 0);
+        }
+        return null;
+    }
+
+    private static String searchImageDrawableInContainer(View node, IconReferenceCache icons, int depth) {
+        if (node == null || depth > 3) return null;
+        String matched = matchImageDrawable(node, icons);
+        if (matched != null) return matched;
+        if (node instanceof ViewGroup) {
+            ViewGroup vg = (ViewGroup) node;
+            for (int i = 0; i < vg.getChildCount(); i++) {
+                String childMatch = searchImageDrawableInContainer(vg.getChildAt(i), icons, depth + 1);
+                if (childMatch != null) return childMatch;
+            }
+        }
+        return null;
+    }
+
+    private static String matchImageDrawable(View view, IconReferenceCache icons) {
+        if (!(view instanceof ImageView)) return null;
+        Drawable d = ((ImageView) view).getDrawable();
+        if (d == null) return null;
+        int[] pixels = rasterizeDrawable(d);
+        return WidgetRemoteViewsSpec.matchNormalizedIconPixels(
+                pixels, icons.offBlack, icons.offWhite, icons.on);
+    }
+
+    private static int[] rasterizeDrawable(Drawable drawable) {
+        if (drawable == null) return null;
+        int size = WidgetRemoteViewsSpec.ICON_GRID_SIZE;
+        try {
+            Bitmap bmp = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888);
+            Canvas canvas = new Canvas(bmp);
+            Drawable copy = drawable.getConstantState() != null
+                    ? drawable.getConstantState().newDrawable().mutate() : drawable.mutate();
+            copy.setBounds(0, 0, size, size);
+            copy.draw(canvas);
+            int[] pixels = new int[size * size];
+            bmp.getPixels(pixels, 0, size, 0, 0, size, size);
+            bmp.recycle();
+            return pixels;
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
+    /** 与 KeyNotificationBridgeService 相同的公开 PendingIntent 提取链：优先读取系统 pending_intent_tag。 */
+    private static PendingIntent extractPendingIntentFromInflatedView(View view) {
+        if (view == null) return null;
+        try {
+            int tagId = Resources.getSystem().getIdentifier("pending_intent_tag", "id", "android");
+            if (tagId != 0) {
+                PendingIntent pi = unwrapPendingIntent(view.getTag(tagId));
+                if (pi != null) return pi;
+            }
+        } catch (Throwable ignored) {
+        }
+        try {
+            PendingIntent pi = unwrapPendingIntent(view.getTag());
+            if (pi != null) return pi;
+        } catch (Throwable ignored) {
+        }
+        try {
+            Field keyedTagsField = View.class.getDeclaredField("mKeyedTags");
+            keyedTagsField.setAccessible(true);
+            Object sparseObj = keyedTagsField.get(view);
+            if (sparseObj instanceof android.util.SparseArray) {
+                android.util.SparseArray<?> sa = (android.util.SparseArray<?>) sparseObj;
+                for (int i = 0; i < sa.size(); i++) {
+                    PendingIntent pi = unwrapPendingIntent(sa.valueAt(i));
+                    if (pi != null) return pi;
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        try {
+            Method getListenerInfo = View.class.getDeclaredMethod("getListenerInfo");
+            getListenerInfo.setAccessible(true);
+            Object listenerInfo = getListenerInfo.invoke(view);
+            if (listenerInfo != null) {
+                Field onClickField = listenerInfo.getClass().getDeclaredField("mOnClickListener");
+                onClickField.setAccessible(true);
+                Object clickListener = onClickField.get(listenerInfo);
+                if (clickListener != null) {
+                    PendingIntent pi = unwrapPendingIntent(clickListener);
+                    if (pi != null) return pi;
+                    for (Field f : clickListener.getClass().getDeclaredFields()) {
+                        try {
+                            f.setAccessible(true);
+                            PendingIntent innerPi = unwrapPendingIntent(f.get(clickListener));
+                            if (innerPi != null) return innerPi;
+                        } catch (Throwable ignored) {
+                        }
+                    }
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        return null;
+    }
+
+    private static PendingIntent unwrapPendingIntent(Object obj) {
+        if (obj == null) return null;
+        if (obj instanceof PendingIntent) return (PendingIntent) obj;
+        try {
+            for (Class<?> cls = obj.getClass(); cls != null && cls != Object.class; cls = cls.getSuperclass()) {
+                for (Field f : cls.getDeclaredFields()) {
+                    try {
+                        f.setAccessible(true);
+                        Object v = f.get(obj);
+                        if (v instanceof PendingIntent) return (PendingIntent) v;
+                    } catch (Throwable ignored) {
+                    }
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        return null;
+    }
+
+    private static Context getOfficialPkgContext() {
+        Context base;
+        String pkg;
+        synchronized (STATE_LOCK) {
+            base = appContext;
+            pkg = activeOfficialPkg;
+        }
+        if (base == null) return null;
+        try {
+            return base.createPackageContext(pkg, Context.CONTEXT_IGNORE_SECURITY);
+        } catch (Throwable ignored) {
+            return base;
         }
     }
 
@@ -750,6 +977,52 @@ final class WidgetTokenBridge {
         synchronized (STATE_LOCK) {
             if (remoteViewsSpec == null) remoteViewsSpec = resolved;
             return remoteViewsSpec;
+        }
+    }
+
+    private static IconReferenceCache getOrBuildIconReferences(WidgetRemoteViewsSpec spec) {
+        Context ctx;
+        String pkg;
+        synchronized (STATE_LOCK) {
+            if (iconReferenceCache != null) return iconReferenceCache;
+            ctx = appContext;
+            pkg = activeOfficialPkg;
+        }
+        IconReferenceCache built = buildIconReferences(ctx, pkg, spec);
+        synchronized (STATE_LOCK) {
+            if (iconReferenceCache == null) iconReferenceCache = built;
+            return iconReferenceCache;
+        }
+    }
+
+    private static IconReferenceCache buildIconReferences(Context context, String pkg,
+                                                          WidgetRemoteViewsSpec spec) {
+        if (context == null || spec == null) return new IconReferenceCache(null, null, null);
+        try {
+            Context pkgCtx = context.createPackageContext(pkg, Context.CONTEXT_IGNORE_SECURITY);
+            Resources res = pkgCtx.getResources();
+            int offBlackId = spec.dynamicLockOffBlackId != 0
+                    ? spec.dynamicLockOffBlackId : WidgetRemoteViewsSpec.LEGACY_ICON_LOCK_OFF_BLACK;
+            int offWhiteId = spec.dynamicLockOffWhiteId != 0
+                    ? spec.dynamicLockOffWhiteId : WidgetRemoteViewsSpec.LEGACY_ICON_LOCK_OFF_WHITE;
+            int onId = spec.dynamicLockOnId != 0
+                    ? spec.dynamicLockOnId : WidgetRemoteViewsSpec.LEGACY_ICON_LOCK_ON;
+            int[] offBlack = rasterizeDrawableId(res, pkgCtx.getTheme(), offBlackId);
+            int[] offWhite = rasterizeDrawableId(res, pkgCtx.getTheme(), offWhiteId);
+            int[] on = rasterizeDrawableId(res, pkgCtx.getTheme(), onId);
+            return new IconReferenceCache(offBlack, offWhite, on);
+        } catch (Throwable ignored) {
+            return new IconReferenceCache(null, null, null);
+        }
+    }
+
+    private static int[] rasterizeDrawableId(Resources res, Resources.Theme theme, int id) {
+        if (res == null || id == 0) return null;
+        try {
+            Drawable d = res.getDrawable(id, theme);
+            return rasterizeDrawable(d);
+        } catch (Throwable ignored) {
+            return null;
         }
     }
 
@@ -779,7 +1052,8 @@ final class WidgetTokenBridge {
         return id != 0 ? id : res.getIdentifier(name, "mipmap", pkg);
     }
 
-    private static void scanRemoteViews(RemoteViews rv, Visit visit, WidgetRemoteViewsSpec spec) {
+    /** 仅作为 Android 10 以下老系统的补充兜底，不用于 Android 11+ 以避免隐藏 API 拦截。 */
+    private static void scanLegacyRemoteViews(RemoteViews rv, Visit visit, WidgetRemoteViewsSpec spec) {
         if (rv == null || !visit.visited.add(rv)) return;
         String lockHint = lockHintFromIcon(rv, spec);
         try {
@@ -790,14 +1064,12 @@ final class WidgetTokenBridge {
             for (Object action : (Iterable<?>) raw) {
                 if (action == null) continue;
                 int viewId = readViewId(action);
-                PendingIntent actionPendingIntent = readPendingIntent(action);
-                if (spec.isSettingView(viewId) && actionPendingIntent != null) {
-                    visit.config = actionPendingIntent;
-                } else if (spec.isAppAdditionView(viewId) && visit.config == null
-                        && actionPendingIntent != null) {
-                    visit.config = actionPendingIntent;
+                PendingIntent pi = readPendingIntent(action);
+                if (spec.isSettingView(viewId) && pi != null) {
+                    visit.config = pi;
+                } else if (spec.isAppAdditionView(viewId) && visit.config == null && pi != null) {
+                    visit.config = pi;
                 }
-                PendingIntent pi = actionPendingIntent;
                 if (pi != null) {
                     if (spec.isConfirmOkView(viewId)) visit.lockConfirm = pi;
                     if (spec.isFunStatusView(viewId) && lockHint != null) {
@@ -806,17 +1078,12 @@ final class WidgetTokenBridge {
                     }
                 }
                 Object nested = readField(action, "mNestedViews");
-                if (nested instanceof RemoteViews) scanRemoteViews((RemoteViews) nested, visit, spec);
+                if (nested instanceof RemoteViews) scanLegacyRemoteViews((RemoteViews) nested, visit, spec);
             }
         } catch (Throwable ignored) {
         }
     }
 
-    /**
-     * 官方 WidgetUiStatus 对 LOCK 的 onStatus 等于 anyDoorUnLocked；
-     * WidgetFunTypeIcon 在 onStatus 时显示 car_wg_funicon_door_lock_on（开锁图标）。
-     * 因此 on 资源表示 UNLOCKED，两个 off 资源表示 LOCKED。
-     */
     private static String lockHintFromIcon(RemoteViews rv, WidgetRemoteViewsSpec spec) {
         String result = null;
         try {
@@ -877,7 +1144,6 @@ final class WidgetTokenBridge {
         return null;
     }
 
-    /** 只接受点击后新捕获的 CONFIRM token，旧确认 token 不得用于新命令。 */
     private static void sendConfirmIfUpdated(long sentAt) {
         OfficialControlToken confirm;
         synchronized (STATE_LOCK) {
@@ -912,7 +1178,6 @@ final class WidgetTokenBridge {
         }
     }
 
-    /** 与通知桥接一致的 Android 14+ 后台 PendingIntent 发送参数。 */
     static void sendPendingIntent(PendingIntent pendingIntent) throws PendingIntent.CanceledException {
         if (Build.VERSION.SDK_INT >= 34) {
             ActivityOptions options = ActivityOptions.makeBasic();
@@ -921,6 +1186,22 @@ final class WidgetTokenBridge {
             pendingIntent.send(null, 0, null, null, null, null, options.toBundle());
         } else {
             pendingIntent.send();
+        }
+    }
+
+    private static final class IconReferenceCache {
+        final int[] offBlack;
+        final int[] offWhite;
+        final int[] on;
+
+        IconReferenceCache(int[] offBlack, int[] offWhite, int[] on) {
+            this.offBlack = offBlack;
+            this.offWhite = offWhite;
+            this.on = on;
+        }
+
+        boolean isUsable() {
+            return on != null && (offBlack != null || offWhite != null);
         }
     }
 
@@ -963,6 +1244,7 @@ final class WidgetTokenBridge {
         PendingIntent lockClick;
         PendingIntent lockConfirm;
         PendingIntent config;
+        View configView;
         String lockHint;
     }
 }

@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.luca.geelykeyradar"
-    android:versionCode="614"
-    android:versionName="4.6.14-min">
+    android:versionCode="615"
+    android:versionName="4.6.15-min">
 
     <uses-sdk
         android:minSdkVersion="29"
