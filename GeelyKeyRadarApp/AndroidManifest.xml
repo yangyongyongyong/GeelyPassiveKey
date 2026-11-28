@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.luca.geelykeyradar"
-    android:versionCode="613"
-    android:versionName="4.6.13-min">
+    android:versionCode="614"
+    android:versionName="4.6.14-min">
 
     <uses-sdk
         android:minSdkVersion="29"
@@ -44,11 +44,15 @@
 
     <queries>
         <package android:name="com.geelygalaxy.customer" />
+        <package android:name="com.geely.consumer" />
         <intent>
             <action android:name="com.zeekr.snc.service.action.DK_START" />
         </intent>
         <intent>
             <action android:name="com.geely.geometry.miuiservice.action" />
+        </intent>
+        <intent>
+            <action android:name="com.geely.consumer.miuiservice.action" />
         </intent>
     </queries>
 
@@ -56,7 +60,7 @@
         android:allowBackup="false"
         android:debuggable="true"
         android:icon="@drawable/ic_launcher"
-        android:label="银河无感钥匙"
+        android:label="吉利无感钥匙"
         android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
 
         <activity
@@ -96,7 +100,7 @@
             android:name=".KeyNotificationBridgeService"
             android:enabled="true"
             android:exported="true"
-            android:label="银河无感钥匙通知桥接"
+            android:label="吉利无感钥匙通知桥接"
             android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
             <intent-filter>
                 <action android:name="android.service.notification.NotificationListenerService" />

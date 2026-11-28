@@ -122,6 +122,16 @@ public class MainActivity extends Activity {
     private TextView overviewVehicleTitleView;
     private TextView overviewVehicleDetailView;
     private TextView overviewVehicleMetaView;
+    private TextView heroOfficialClientBadgeView;
+    private TextView manualChannelHintView;
+    private TextView brandModeAutoBtn;
+    private TextView brandModeConsumerBtn;
+    private TextView brandModeGalaxyBtn;
+    private TextView garageModeSummaryView;
+    private LinearLayout garageListContainer;
+    private Button garageMultiAutoButton;
+    private TextView officialClientsDetailView;
+    private String lastGarageRenderSignature = "";
     private TextView overviewHealthTitleView;
     private TextView overviewHealthDetailView;
     private LinearLayout overviewHealthCard;
@@ -404,8 +414,8 @@ public class MainActivity extends Activity {
         titles.setOrientation(LinearLayout.VERTICAL);
         LinearLayout.LayoutParams titlesLp = new LinearLayout.LayoutParams(0,
                 LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
-        titles.addView(text("银河无感钥匙", 22, COLOR_TEXT, Typeface.BOLD));
-        TextView subtitle = text("无感进出 · 靠近解锁 / 离开上锁", 12, COLOR_MUTED, Typeface.NORMAL);
+        titles.addView(text("吉利无感钥匙", 22, COLOR_TEXT, Typeface.BOLD));
+        TextView subtitle = text("吉利汽车 · 吉利银河 · 多车无感进出", 12, COLOR_MUTED, Typeface.NORMAL);
         LinearLayout.LayoutParams subtitleLp = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
         subtitleLp.topMargin = dp(2);
@@ -473,7 +483,16 @@ public class MainActivity extends Activity {
     private void buildOverviewContent() {
         addSection(overviewPage, "实时状态");
         LinearLayout hero = heroCard();
-        hero.addView(text("当前连接", 12, COLOR_PRIMARY, Typeface.BOLD));
+        LinearLayout heroTopRow = new LinearLayout(this);
+        heroTopRow.setOrientation(LinearLayout.HORIZONTAL);
+        heroTopRow.setGravity(Gravity.CENTER_VERTICAL);
+        heroTopRow.addView(text("当前连接", 12, COLOR_PRIMARY, Typeface.BOLD),
+                new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        heroOfficialClientBadgeView = text("双端自动", 11, COLOR_ON_PRIMARY_CONTAINER, Typeface.BOLD);
+        heroOfficialClientBadgeView.setPadding(dp(9), dp(4), dp(9), dp(4));
+        heroOfficialClientBadgeView.setBackground(roundedBackground(COLOR_PRIMARY_CONTAINER, 999));
+        heroTopRow.addView(heroOfficialClientBadgeView);
+        hero.addView(heroTopRow);
         heroTitleView = text("正在连接服务", 25, COLOR_TEXT, Typeface.BOLD);
         LinearLayout.LayoutParams heroTitleLp = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
@@ -525,7 +544,8 @@ public class MainActivity extends Activity {
 
         addSection(overviewPage, "快捷控制");
         LinearLayout manualCard = card();
-        manualCard.addView(text("打开前请先在银河 App 连接车辆", 12, COLOR_MUTED, Typeface.NORMAL));
+        manualChannelHintView = text("打开前请先在吉利汽车或银河 App 连接车辆", 12, COLOR_MUTED, Typeface.NORMAL);
+        manualCard.addView(manualChannelHintView);
         LinearLayout manualButtons = new LinearLayout(this);
         manualButtons.setOrientation(LinearLayout.HORIZONTAL);
         manualUnlockButton = filledButton("解锁");
@@ -549,19 +569,20 @@ public class MainActivity extends Activity {
         manualCard.addView(manualControlView, manualStatusLp);
         overviewPage.addView(manualCard, cardLp());
 
-        addSection(overviewPage, "本车");
+        addSection(overviewPage, "车型与多车车库");
         LinearLayout vehicleCard = card();
         LinearLayout vehicleHeader = new LinearLayout(this);
         vehicleHeader.setGravity(Gravity.CENTER_VERTICAL);
-        overviewVehicleTitleView = text("尚未识别本车", 18, COLOR_TEXT, Typeface.BOLD);
+        overviewVehicleTitleView = text("尚未识别车辆", 18, COLOR_TEXT, Typeface.BOLD);
         vehicleHeader.addView(overviewVehicleTitleView, new LinearLayout.LayoutParams(0,
                 LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
-        TextView vehicleBadge = text("本车", 11, COLOR_ON_PRIMARY_CONTAINER, Typeface.BOLD);
-        vehicleBadge.setPadding(dp(9), dp(4), dp(9), dp(4));
-        vehicleBadge.setBackground(roundedBackground(COLOR_PRIMARY_CONTAINER, 999));
-        vehicleHeader.addView(vehicleBadge);
+        garageModeSummaryView = text("双品牌自动", 11, COLOR_ON_PRIMARY_CONTAINER, Typeface.BOLD);
+        garageModeSummaryView.setPadding(dp(9), dp(4), dp(9), dp(4));
+        garageModeSummaryView.setBackground(roundedBackground(COLOR_PRIMARY_CONTAINER, 999));
+        vehicleHeader.addView(garageModeSummaryView);
         vehicleCard.addView(vehicleHeader);
-        overviewVehicleDetailView = text("保持应用运行，让银河连接车辆一次即可学习", 13, COLOR_MUTED,
+
+        overviewVehicleDetailView = text("支持吉利汽车与吉利银河，可添加多台车自动无感切换", 13, COLOR_MUTED,
                 Typeface.NORMAL);
         LinearLayout.LayoutParams vehicleDetailLp = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
@@ -570,8 +591,50 @@ public class MainActivity extends Activity {
         overviewVehicleMetaView = text("", 12, COLOR_PRIMARY, Typeface.NORMAL);
         LinearLayout.LayoutParams vehicleMetaLp = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-        vehicleMetaLp.topMargin = dp(8);
+        vehicleMetaLp.topMargin = dp(6);
         vehicleCard.addView(overviewVehicleMetaView, vehicleMetaLp);
+
+        LinearLayout brandSelectorRow = new LinearLayout(this);
+        brandSelectorRow.setOrientation(LinearLayout.HORIZONTAL);
+        LinearLayout.LayoutParams brandRowLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        brandRowLp.topMargin = dp(12);
+        brandModeAutoBtn = brandPillButton("双品牌自动", () -> selectGlobalBrandMode(OfficialBrandPolicy.Brand.AUTO));
+        brandModeConsumerBtn = brandPillButton("吉利汽车", () -> selectGlobalBrandMode(OfficialBrandPolicy.Brand.CONSUMER));
+        brandModeGalaxyBtn = brandPillButton("吉利银河", () -> selectGlobalBrandMode(OfficialBrandPolicy.Brand.GALAXY));
+        LinearLayout.LayoutParams pill1Lp = new LinearLayout.LayoutParams(0, dp(36), 1f);
+        pill1Lp.rightMargin = dp(6);
+        LinearLayout.LayoutParams pill2Lp = new LinearLayout.LayoutParams(0, dp(36), 1f);
+        pill2Lp.rightMargin = dp(6);
+        LinearLayout.LayoutParams pill3Lp = new LinearLayout.LayoutParams(0, dp(36), 1f);
+        brandSelectorRow.addView(brandModeAutoBtn, pill1Lp);
+        brandSelectorRow.addView(brandModeConsumerBtn, pill2Lp);
+        brandSelectorRow.addView(brandModeGalaxyBtn, pill3Lp);
+        vehicleCard.addView(brandSelectorRow, brandRowLp);
+
+        garageListContainer = new LinearLayout(this);
+        garageListContainer.setOrientation(LinearLayout.VERTICAL);
+        LinearLayout.LayoutParams garageListLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        garageListLp.topMargin = dp(10);
+        vehicleCard.addView(garageListContainer, garageListLp);
+
+        LinearLayout garageActionRow = new LinearLayout(this);
+        garageActionRow.setOrientation(LinearLayout.HORIZONTAL);
+        Button addCarBtn = tonalButton("+ 添加车型 / 新车");
+        addCarBtn.setOnClickListener(v -> promptAddOrEditVehicle(null));
+        garageMultiAutoButton = outlinedButton("全部多车自动");
+        garageMultiAutoButton.setOnClickListener(v -> switchToMultiCarAutoMode());
+        garageMultiAutoButton.setVisibility(View.GONE);
+        LinearLayout.LayoutParams addCarLp = new LinearLayout.LayoutParams(0, dp(46), 1f);
+        LinearLayout.LayoutParams multiLp = new LinearLayout.LayoutParams(0, dp(46), 1f);
+        multiLp.leftMargin = dp(8);
+        garageActionRow.addView(addCarBtn, addCarLp);
+        garageActionRow.addView(garageMultiAutoButton, multiLp);
+        LinearLayout.LayoutParams actionRowLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        actionRowLp.topMargin = dp(12);
+        vehicleCard.addView(garageActionRow, actionRowLp);
         overviewPage.addView(vehicleCard, cardLp());
 
         addSection(overviewPage, "系统状态");
@@ -646,7 +709,7 @@ public class MainActivity extends Activity {
         Button customThresholdBtn = tonalButton("调整连接 / 解锁 / 上锁参数");
         customThresholdBtn.setOnClickListener(v -> promptCustomThresholds());
         thresholdCard.addView(customThresholdBtn, buttonLp());
-        thresholdCard.addView(text("连接阈值只提前唤醒银河，不会直接解锁；RSSI 不对应固定米数，调整后立即生效。",
+        thresholdCard.addView(text("连接阈值只提前唤醒官方 App，不会直接解锁；RSSI 不对应固定米数，调整后立即生效。",
                 12, COLOR_MUTED, Typeface.NORMAL), supportLp());
         controlsPage.addView(thresholdCard, cardLp());
 
@@ -661,6 +724,17 @@ public class MainActivity extends Activity {
     }
 
     private void buildMaintenanceContent() {
+        addSection(maintenancePage, "官方客户端与兼容");
+        LinearLayout officialCard = card();
+        officialCard.addView(text("双品牌兼容状态", 17, COLOR_TEXT, Typeface.BOLD));
+        officialClientsDetailView = text("正在检测吉利汽车与银河 App...", 13, COLOR_MUTED, Typeface.NORMAL);
+        officialClientsDetailView.setLineSpacing(dp(2), 1.08f);
+        officialCard.addView(officialClientsDetailView, supportLp());
+        Button maintManageGarageBtn = tonalButton("添加车型或切换官方端");
+        maintManageGarageBtn.setOnClickListener(v -> promptAddOrEditVehicle(null));
+        officialCard.addView(maintManageGarageBtn, buttonLp());
+        maintenancePage.addView(officialCard, cardLp());
+
         addSection(maintenancePage, "授权与系统");
         LinearLayout permissionCard = card();
         permissionCard.addView(text("授权与运行全检", 17, COLOR_TEXT, Typeface.BOLD));
@@ -705,7 +779,7 @@ public class MainActivity extends Activity {
         widgetConfigureButton.setContentDescription("打开银河官方小组件配置页，由你手动选择车辆和车锁控件");
         widgetConfigureButton.setOnClickListener(v -> openWidgetConfiguration());
         widgetCard.addView(widgetConfigureButton, buttonLp());
-        widgetCard.addView(text("绑定和车辆选择都由你手动完成；本应用不会自动打开银河 App 或替你点击控件。",
+        widgetCard.addView(text("绑定和车辆选择都由你手动完成；本应用不会自动打开官方 App 或替你点击控件。",
                 11, COLOR_MUTED, Typeface.NORMAL), supportLp());
         maintenancePage.addView(widgetCard, cardLp());
 
@@ -778,7 +852,7 @@ public class MainActivity extends Activity {
 
         LinearLayout vehicleParamCard = card();
         vehicleParamCard.addView(text("车机参数（只读）", 16, COLOR_TEXT, Typeface.BOLD));
-        vehicleParamView = text("等待读取银河官方 AIDL...", 12, COLOR_MUTED, Typeface.NORMAL);
+        vehicleParamView = text("等待读取官方 AIDL...", 12, COLOR_MUTED, Typeface.NORMAL);
         vehicleParamCard.addView(vehicleParamView, supportLp());
         Button refreshVehicleParamButton = outlinedButton("重新读取车机参数");
         refreshVehicleParamButton.setOnClickListener(v -> {
@@ -832,7 +906,7 @@ public class MainActivity extends Activity {
 
         addSection(maintenancePage, "关于");
         LinearLayout aboutCard = card();
-        aboutCard.addView(text("银河无感钥匙", 15, COLOR_TEXT, Typeface.BOLD));
+        aboutCard.addView(text("吉利无感钥匙", 15, COLOR_TEXT, Typeface.BOLD));
         TextView version = text(installedVersionLabel(), 12, COLOR_MUTED, Typeface.NORMAL);
         version.setTextIsSelectable(true);
         aboutCard.addView(version, supportLp());
@@ -1000,7 +1074,7 @@ public class MainActivity extends Activity {
                     + "通知监听：" + notificationStatusText(notificationAccess, listenerConnected) + "\n"
                     + "系统通知权限：" + yesNo(notificationRuntimePermission) + "\n"
                     + "电池白名单：" + yesNo(batteryWhitelisted) + "\n"
-                    + "银河 App：" + (geelyInstalled ? "已安装" : "当前空间未检测到（鸿蒙/隐私空间需与银河装在同一容器）"));
+                    + OfficialTarget.installedSummary(this));
             identityView.setText("等待服务启动");
             VehicleIdentityStore store = new VehicleIdentityStore(this);
             thresholdView.setText(ThresholdSettingsForm.configuredSummary(
@@ -1013,7 +1087,10 @@ public class MainActivity extends Activity {
                     "服务总开关：" + (status.serviceEnabled ? "开启 (运行中)" : "已关闭 (完全停止操作)") + "\n"
                             + "蓝牙：" + (status.bluetoothOn ? "已开启" : "未开启")
                             + (status.scanning ? " · 扫描中" : "") + "\n"
-                            + "银河钥匙：" + (status.geelyConnected ? "已连接" : "未连接") + "\n"
+                            + "官方端：" + OfficialBrandPolicy.displayNameForBrand(status.activeBrand)
+                            + " (" + (status.geelyConnected ? "已连接" : "未连接") + ")\n"
+                            + "车库启用：" + status.garageEnabledCount + "/" + status.garageCount + " 台"
+                            + (status.multiCarAutoMode ? " · 多车自动" : "") + "\n"
                             + "鉴权观察：" + status.authObserver + "\n"
                             + "连接态 RSSI：" + (status.gattConnected ? "已挂载" : "未挂载") + "\n"
                             + "有线充电：" + (status.wiredCharging
@@ -1145,7 +1222,7 @@ public class MainActivity extends Activity {
         if (bind == null) {
             String message = WidgetTokenBridge.isBound()
                     ? "官方小组件已绑定，可打开配置页选择车辆"
-                    : "未找到银河官方小组件，请确认银河 App 已安装并更新";
+                    : "未找到对应官方小组件，请确认吉利汽车或银河 App 已安装并更新";
             Toast.makeText(this, message, Toast.LENGTH_LONG).show();
             refreshUi();
             return;
@@ -1164,16 +1241,16 @@ public class MainActivity extends Activity {
         if (configure != null) {
             try {
                 startActivityForResult(configure, REQUEST_WIDGET_CONFIGURE);
-                Toast.makeText(this, "请在银河配置页手动选择车辆和车锁控件，完成后返回", Toast.LENGTH_LONG).show();
+                Toast.makeText(this, "请在官方配置页手动选择车辆和车锁控件，完成后返回", Toast.LENGTH_LONG).show();
                 return;
             } catch (Throwable unavailable) {
                 DiagnosticLog.bridgeError("Widget", "CONFIG_ACTIVITY_ERROR", unavailable);
             }
         }
         if (WidgetTokenBridge.openConfig(this)) {
-            Toast.makeText(this, "请在银河配置页手动选择车辆和车锁控件，完成后返回", Toast.LENGTH_LONG).show();
+            Toast.makeText(this, "请在官方配置页手动选择车辆和车锁控件，完成后返回", Toast.LENGTH_LONG).show();
         } else {
-            Toast.makeText(this, "尚未绑定官方小组件，或银河 App 未提供配置页", Toast.LENGTH_LONG).show();
+            Toast.makeText(this, "尚未绑定官方小组件，或官方 App 未提供配置页", Toast.LENGTH_LONG).show();
         }
         refreshUi();
     }
@@ -1308,13 +1385,15 @@ public class MainActivity extends Activity {
             heroZoneView.setText("无法发现车辆");
             heroDetailView.setText("请先打开手机蓝牙，再等待车辆广播");
         } else if (status.geelyConnected) {
-            heroTitleView.setText("银河钥匙已连接");
+            String brandApp = OfficialBrandPolicy.PKG_GALAXY.equals(status.activeOfficialPkg)
+                    ? "银河钥匙" : "吉利汽车钥匙";
+            heroTitleView.setText(brandApp + "已连接");
             renderHeroSignal(freshSignal, status.rssi);
             heroZoneView.setText(status.zone == null || status.zone.isEmpty()
                     ? "连接态测距中" : displayZone(status.zone));
             heroDetailView.setText(status.gattConnected
                     ? "连接态 RSSI 已挂载 · 自动动作保持运行"
-                    : "银河已连接，正在建立本应用测距通道");
+                    : "官方钥匙已连接，正在建立本应用测距通道");
         } else {
             heroTitleView.setText(status.scanning ? "正在等待车辆" : "服务正在恢复扫描");
             renderHeroSignal(freshSignal, status.rssi);
@@ -1325,20 +1404,23 @@ public class MainActivity extends Activity {
                     + (status.wiredCharging && status.blockWhenCharging ? " · 插线禁控中" : ""));
         }
 
+        refreshBrandAndGarageUi(status);
         if (status != null && status.identityLearned) {
             overviewVehicleTitleView.setText(status.vehicleName == null || status.vehicleName.isEmpty()
                     ? "本车已识别" : status.vehicleName);
             boolean observed = !VehicleLearningState.UNKNOWN.equals(status.learningSource)
                     && !VehicleLearningState.LEGACY.equals(status.learningSource)
                     && !VehicleLearningState.MANUAL.equals(status.learningSource);
-            overviewVehicleDetailView.setText(observed ? "已学习本车蓝牙身份" : "已有本车配置");
+            String brandTxt = OfficialBrandPolicy.shortLabel(status.activeBrand);
+            overviewVehicleDetailView.setText((observed ? "已学习蓝牙身份" : "已有本车配置")
+                    + " · 品牌：" + brandTxt);
             overviewVehicleMetaView.setText(String.format(Locale.ROOT,
                     "连接 ≥ %.0f · 解锁 ≥ %.0f · 上锁 ≤ %.0f dBm / %.1fs · %s",
                     status.connectDbm, status.unlockDbm, status.lockDbm, status.lockDwellMs / 1000f,
                     status.usingDefaultThresholds ? "项目默认" : "自定义"));
         } else {
-            overviewVehicleTitleView.setText("尚未识别本车");
-            overviewVehicleDetailView.setText("保持应用运行，让银河连接车辆一次");
+            overviewVehicleTitleView.setText("尚未识别车辆");
+            overviewVehicleDetailView.setText("选择品牌或添加车型后，让官方 App 连接一次即可自动入库");
             overviewVehicleMetaView.setText(status == null ? "等待服务启动" : status.learningMessage);
         }
 
@@ -1444,6 +1526,381 @@ public class MainActivity extends Activity {
                         + "下一步会打开 Android 系统安装器；覆盖安装不会清除现有车辆配置和授权。")
                 .setNegativeButton("稍后", null)
                 .setPositiveButton("开始安装", (dialog, which) -> openUpdateInstaller())
+                .show();
+    }
+
+    private TextView brandPillButton(String label, Runnable onClick) {
+        TextView btn = text(label, 12, COLOR_TEXT, Typeface.BOLD);
+        btn.setGravity(Gravity.CENTER);
+        btn.setClickable(true);
+        btn.setFocusable(true);
+        btn.setOnClickListener(v -> onClick.run());
+        return btn;
+    }
+
+    private void selectGlobalBrandMode(OfficialBrandPolicy.Brand mode) {
+        VehicleIdentityStore store = new VehicleIdentityStore(this);
+        store.setBrandMode(mode);
+        if (service != null) {
+            service.reloadGarageConfiguration(true);
+        } else {
+            KeyNotificationBridgeService.setFilterBrand(this, mode);
+        }
+        lastGarageRenderSignature = "";
+        Toast.makeText(this, "已切换为：" + OfficialBrandPolicy.displayNameForBrand(mode),
+                Toast.LENGTH_SHORT).show();
+        refreshUi();
+    }
+
+    private void switchToMultiCarAutoMode() {
+        VehicleIdentityStore store = new VehicleIdentityStore(this);
+        store.setPinnedProfileId("");
+        if (service != null) {
+            service.reloadGarageConfiguration(true);
+        }
+        lastGarageRenderSignature = "";
+        Toast.makeText(this, "已切换为多车自动无感模式", Toast.LENGTH_SHORT).show();
+        refreshUi();
+    }
+
+    private void refreshBrandAndGarageUi(PassiveKeyService.Status status) {
+        VehicleIdentityStore store = new VehicleIdentityStore(this);
+        VehicleGarage garage = store.loadGarage();
+        boolean consumerInstalled = OfficialTarget.isConsumerInstalled(this);
+        boolean galaxyInstalled = OfficialTarget.isGalaxyInstalled(this);
+        OfficialBrandPolicy.Brand activeBrand = status != null
+                ? status.activeBrand : OfficialTarget.resolveBrand(this, garage.brandMode, OfficialBrandPolicy.Brand.AUTO);
+        if (heroOfficialClientBadgeView != null) {
+            heroOfficialClientBadgeView.setText(OfficialBrandPolicy.shortLabel(activeBrand));
+        }
+        if (manualChannelHintView != null) {
+            manualChannelHintView.setText("当前控制端："
+                    + OfficialBrandPolicy.displayNameForBrand(activeBrand) + "（需蓝牙钥匙已连接）");
+        }
+        if (officialClientsDetailView != null) {
+            officialClientsDetailView.setText(
+                    "吉利汽车 App（com.geely.consumer）：" + (consumerInstalled ? "已安装" : "未安装") + "\n"
+                            + "银河 App（com.geelygalaxy.customer）：" + (galaxyInstalled ? "已安装" : "未安装") + "\n"
+                            + "当前选择模式：" + OfficialBrandPolicy.displayNameForBrand(garage.brandMode) + "\n"
+                            + "当前车库：" + garage.profiles.size() + " 台档案（"
+                            + garage.enabledCount() + " 台参与自动无感）"
+            );
+        }
+        styleBrandPill(brandModeAutoBtn, garage.brandMode == OfficialBrandPolicy.Brand.AUTO);
+        styleBrandPill(brandModeConsumerBtn, garage.brandMode == OfficialBrandPolicy.Brand.CONSUMER);
+        styleBrandPill(brandModeGalaxyBtn, garage.brandMode == OfficialBrandPolicy.Brand.GALAXY);
+
+        if (garageModeSummaryView != null) {
+            if (!garage.learningProfileId.isEmpty()) {
+                garageModeSummaryView.setText("学习新车中");
+            } else if (!garage.pinnedProfileId.isEmpty()) {
+                garageModeSummaryView.setText("已锁定单车");
+            } else if (garage.enabledCount() >= 2) {
+                garageModeSummaryView.setText("多车自动(" + garage.enabledCount() + "台)");
+            } else if (garage.enabledCount() == 1) {
+                garageModeSummaryView.setText("单车启用");
+            } else {
+                garageModeSummaryView.setText("待添加车辆");
+            }
+        }
+        if (garageMultiAutoButton != null) {
+            boolean showMulti = !garage.pinnedProfileId.isEmpty() || !garage.learningProfileId.isEmpty();
+            garageMultiAutoButton.setVisibility(showMulti ? View.VISIBLE : View.GONE);
+        }
+        if (garageListContainer == null) return;
+        StringBuilder sig = new StringBuilder();
+        sig.append(garage.brandMode).append('|').append(garage.pinnedProfileId)
+                .append('|').append(garage.learningProfileId).append('|')
+                .append(status != null ? status.activeProfileId : "");
+        for (VehicleProfile p : garage.profiles) {
+            sig.append(';').append(p.id).append(':').append(p.displayTitle())
+                    .append(':').append(p.brand).append(':').append(p.enabled)
+                    .append(':').append(p.hasLearnedAddress())
+                    .append(':').append(p.identity != null ? p.identity.vinTail3 : "");
+        }
+        String nextSig = sig.toString();
+        if (nextSig.equals(lastGarageRenderSignature)) return;
+        lastGarageRenderSignature = nextSig;
+        garageListContainer.removeAllViews();
+        if (garage.profiles.isEmpty()) {
+            TextView empty = text("车库暂无档案：点击下方“+ 添加车型 / 新车”选择吉利汽车或银河车型。",
+                    12, COLOR_MUTED, Typeface.NORMAL);
+            empty.setPadding(dp(4), dp(6), dp(4), dp(2));
+            garageListContainer.addView(empty);
+            return;
+        }
+        for (VehicleProfile profile : garage.profiles) {
+            garageListContainer.addView(buildGarageRow(profile, garage, status));
+        }
+    }
+
+    private void styleBrandPill(TextView btn, boolean selected) {
+        if (btn == null) return;
+        btn.setTextColor(selected ? COLOR_ON_PRIMARY_CONTAINER : COLOR_MUTED);
+        btn.setBackground(roundedBackground(
+                selected ? COLOR_PRIMARY_CONTAINER : COLOR_SURFACE_VARIANT, 12));
+    }
+
+    private View buildGarageRow(VehicleProfile profile, VehicleGarage garage,
+                                PassiveKeyService.Status status) {
+        boolean isPinned = profile.id.equals(garage.pinnedProfileId);
+        boolean isLearning = profile.id.equals(garage.learningProfileId);
+        boolean isSessionActive = status != null && profile.id.equals(status.activeProfileId);
+
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(dp(12), dp(10), dp(12), dp(10));
+        row.setClickable(true);
+        row.setFocusable(true);
+        int border = isPinned || isSessionActive ? COLOR_PRIMARY : COLOR_OUTLINE;
+        row.setBackground(rippleBackground(COLOR_SURFACE_VARIANT, border, 14,
+                Color.argb(28, 255, 255, 255)));
+
+        LinearLayout left = new LinearLayout(this);
+        left.setOrientation(LinearLayout.VERTICAL);
+        String titleStr = profile.displayTitle();
+        TextView title = text(titleStr, 14, profile.enabled ? COLOR_TEXT : COLOR_MUTED, Typeface.BOLD);
+        left.addView(title);
+
+        String stateTag = isLearning ? "等待连接学习"
+                : isPinned ? "当前唯一锁定"
+                : !profile.enabled ? "已停用"
+                : profile.hasLearnedAddress() ? "已绑定 · 自动无感"
+                : (profile.hasMatchableClue() ? "已填尾号 · 待连接" : "待连接学习");
+        String detailStr = OfficialBrandPolicy.shortLabel(profile.brand) + " · " + stateTag;
+        if (profile.identity != null && !profile.identity.vinTail3.isEmpty()) {
+            detailStr += " · 尾号" + profile.identity.vinTail3;
+        } else if (profile.identity != null && !profile.identity.vinTail2.isEmpty()) {
+            detailStr += " · 尾号" + profile.identity.vinTail2;
+        }
+        TextView sub = text(detailStr, 11, COLOR_MUTED, Typeface.NORMAL);
+        LinearLayout.LayoutParams subLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        subLp.topMargin = dp(2);
+        left.addView(sub, subLp);
+        row.addView(left, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+
+        String badgeText = isSessionActive && status != null && status.geelyConnected ? "已连接"
+                : (isPinned ? "锁定" : (profile.enabled ? "启用" : "停用"));
+        int badgeFg = profile.enabled ? COLOR_ON_PRIMARY_CONTAINER : COLOR_MUTED;
+        int badgeBg = profile.enabled ? COLOR_PRIMARY_CONTAINER : COLOR_SURFACE_HIGH;
+        TextView badge = text(badgeText, 11, badgeFg, Typeface.BOLD);
+        badge.setPadding(dp(8), dp(4), dp(8), dp(4));
+        badge.setBackground(roundedBackground(badgeBg, 999));
+        row.addView(badge);
+
+        row.setOnClickListener(v -> showVehicleProfileActions(profile, garage));
+
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        lp.topMargin = dp(8);
+        row.setLayoutParams(lp);
+        return row;
+    }
+
+    private void showVehicleProfileActions(VehicleProfile profile, VehicleGarage garage) {
+        boolean isPinned = profile.id.equals(garage.pinnedProfileId);
+        java.util.List<String> labels = new java.util.ArrayList<>();
+        java.util.List<Runnable> actions = new java.util.ArrayList<>();
+
+        if (isPinned) {
+            labels.add("取消单车锁定（恢复多车自动）");
+            actions.add(this::switchToMultiCarAutoMode);
+        } else {
+            labels.add("仅限此车（锁定该车辆与品牌）");
+            actions.add(() -> {
+                VehicleIdentityStore store = new VehicleIdentityStore(this);
+                if (!profile.enabled) {
+                    store.upsertProfile(profile.withEnabled(true), true, false);
+                } else {
+                    store.setPinnedProfileId(profile.id);
+                }
+                if (service != null) service.reloadGarageConfiguration(true);
+                lastGarageRenderSignature = "";
+                refreshUi();
+            });
+        }
+        labels.add(profile.enabled ? "暂停此车（不参与自动无感）" : "启用此车（参与自动无感）");
+        actions.add(() -> {
+            VehicleIdentityStore store = new VehicleIdentityStore(this);
+            store.upsertProfile(profile.withEnabled(!profile.enabled), false, false);
+            if (service != null) service.reloadGarageConfiguration(true);
+            lastGarageRenderSignature = "";
+            refreshUi();
+        });
+        labels.add("编辑车型、别名与品牌");
+        actions.add(() -> promptAddOrEditVehicle(profile));
+        labels.add("设为待学习新车（清空旧地址重新连接）");
+        actions.add(() -> {
+            VehicleIdentityStore store = new VehicleIdentityStore(this);
+            VehicleProfile cleared = profile.withIdentity(null, VehicleLearningState.UNKNOWN);
+            store.upsertProfile(cleared, false, true);
+            if (service != null) service.startLearningProfile(profile.id);
+            lastGarageRenderSignature = "";
+            Toast.makeText(this, "请靠近车辆并让官方 App 连接一次以完成学习", Toast.LENGTH_LONG).show();
+            refreshUi();
+        });
+        labels.add("从车库删除此车");
+        actions.add(() -> {
+            VehicleIdentityStore store = new VehicleIdentityStore(this);
+            store.removeProfile(profile.id);
+            if (service != null) service.reloadGarageConfiguration(true);
+            lastGarageRenderSignature = "";
+            refreshUi();
+        });
+
+        new AlertDialog.Builder(this)
+                .setTitle(profile.displayTitle() + " · " + OfficialBrandPolicy.shortLabel(profile.brand))
+                .setItems(labels.toArray(new String[0]), (d, which) -> actions.get(which).run())
+                .setNegativeButton("关闭", null)
+                .show();
+    }
+
+    /** 新增或编辑车辆对话框：提供品牌、常见车型预设、自定义别名与可选 VIN 尾号。 */
+    private void promptAddOrEditVehicle(VehicleProfile existing) {
+        ScrollView scroll = new ScrollView(this);
+        LinearLayout content = new LinearLayout(this);
+        content.setOrientation(LinearLayout.VERTICAL);
+        int pad = dp(20);
+        content.setPadding(pad, dp(8), pad, dp(8));
+
+        final OfficialBrandPolicy.Brand[] selectedBrand = new OfficialBrandPolicy.Brand[]{
+                existing != null ? existing.brand : new VehicleIdentityStore(this).getBrandMode()
+        };
+        content.addView(text("1. 选择官方品牌", 13, COLOR_TEXT, Typeface.BOLD));
+        LinearLayout brandRow = new LinearLayout(this);
+        brandRow.setOrientation(LinearLayout.HORIZONTAL);
+        LinearLayout.LayoutParams brLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        brLp.topMargin = dp(8);
+        final TextView[] brandBtns = new TextView[3];
+        OfficialBrandPolicy.Brand[] brandChoices = new OfficialBrandPolicy.Brand[]{
+                OfficialBrandPolicy.Brand.CONSUMER,
+                OfficialBrandPolicy.Brand.GALAXY,
+                OfficialBrandPolicy.Brand.AUTO
+        };
+        String[] brandTitles = new String[]{"吉利汽车", "吉利银河", "自动识别"};
+        final Runnable refreshBrandBtns = () -> {
+            for (int i = 0; i < 3; i++) {
+                boolean active = selectedBrand[0] == brandChoices[i];
+                styleBrandPill(brandBtns[i], active);
+            }
+        };
+        for (int i = 0; i < 3; i++) {
+            final OfficialBrandPolicy.Brand b = brandChoices[i];
+            brandBtns[i] = brandPillButton(brandTitles[i], () -> {
+                selectedBrand[0] = b;
+                refreshBrandBtns.run();
+            });
+            LinearLayout.LayoutParams pLp = new LinearLayout.LayoutParams(0, dp(36), 1f);
+            if (i < 2) pLp.rightMargin = dp(6);
+            brandRow.addView(brandBtns[i], pLp);
+        }
+        refreshBrandBtns.run();
+        content.addView(brandRow, brLp);
+
+        content.addView(text("2. 快捷选择车型（点击自动填充品牌与名称）", 13, COLOR_TEXT, Typeface.BOLD), supportLp());
+        EditText aliasInput = new EditText(this);
+        aliasInput.setHint("车辆名称，例如：星越L / 家里的银河E5");
+        aliasInput.setSingleLine(true);
+        aliasInput.setTextColor(COLOR_TEXT);
+        aliasInput.setHintTextColor(COLOR_MUTED);
+        if (existing != null) {
+            aliasInput.setText(existing.alias.isEmpty() ? existing.modelHint : existing.alias);
+        }
+
+        final String[] selectedModelHint = new String[]{existing != null ? existing.modelHint : ""};
+        android.widget.HorizontalScrollView chipScroll = new android.widget.HorizontalScrollView(this);
+        chipScroll.setHorizontalScrollBarEnabled(false);
+        LinearLayout chipRow = new LinearLayout(this);
+        chipRow.setOrientation(LinearLayout.HORIZONTAL);
+        for (OfficialBrandPolicy.ModelPreset preset : OfficialBrandPolicy.PRESETS) {
+            TextView chip = text(preset.modelName, 12, COLOR_ON_PRIMARY_CONTAINER, Typeface.BOLD);
+            chip.setPadding(dp(12), dp(7), dp(12), dp(7));
+            chip.setBackground(roundedBackground(COLOR_SURFACE_VARIANT, 999));
+            chip.setClickable(true);
+            chip.setFocusable(true);
+            chip.setOnClickListener(v -> {
+                selectedBrand[0] = preset.brand;
+                selectedModelHint[0] = preset.modelName;
+                aliasInput.setText(preset.modelName);
+                refreshBrandBtns.run();
+            });
+            LinearLayout.LayoutParams cLp = new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+            cLp.rightMargin = dp(8);
+            chipRow.addView(chip, cLp);
+        }
+        chipScroll.addView(chipRow);
+        LinearLayout.LayoutParams scLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        scLp.topMargin = dp(8);
+        content.addView(chipScroll, scLp);
+
+        content.addView(text("3. 自定义车辆名称", 13, COLOR_TEXT, Typeface.BOLD), supportLp());
+        LinearLayout.LayoutParams aliasLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        aliasLp.topMargin = dp(4);
+        content.addView(aliasInput, aliasLp);
+
+        EditText vinInput = new EditText(this);
+        vinInput.setHint("可选：车架号后 2~3 位（如 245），留空则连车自动学");
+        vinInput.setSingleLine(true);
+        vinInput.setTextColor(COLOR_TEXT);
+        vinInput.setHintTextColor(COLOR_MUTED);
+        if (existing != null && existing.identity != null) {
+            String suffix = !existing.identity.vinTail3.isEmpty()
+                    ? existing.identity.vinTail3 : existing.identity.vinTail2;
+            vinInput.setText(suffix);
+        }
+        content.addView(text("4. VIN 尾号匹配（可选）", 13, COLOR_TEXT, Typeface.BOLD), supportLp());
+        content.addView(vinInput, aliasLp);
+
+        scroll.addView(content);
+        new AlertDialog.Builder(this)
+                .setTitle(existing == null ? "添加车型 / 新车" : "编辑车辆档案")
+                .setView(scroll)
+                .setNegativeButton("取消", null)
+                .setPositiveButton("保存", (dialog, which) -> {
+                    String alias = aliasInput.getText() == null ? "" : aliasInput.getText().toString().trim();
+                    String rawVin = vinInput.getText() == null ? "" : vinInput.getText().toString().trim();
+                    String digits = rawVin.replaceAll("[^0-9A-Za-z]", "").toUpperCase(Locale.ROOT);
+                    if (digits.length() > 3) digits = digits.substring(digits.length() - 3);
+                    VehicleIdentity nextIdentity = existing != null ? existing.identity : null;
+                    String nextSource = existing != null ? existing.learningSource : VehicleLearningState.UNKNOWN;
+                    boolean startLearn = false;
+                    if (digits.length() >= 2) {
+                        String tail3 = digits.length() == 3 ? digits : "";
+                        String tail2 = digits.substring(digits.length() - 2);
+                        String name = !tail3.isEmpty() ? ("GeelyVehicle" + tail3) : "";
+                        boolean same = nextIdentity != null && (!tail3.isEmpty()
+                                ? tail3.equalsIgnoreCase(nextIdentity.vinTail3)
+                                : tail2.equalsIgnoreCase(nextIdentity.vinTail2));
+                        if (!same) {
+                            nextIdentity = new VehicleIdentity("", name, tail2, tail3, "", -1, System.currentTimeMillis());
+                            nextSource = VehicleLearningState.MANUAL;
+                        }
+                    } else if (existing == null) {
+                        nextIdentity = null;
+                        startLearn = true;
+                    }
+                    VehicleIdentityStore store = new VehicleIdentityStore(this);
+                    String id = existing != null ? existing.id : store.nextProfileId();
+                    VehicleProfile saved = new VehicleProfile(id, alias, selectedBrand[0],
+                            selectedModelHint[0], nextIdentity, nextSource,
+                            existing == null || existing.enabled);
+                    store.upsertProfile(saved, false, startLearn);
+                    if (service != null) {
+                        if (startLearn) service.startLearningProfile(id);
+                        else service.reloadGarageConfiguration(true);
+                    }
+                    lastGarageRenderSignature = "";
+                    Toast.makeText(this, startLearn
+                            ? "已添加车辆，请连接一次官方蓝牙钥匙完成学习"
+                            : "已保存车辆档案：" + saved.displayTitle(), Toast.LENGTH_LONG).show();
+                    refreshUi();
+                })
                 .show();
     }
 
@@ -2061,7 +2518,7 @@ public class MainActivity extends Activity {
                 .setMessage("Android/OriginOS 没有允许普通 App 自动锁定最近任务卡片的公开接口。\n\n"
                         + "请按下面操作：\n"
                         + "1. 从屏幕底部上滑并停留，打开最近任务；\n"
-                        + "2. 找到“银河无感钥匙”卡片；\n"
+                        + "2. 找到“吉利无感钥匙”卡片；\n"
                         + "3. 长按卡片，或点卡片右上角菜单，选择“锁定”；\n"
                         + "4. 再确认自启动和后台高耗电已允许。\n\n"
                         + "锁定后系统清理后台时更不容易杀掉本应用。")

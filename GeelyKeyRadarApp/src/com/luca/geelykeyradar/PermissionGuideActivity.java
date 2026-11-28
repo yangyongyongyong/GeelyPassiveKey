@@ -66,23 +66,23 @@ public class PermissionGuideActivity extends Activity {
     private enum GuideStep {
         BLUETOOTH("蓝牙扫描与连接",
                 "先从系统获取附近的设备访问权，再确认手机蓝牙已开启。",
-                "设置 → 应用 → 银河无感钥匙 → 权限 → 附近的设备",
+                "设置 → 应用 → 吉利无感钥匙 → 权限 → 附近的设备",
                 R.drawable.ic_permission_bluetooth),
         NOTIFICATIONS("系统通知权限",
                 "常驻通知用于显示扫描和通知桥接状态；系统提醒也需要这条权限。",
-                "设置 → 应用 → 银河无感钥匙 → 通知",
+                "设置 → 应用 → 吉利无感钥匙 → 通知",
                 R.drawable.ic_permission_notifications),
         LISTENER("通知使用权",
-                "读取银河蓝牙钥匙的连接状态，并复用官方通知里的解锁/上锁按钮。",
-                "设置 → 特殊应用权限 → 通知使用权 → 银河无感钥匙通知桥接",
+                "读取吉利汽车 / 银河蓝牙钥匙的连接状态，并复用官方通知里的解锁/上锁按钮。",
+                "设置 → 特殊应用权限 → 通知使用权 → 吉利无感钥匙通知桥接",
                 R.drawable.ic_permission_listener),
         BATTERY("电池白名单",
                 "锁屏后减少被省电策略冻结、断网或清理的概率。",
-                "设置 → 电池 → 后台耗电管理 → 银河无感钥匙",
+                "设置 → 电池 → 后台耗电管理 → 吉利无感钥匙",
                 R.drawable.ic_permission_battery),
         VENDOR_BACKGROUND("厂商后台与自启动",
                 "OriginOS 的后台高耗电和自启动没有可读的统一 API，需要你手动确认一次。",
-                "i管家 → 自启动 → 银河无感钥匙；设置 → 电池 → 后台耗电管理 → 允许",
+                "i管家 → 自启动 → 吉利无感钥匙；设置 → 电池 → 后台耗电管理 → 允许",
                 R.drawable.ic_permission_background);
 
         final String title;
@@ -455,7 +455,7 @@ public class PermissionGuideActivity extends Activity {
     private View listenerExplanation(PermissionAudit.Result result) {
         PermissionAudit.Row row = result.row(PermissionAudit.Item.LISTENER);
         if (row != null && row.isReady()) {
-            return infoCard("监听在线", "能读取银河通知，也能复用官方解锁/上锁按钮。",
+            return infoCard("监听在线", "能读取官方通知，也能复用官方解锁/上锁按钮。",
                     COLOR_GREEN_SOFT, COLOR_GREEN);
         }
         if (row != null && row.isWaiting()) {
@@ -468,12 +468,12 @@ public class PermissionGuideActivity extends Activity {
         if (KeyNotificationBridgeService.isNotificationListenerEnabled(this)) {
             return infoCard("授权还在，监听未绑定",
                     "“已允许”只代表系统保留了授权记录，不代表当前进程已经收到通知。"
-                            + "如果自动重试超过 10 秒仍未恢复，请在系统页把“银河无感钥匙通知桥接”"
+                            + "如果自动重试超过 10 秒仍未恢复，请在系统页把“吉利无感钥匙通知桥接”"
                             + "关闭一次再打开；这不是重新授权，而是强制系统重新绑定服务。",
                     COLOR_RED_SOFT, COLOR_RED);
         }
         return infoCard("需要开启通知使用权",
-                "请在系统页找到“银河无感钥匙通知桥接”并允许。"
+                "请在系统页找到“吉利无感钥匙通知桥接”并允许。"
                         + "本应用只读取银河通知的连接状态和解锁/上锁按钮，不读取或保存账号凭证。",
                 COLOR_CARD_SOFT, COLOR_TEXT);
     }
@@ -626,13 +626,19 @@ public class PermissionGuideActivity extends Activity {
                 break;
             case GEELY_APP:
                 if (GeelyBridge.isGeelyInstalled(this)) {
+                    String pkg = OfficialTarget.resolveConfiguredPackage(this);
                     try {
-                        startActivity(getPackageManager().getLaunchIntentForPackage(GeelyBridge.GEELY_PKG));
+                        Intent launch = getPackageManager().getLaunchIntentForPackage(pkg);
+                        if (launch != null) {
+                            startActivity(launch);
+                        } else {
+                            toast("无法打开官方 App");
+                        }
                     } catch (Throwable unavailable) {
-                        toast("无法打开银河 App");
+                        toast("无法打开官方 App");
                     }
                 } else {
-                    toast("当前容器未检测到银河 App；若使用鸿蒙卓易通或隐私空间，请与银河装在同一空间");
+                    toast("当前容器未检测到吉利汽车或银河 App；若使用鸿蒙卓易通或隐私空间，请装在同一空间");
                 }
                 break;
             default:
@@ -771,7 +777,7 @@ public class PermissionGuideActivity extends Activity {
                 new ComponentName(this, KeyNotificationBridgeService.class).flattenToString());
         try {
             startActivity(detail);
-            toast("请关闭再开启“银河无感钥匙通知桥接”");
+            toast("请关闭再开启“吉利无感钥匙通知桥接”");
         } catch (Throwable unavailable) {
             try {
                 startActivity(new Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS));
@@ -790,13 +796,13 @@ public class PermissionGuideActivity extends Activity {
         if (boundButDown) {
             message = "系统里看到“已允许”并不等于监听在线。\n\n"
                     + "1. 打开本应用的“通知使用权”详情页；\n"
-                    + "2. 找到“银河无感钥匙通知桥接”；\n"
+                    + "2. 找到“吉利无感钥匙通知桥接”；\n"
                     + "3. 把开关关闭，等 1 秒，再打开；\n"
                     + "4. 返回本页，等待状态变成“已授权 · 监听在线”。\n\n"
                     + "这一步只是让 vivo 重新绑定服务，不会清数据，也不是重新授权。";
         } else {
             message = "1. 打开“通知使用权”；\n"
-                    + "2. 找到“银河无感钥匙通知桥接”；\n"
+                    + "2. 找到“吉利无感钥匙通知桥接”；\n"
                     + "3. 打开开关；\n"
                     + "4. 返回本页，会自动复检。\n\n"
                     + "该权限只用于读取银河通知的连接状态和解锁/上锁按钮。";

@@ -31,7 +31,7 @@ final class PermissionAudit {
                 "读取银河连接状态，并复用官方解锁/上锁按钮"),
         SERVICE(Priority.REQUIRED, "无感服务",
                 "扫描、判定和自动解闭锁的总开关"),
-        GEELY_APP(Priority.REQUIRED, "银河 App",
+        GEELY_APP(Priority.REQUIRED, "官方 App（吉利汽车 / 银河）",
                 "钥匙凭证、鉴权和车控按钮都在同空间官方 App 内（鸿蒙须装在同一容器）"),
         BATTERY(Priority.RECOMMENDED, "电池白名单",
                 "锁屏后减少被省电策略冻结或清理"),

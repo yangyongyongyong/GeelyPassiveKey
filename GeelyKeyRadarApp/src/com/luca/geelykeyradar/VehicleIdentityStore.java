@@ -3,10 +3,16 @@ package com.luca.geelykeyradar;
 import android.content.Context;
 import android.content.SharedPreferences;
 
+import org.json.JSONArray;
+import org.json.JSONObject;
+
+import java.util.ArrayList;
+import java.util.List;
+
 /**
- * 本车蓝牙身份的本地持久化。
+ * 本车及多车车库蓝牙身份的本地持久化。
  *
- * 只保存广播里能观察到的信息，不保存 VIN 全码、账号、令牌或任何吉利私有数据。
+ * 只保存广播里能观察到的公开信息，不保存 VIN 全码、账号、令牌或任何吉利私有数据。
  */
 final class VehicleIdentityStore {
 
@@ -20,6 +26,12 @@ final class VehicleIdentityStore {
     private static final String KEY_LEARNED_AT = "vehicle_learned_at";
     private static final String KEY_MANUAL_CLEARED = "vehicle_manual_cleared";
     private static final String KEY_LEARNING_SOURCE = "vehicle_learning_source";
+
+    private static final String KEY_GARAGE_JSON = "vehicle_garage_json";
+    private static final String KEY_PINNED_PROFILE_ID = "vehicle_pinned_profile_id";
+    private static final String KEY_LEARNING_PROFILE_ID = "vehicle_learning_profile_id";
+    private static final String KEY_BRAND_MODE = "official_brand_mode";
+
     private static final String KEY_SERVICE_ENABLED = "service_enabled";
     private static final String KEY_BLOCK_WHEN_CHARGING = "block_control_when_charging";
     private static final String KEY_UNLOCK_DBM = "unlock_dbm";
@@ -43,8 +55,7 @@ final class VehicleIdentityStore {
     }
 
     /**
-     * 加载已学习的本车蓝牙身份。
-     * 若新版存储为空且用户未主动清除，则尝试从本机旧版 SharedPreferences 自动迁移。
+     * 加载已学习的单车蓝牙身份（兼容旧版接口）。
      */
     VehicleIdentity load() {
         String address = prefs.getString(KEY_ADDRESS, "");
@@ -65,6 +76,180 @@ final class VehicleIdentityStore {
         }
         int company = prefs.getInt(KEY_COMPANY, VehicleIdentity.inferManufacturerId(signature));
         return new VehicleIdentity(address, name, tail2, tail3, signature, company, learnedAt);
+    }
+
+    /** 加载多车车库；首次升级自动将原有单车配置迁移为车库第一台车，保留用户全部已学信息。 */
+    synchronized VehicleGarage loadGarage() {
+        OfficialBrandPolicy.Brand brandMode = getBrandMode();
+        String pinnedId = prefs.getString(KEY_PINNED_PROFILE_ID, "");
+        String learningId = prefs.getString(KEY_LEARNING_PROFILE_ID, "");
+        String raw = prefs.getString(KEY_GARAGE_JSON, "");
+        List<VehicleProfile> profiles = new ArrayList<>();
+        if (raw != null && !raw.trim().isEmpty()) {
+            try {
+                JSONArray array = new JSONArray(raw);
+                for (int i = 0; i < array.length(); i++) {
+                    JSONObject obj = array.optJSONObject(i);
+                    VehicleProfile parsed = decodeProfile(obj);
+                    if (parsed != null) profiles.add(parsed);
+                }
+            } catch (Throwable ignored) {
+            }
+            return new VehicleGarage(profiles, pinnedId, learningId, brandMode);
+        }
+        VehicleIdentity legacy = load();
+        if (legacy != null) {
+            VehicleProfile migrated = new VehicleProfile(
+                    "car-1",
+                    "",
+                    brandMode,
+                    "",
+                    legacy,
+                    getLearningSource(),
+                    true
+            );
+            profiles.add(migrated);
+            VehicleGarage garage = new VehicleGarage(profiles, "", "", brandMode);
+            saveGarage(garage);
+            return garage;
+        }
+        return new VehicleGarage(profiles, pinnedId, learningId, brandMode);
+    }
+
+    /** 保存多车车库，并同步主/首台激活车辆到单车旧字段，保证诊断和升级兼容。 */
+    synchronized void saveGarage(VehicleGarage garage) {
+        if (garage == null) return;
+        JSONArray array = new JSONArray();
+        for (VehicleProfile profile : garage.profiles) {
+            JSONObject obj = encodeProfile(profile);
+            if (obj != null) array.put(obj);
+        }
+        SharedPreferences.Editor editor = prefs.edit()
+                .putString(KEY_GARAGE_JSON, array.toString())
+                .putString(KEY_PINNED_PROFILE_ID, garage.pinnedProfileId)
+                .putString(KEY_LEARNING_PROFILE_ID, garage.learningProfileId)
+                .putString(KEY_BRAND_MODE, garage.brandMode.name());
+        VehicleProfile primary = garage.findById(garage.pinnedProfileId);
+        if (primary == null) {
+            for (VehicleProfile candidate : garage.activeProfiles()) {
+                if (candidate.identity != null) {
+                    primary = candidate;
+                    break;
+                }
+            }
+        }
+        if (primary != null && primary.identity != null) {
+            writeLegacyIdentityFields(editor, primary.identity, primary.learningSource);
+        } else if (garage.profiles.isEmpty()) {
+            clearLegacyIdentityFields(editor);
+        }
+        editor.apply();
+    }
+
+    synchronized String nextProfileId() {
+        return "car-" + System.currentTimeMillis() + "-" + Integer.toHexString((int) (System.nanoTime() & 0xFFFF));
+    }
+
+    synchronized OfficialBrandPolicy.Brand getBrandMode() {
+        return OfficialBrandPolicy.parseBrand(prefs.getString(KEY_BRAND_MODE, "AUTO"));
+    }
+
+    synchronized void setBrandMode(OfficialBrandPolicy.Brand mode) {
+        OfficialBrandPolicy.Brand safe = mode == null ? OfficialBrandPolicy.Brand.AUTO : mode;
+        VehicleGarage current = loadGarage();
+        saveGarage(new VehicleGarage(current.profiles, current.pinnedProfileId, current.learningProfileId, safe));
+    }
+
+    synchronized void setPinnedProfileId(String profileId) {
+        VehicleGarage current = loadGarage();
+        saveGarage(new VehicleGarage(current.profiles, profileId, "", current.brandMode));
+    }
+
+    synchronized void setLearningProfileId(String profileId) {
+        VehicleGarage current = loadGarage();
+        saveGarage(new VehicleGarage(current.profiles, current.pinnedProfileId, profileId, current.brandMode));
+    }
+
+    synchronized VehicleGarage upsertProfile(VehicleProfile profile, boolean pinAsActive, boolean startLearning) {
+        if (profile == null) return loadGarage();
+        VehicleGarage current = loadGarage();
+        List<VehicleProfile> next = new ArrayList<>();
+        boolean replaced = false;
+        for (VehicleProfile existing : current.profiles) {
+            if (existing.id.equals(profile.id)) {
+                next.add(profile);
+                replaced = true;
+            } else {
+                next.add(existing);
+            }
+        }
+        if (!replaced) next.add(profile);
+        String pinned = pinAsActive ? profile.id : current.pinnedProfileId;
+        String learning = startLearning ? profile.id
+                : (current.learningProfileId.equals(profile.id) && profile.hasLearnedAddress() ? "" : current.learningProfileId);
+        VehicleGarage updated = new VehicleGarage(next, pinned, learning, current.brandMode);
+        saveGarage(updated);
+        return updated;
+    }
+
+    synchronized VehicleGarage removeProfile(String profileId) {
+        VehicleGarage current = loadGarage();
+        List<VehicleProfile> next = new ArrayList<>();
+        for (VehicleProfile existing : current.profiles) {
+            if (!existing.id.equals(profileId)) next.add(existing);
+        }
+        String pinned = current.pinnedProfileId.equals(profileId) ? "" : current.pinnedProfileId;
+        String learning = current.learningProfileId.equals(profileId) ? "" : current.learningProfileId;
+        VehicleGarage updated = new VehicleGarage(next, pinned, learning, current.brandMode);
+        saveGarage(updated);
+        return updated;
+    }
+
+    private static JSONObject encodeProfile(VehicleProfile profile) {
+        if (profile == null || profile.id.isEmpty()) return null;
+        try {
+            JSONObject obj = new JSONObject();
+            obj.put("id", profile.id);
+            obj.put("alias", profile.alias);
+            obj.put("brand", profile.brand.name());
+            obj.put("modelHint", profile.modelHint);
+            obj.put("learningSource", profile.learningSource);
+            obj.put("enabled", profile.enabled);
+            if (profile.identity != null) {
+                obj.put("address", profile.identity.address);
+                obj.put("name", profile.identity.name);
+                obj.put("vinTail2", profile.identity.vinTail2);
+                obj.put("vinTail3", profile.identity.vinTail3);
+                obj.put("mfgSignature", profile.identity.mfgSignature);
+                obj.put("manufacturerId", profile.identity.manufacturerId);
+                obj.put("learnedAtMs", profile.identity.learnedAtMs);
+            }
+            return obj;
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
+    private static VehicleProfile decodeProfile(JSONObject obj) {
+        if (obj == null) return null;
+        String id = obj.optString("id", "").trim();
+        if (id.isEmpty()) return null;
+        String alias = obj.optString("alias", "");
+        OfficialBrandPolicy.Brand brand = OfficialBrandPolicy.parseBrand(obj.optString("brand", "AUTO"));
+        String modelHint = obj.optString("modelHint", "");
+        String source = obj.optString("learningSource", VehicleLearningState.UNKNOWN);
+        boolean enabled = obj.optBoolean("enabled", true);
+        String address = obj.optString("address", "");
+        String name = obj.optString("name", "");
+        String tail2 = obj.optString("vinTail2", "");
+        String tail3 = obj.optString("vinTail3", "");
+        String sig = obj.optString("mfgSignature", "");
+        int company = obj.optInt("manufacturerId", VehicleIdentity.inferManufacturerId(sig));
+        long learnedAt = obj.optLong("learnedAtMs", 0L);
+        VehicleIdentity identity = (address.isEmpty() && name.isEmpty() && tail2.isEmpty() && tail3.isEmpty() && sig.isEmpty())
+                ? null
+                : new VehicleIdentity(address, name, tail2, tail3, sig, company, learnedAt);
+        return new VehicleProfile(id, alias, brand, modelHint, identity, source, enabled);
     }
 
     /**
@@ -99,10 +284,16 @@ final class VehicleIdentityStore {
     }
 
     /** 将学习来源与身份同时持久化，界面可区分手填、旧配置和实际观测。 */
-    void save(VehicleIdentity identity, String source) {
+    synchronized void save(VehicleIdentity identity, String source) {
         if (identity == null) return;
-        prefs.edit()
-                .putString(KEY_ADDRESS, identity.address)
+        SharedPreferences.Editor editor = prefs.edit();
+        writeLegacyIdentityFields(editor, identity, source);
+        editor.apply();
+    }
+
+    private static void writeLegacyIdentityFields(SharedPreferences.Editor editor,
+                                                  VehicleIdentity identity, String source) {
+        editor.putString(KEY_ADDRESS, identity.address)
                 .putString(KEY_NAME, identity.name)
                 .putString(KEY_TAIL2, identity.vinTail2)
                 .putString(KEY_TAIL3, identity.vinTail3)
@@ -110,14 +301,11 @@ final class VehicleIdentityStore {
                 .putInt(KEY_COMPANY, identity.manufacturerId)
                 .putLong(KEY_LEARNED_AT, identity.learnedAtMs)
                 .putString(KEY_LEARNING_SOURCE, source)
-                .putBoolean(KEY_MANUAL_CLEARED, false)
-                .apply();
+                .putBoolean(KEY_MANUAL_CLEARED, false);
     }
 
-    /** 只清除车辆及学习来源，保留服务开关和距离参数。 */
-    void clear() {
-        prefs.edit()
-                .remove(KEY_ADDRESS)
+    private static void clearLegacyIdentityFields(SharedPreferences.Editor editor) {
+        editor.remove(KEY_ADDRESS)
                 .remove(KEY_NAME)
                 .remove(KEY_TAIL2)
                 .remove(KEY_TAIL3)
@@ -125,8 +313,14 @@ final class VehicleIdentityStore {
                 .remove(KEY_COMPANY)
                 .remove(KEY_LEARNED_AT)
                 .remove(KEY_LEARNING_SOURCE)
-                .putBoolean(KEY_MANUAL_CLEARED, true)
-                .apply();
+                .putBoolean(KEY_MANUAL_CLEARED, true);
+    }
+
+    /** 只清除车辆及学习来源，保留服务开关和距离参数。 */
+    synchronized void clear() {
+        SharedPreferences.Editor editor = prefs.edit();
+        clearLegacyIdentityFields(editor);
+        editor.apply();
     }
 
     /** 兼容旧存储，未知来源不宣称为自动识别。 */
@@ -189,7 +383,7 @@ final class VehicleIdentityStore {
         return prefs.getLong(KEY_LOCK_DWELL_MS, DEFAULT_LOCK_DWELL_MS);
     }
 
-    /** 读取提前唤醒银河的普通连接阈值；与解闭锁阈值相互独立。 */
+    /** 读取提前唤醒官方端的普通连接阈值；与解闭锁阈值相互独立。 */
     float getConnectDbm() {
         return prefs.getFloat(KEY_CONNECT_DBM, DEFAULT_CONNECT_DBM);
     }

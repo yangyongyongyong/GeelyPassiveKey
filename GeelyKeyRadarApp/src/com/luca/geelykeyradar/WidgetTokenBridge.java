@@ -33,9 +33,7 @@ import java.util.Set;
  */
 final class WidgetTokenBridge {
     private static final String TAG = "WidgetTokenBridge";
-    private static final String GEELY_PKG = "com.geelygalaxy.customer";
-    private static final String WG_PROVIDER =
-            "com.geely.galaxy.car.weight.appwidget.WgProviderMiddle";
+    private static volatile String activeOfficialPkg = OfficialBrandPolicy.PKG_GALAXY;
     private static final int HOST_ID = 0x4752;
     private static final long CONFIRM_FIRST_DELAY_MS = 600L;
     private static final long CONFIRM_SECOND_DELAY_MS = 1600L;
@@ -43,7 +41,8 @@ final class WidgetTokenBridge {
     private static WidgetRemoteViewsSpec remoteViewsSpec;
 
     private static final Object STATE_LOCK = new Object();
-    private static final ComponentName PROVIDER = new ComponentName(GEELY_PKG, WG_PROVIDER);
+    private static volatile ComponentName PROVIDER = new ComponentName(
+            OfficialBrandPolicy.PKG_GALAXY, OfficialBrandPolicy.WIDGET_PROVIDER_GALAXY);
 
     private static Context appContext;
     private static AppWidgetManager appWidgetManager;
@@ -80,6 +79,7 @@ final class WidgetTokenBridge {
         synchronized (STATE_LOCK) {
             if (started) return;
             appContext = app;
+            refreshProviderForContextLocked();
             if (mainHandler == null) mainHandler = new Handler(Looper.getMainLooper());
             status = "正在检查官方小组件…";
             lastDiagnostic = "widget=checking";
@@ -271,6 +271,7 @@ final class WidgetTokenBridge {
         try {
             synchronized (STATE_LOCK) {
                 appContext = app;
+                refreshProviderForContextLocked();
                 if (mainHandler == null) mainHandler = new Handler(Looper.getMainLooper());
                 ensureHostLocked();
                 if (host == null || widgetId < 0) return null;
@@ -479,7 +480,7 @@ final class WidgetTokenBridge {
             }
             inspectRemoteViewsIfPresent(true);
             schedulePoll();
-            DiagnosticLog.event("Widget", "BOUND", "id=" + activeId + " provider=" + WG_PROVIDER);
+            DiagnosticLog.event("Widget", "BOUND", "id=" + activeId + " provider=" + PROVIDER.getClassName());
         } catch (Throwable t) {
             synchronized (STATE_LOCK) {
                 status = "绑定后读取官方小组件失败";
@@ -489,6 +490,16 @@ final class WidgetTokenBridge {
             DiagnosticLog.bridgeError("Widget", "ATTACH_ERROR", t);
             Log.w(TAG, "官方小组件附着失败", t);
         }
+    }
+
+    private static void refreshProviderForContextLocked() {
+        if (appContext == null) return;
+        String pkg = OfficialTarget.resolveConfiguredPackage(appContext);
+        if (!pkg.equals(activeOfficialPkg)) {
+            remoteViewsSpec = null;
+        }
+        activeOfficialPkg = pkg;
+        PROVIDER = new ComponentName(pkg, OfficialBrandPolicy.widgetProviderForPackage(pkg));
     }
 
     private static void ensureHostLocked() {
@@ -550,7 +561,7 @@ final class WidgetTokenBridge {
         }
         try {
             List<AppWidgetProviderInfo> scoped =
-                    appWidgetManager.getInstalledProvidersForPackage(GEELY_PKG, null);
+                    appWidgetManager.getInstalledProvidersForPackage(activeOfficialPkg, null);
             return findProvider(scoped);
         } catch (Throwable ignored) {
             return null;
@@ -744,17 +755,18 @@ final class WidgetTokenBridge {
 
     private static WidgetRemoteViewsSpec resolveRemoteViewsSpec(Context context) {
         if (context == null) return WidgetRemoteViewsSpec.defaults();
+        String pkg = activeOfficialPkg;
         try {
-            Context pkgCtx = context.createPackageContext(GEELY_PKG, Context.CONTEXT_IGNORE_SECURITY);
+            Context pkgCtx = context.createPackageContext(pkg, Context.CONTEXT_IGNORE_SECURITY);
             Resources res = pkgCtx.getResources();
-            int loadingId = res.getIdentifier(WidgetRemoteViewsSpec.NAME_VIEW_FUN_LOADING, "id", GEELY_PKG);
-            int statusId = res.getIdentifier(WidgetRemoteViewsSpec.NAME_VIEW_FUN_STATUS, "id", GEELY_PKG);
-            int confirmOkId = res.getIdentifier(WidgetRemoteViewsSpec.NAME_CONFIRM_OK, "id", GEELY_PKG);
-            int settingId = res.getIdentifier(WidgetRemoteViewsSpec.NAME_BTN_SETTING, "id", GEELY_PKG);
-            int appAdditionId = res.getIdentifier(WidgetRemoteViewsSpec.NAME_LL_APP_ADDITION, "id", GEELY_PKG);
-            int lockOffBlackId = resolveDrawableId(res, WidgetRemoteViewsSpec.NAME_ICON_LOCK_OFF_BLACK);
-            int lockOffWhiteId = resolveDrawableId(res, WidgetRemoteViewsSpec.NAME_ICON_LOCK_OFF_WHITE);
-            int lockOnId = resolveDrawableId(res, WidgetRemoteViewsSpec.NAME_ICON_LOCK_ON);
+            int loadingId = res.getIdentifier(WidgetRemoteViewsSpec.NAME_VIEW_FUN_LOADING, "id", pkg);
+            int statusId = res.getIdentifier(WidgetRemoteViewsSpec.NAME_VIEW_FUN_STATUS, "id", pkg);
+            int confirmOkId = res.getIdentifier(WidgetRemoteViewsSpec.NAME_CONFIRM_OK, "id", pkg);
+            int settingId = res.getIdentifier(WidgetRemoteViewsSpec.NAME_BTN_SETTING, "id", pkg);
+            int appAdditionId = res.getIdentifier(WidgetRemoteViewsSpec.NAME_LL_APP_ADDITION, "id", pkg);
+            int lockOffBlackId = resolveDrawableId(res, pkg, WidgetRemoteViewsSpec.NAME_ICON_LOCK_OFF_BLACK);
+            int lockOffWhiteId = resolveDrawableId(res, pkg, WidgetRemoteViewsSpec.NAME_ICON_LOCK_OFF_WHITE);
+            int lockOnId = resolveDrawableId(res, pkg, WidgetRemoteViewsSpec.NAME_ICON_LOCK_ON);
             return WidgetRemoteViewsSpec.create(loadingId, statusId, confirmOkId, settingId,
                     appAdditionId, lockOffBlackId, lockOffWhiteId, lockOnId);
         } catch (Throwable ignored) {
@@ -762,9 +774,9 @@ final class WidgetTokenBridge {
         }
     }
 
-    private static int resolveDrawableId(Resources res, String name) {
-        int id = res.getIdentifier(name, "drawable", GEELY_PKG);
-        return id != 0 ? id : res.getIdentifier(name, "mipmap", GEELY_PKG);
+    private static int resolveDrawableId(Resources res, String pkg, String name) {
+        int id = res.getIdentifier(name, "drawable", pkg);
+        return id != 0 ? id : res.getIdentifier(name, "mipmap", pkg);
     }
 
     private static void scanRemoteViews(RemoteViews rv, Visit visit, WidgetRemoteViewsSpec spec) {

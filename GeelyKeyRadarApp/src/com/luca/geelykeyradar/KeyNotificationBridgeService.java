@@ -30,6 +30,9 @@ import android.widget.TextView;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 
 /**
  * 吉利银河通知栏桥接。
@@ -76,16 +79,40 @@ public class KeyNotificationBridgeService extends NotificationListenerService {
     }
 
     private static final String TAG = "KeyNotifBridge";
-    public static final String GEELY_PKG = "com.geelygalaxy.customer";
+    public static final String GEELY_PKG = OfficialBrandPolicy.PKG_GALAXY;
     public static final int GEELY_DK_NOTIFY_ID = 5;
 
-    // Resource IDs from com.geely.snc.digitalkey.base.R$id (verified via dexdump of DkRemoteView.buildRemoteView @ 0x5011e8)
+    // 默认兜底沿用银河 1.56.1 资源号；实际按来源包名动态解析，同时支持吉利汽车与银河双官方客户端。
     public static final int ID_NOTIF_LAYOUT_LOCK_UNLOCK = 0x7f0a10c6;
     public static final int ID_NOTIF_TV_LOCK            = 0x7f0a10c7;
     public static final int ID_NOTIF_TV_STATUS_CONN     = 0x7f0a10c8;
     public static final int ID_NOTIF_TV_STATUS_DISCONN  = 0x7f0a10c9;
     public static final int ID_NOTIF_TV_STATUS_NO       = 0x7f0a10ca;
     public static final int ID_NOTIF_TV_UNLOCK          = 0x7f0a10cb;
+
+    private static final class OfficialNotifIds {
+        final int layoutLockUnlock;
+        final int tvLock;
+        final int tvStatusConn;
+        final int tvStatusDisconn;
+        final int tvStatusNo;
+        final int tvUnlock;
+
+        OfficialNotifIds(int layoutLockUnlock, int tvLock, int tvStatusConn,
+                         int tvStatusDisconn, int tvStatusNo, int tvUnlock) {
+            this.layoutLockUnlock = layoutLockUnlock;
+            this.tvLock = tvLock;
+            this.tvStatusConn = tvStatusConn;
+            this.tvStatusDisconn = tvStatusDisconn;
+            this.tvStatusNo = tvStatusNo;
+            this.tvUnlock = tvUnlock;
+        }
+    }
+
+    private static final Map<String, OfficialNotifIds> NOTIF_IDS_BY_PKG = new HashMap<>();
+    private static final Map<String, Boolean> PACKAGE_CONNECTED_MAP = new HashMap<>();
+    private static volatile OfficialBrandPolicy.Brand activeFilterBrand = OfficialBrandPolicy.Brand.AUTO;
+    private static volatile String activeOfficialPackage = "";
 
     private static volatile KeyNotificationBridgeService instance;
     private static volatile boolean geelyBleConnected = false;
@@ -140,7 +167,7 @@ public class KeyNotificationBridgeService extends NotificationListenerService {
     private long lastNotificationLogAtMs;
     private long fastRescanUntilMs = 0L;
     private volatile boolean listenerConnected = false;
-    private Context geelyPkgContext = null;
+    private final Map<String, Context> pkgContextCache = new HashMap<>();
 
     private final Runnable fastRescanRunnable = new Runnable() {
         /** 唤醒窗口内高频补扫当前通知，发现即停，不建立第二套按钮或发送队列。 */
@@ -238,7 +265,7 @@ public class KeyNotificationBridgeService extends NotificationListenerService {
     /** 分离通知到达、解析和就绪时间，listener活着不代表官方持续更新。 */
     public static String diagnosticSnapshot(long nowMs) {
         KeyNotificationBridgeService service = instance;
-        return "listener_connected=" + isListenerConnected() + " notification_present=" + geelyNotificationPresent
+        return "listener_connected=" + isListenerConnected() + " official_pkg=" + (activeOfficialPackage.isEmpty() ? "none" : activeOfficialPackage) + " notification_present=" + geelyNotificationPresent
                 + " official_connected=" + geelyBleConnected
                 + " posted_callback_age_ms=" + (service == null || service.lastPostedAtMs == 0L ? -1L : nowMs - service.lastPostedAtMs)
                 + " notification_seen_age_ms=" + (service == null || service.lastSeenAtMs == 0L ? -1L : nowMs - service.lastSeenAtMs)
@@ -396,6 +423,87 @@ public class KeyNotificationBridgeService extends NotificationListenerService {
         if ((nowMs - lastMissingRescanAtMs) < MISSING_NOTIFICATION_RESCAN_MS) return;
         lastMissingRescanAtMs = nowMs;
         service.scanExistingNotifications();
+    }
+
+    static String getActiveOfficialPackage() {
+        return activeOfficialPackage;
+    }
+
+    static OfficialBrandPolicy.Brand getActiveFilterBrand() {
+        return activeFilterBrand;
+    }
+
+    static void setFilterBrand(Context context, OfficialBrandPolicy.Brand brand) {
+        OfficialBrandPolicy.Brand next = brand == null ? OfficialBrandPolicy.Brand.AUTO : brand;
+        boolean changed = activeFilterBrand != next;
+        activeFilterBrand = next;
+        if (changed) {
+            DiagnosticLog.event("Notification", "FILTER_BRAND_SET", "brand=" + next);
+            if (!activeOfficialPackage.isEmpty()
+                    && !OfficialBrandPolicy.shouldAcceptNotification(next, activeOfficialPackage)) {
+                KeyNotificationBridgeService svc = instance;
+                if (svc != null) svc.clearOfficialNotification();
+            }
+            refreshActiveNotifications();
+        }
+    }
+
+    private static OfficialNotifIds resolveOfficialViewIdsFor(Context context, String officialPkg) {
+        if (officialPkg == null || officialPkg.isEmpty()) {
+            return new OfficialNotifIds(ID_NOTIF_LAYOUT_LOCK_UNLOCK, ID_NOTIF_TV_LOCK,
+                    ID_NOTIF_TV_STATUS_CONN, ID_NOTIF_TV_STATUS_DISCONN,
+                    ID_NOTIF_TV_STATUS_NO, ID_NOTIF_TV_UNLOCK);
+        }
+        synchronized (NOTIF_IDS_BY_PKG) {
+            OfficialNotifIds cached = NOTIF_IDS_BY_PKG.get(officialPkg);
+            if (cached != null) return cached;
+        }
+        int layout = ID_NOTIF_LAYOUT_LOCK_UNLOCK;
+        int lock = ID_NOTIF_TV_LOCK;
+        int conn = ID_NOTIF_TV_STATUS_CONN;
+        int disconn = ID_NOTIF_TV_STATUS_DISCONN;
+        int no = ID_NOTIF_TV_STATUS_NO;
+        int unlock = ID_NOTIF_TV_UNLOCK;
+        if (context != null) {
+            try {
+                Context official = context.createPackageContext(officialPkg, Context.CONTEXT_IGNORE_SECURITY);
+                Resources res = official.getResources();
+                int v = res.getIdentifier("notif_layout_lock_unlock", "id", officialPkg);
+                if (v != 0) layout = v;
+                v = res.getIdentifier("notif_tv_lock", "id", officialPkg);
+                if (v != 0) lock = v;
+                v = res.getIdentifier("notif_tv_status_conn", "id", officialPkg);
+                if (v != 0) conn = v;
+                v = res.getIdentifier("notif_tv_status_disconn", "id", officialPkg);
+                if (v != 0) disconn = v;
+                v = res.getIdentifier("notif_tv_status_no", "id", officialPkg);
+                if (v != 0) no = v;
+                v = res.getIdentifier("notif_tv_unlock", "id", officialPkg);
+                if (v != 0) unlock = v;
+                DiagnosticLog.event("Notification", "OFFICIAL_IDS",
+                        "pkg=" + officialPkg + " unlock=" + unlock + " lock=" + lock
+                                + " conn=" + conn + " disconn=" + disconn + " layout=" + layout);
+            } catch (Throwable t) {
+                DiagnosticLog.event("Notification", "OFFICIAL_IDS_FAILED",
+                        "pkg=" + officialPkg + " err=" + t.getClass().getSimpleName());
+            }
+        }
+        OfficialNotifIds resolved = new OfficialNotifIds(layout, lock, conn, disconn, no, unlock);
+        synchronized (NOTIF_IDS_BY_PKG) {
+            NOTIF_IDS_BY_PKG.put(officialPkg, resolved);
+        }
+        return resolved;
+    }
+
+    static boolean isOfficialKeyNotification(StatusBarNotification sbn) {
+        if (sbn == null) return false;
+        String pkg = sbn.getPackageName();
+        if (!OfficialBrandPolicy.shouldAcceptNotification(activeFilterBrand, pkg)) return false;
+        if (sbn.getId() == GEELY_DK_NOTIFY_ID) return true;
+        Notification n = sbn.getNotification();
+        return n != null
+                && (n.flags & Notification.FLAG_ONGOING_EVENT) != 0
+                && (n.contentView != null || n.bigContentView != null);
     }
 
     public static boolean isGeelyBleConnected() {
@@ -659,7 +767,7 @@ public class KeyNotificationBridgeService extends NotificationListenerService {
         try {
             String kind = pi.isActivity() ? "activity" : pi.isBroadcast() ? "broadcast"
                     : pi.isService() ? "service" : "unknown";
-            String creator = GEELY_PKG.equals(pi.getCreatorPackage()) ? "official" : "other";
+            String creator = OfficialBrandPolicy.isOfficialPackage(pi.getCreatorPackage()) ? "official" : "other";
             return kind + "-" + creator;
         } catch (Throwable ignored) {
             return "unknown";
@@ -813,7 +921,7 @@ public class KeyNotificationBridgeService extends NotificationListenerService {
     @Override
     public void onNotificationPosted(StatusBarNotification sbn) {
         if (instance != this || !listenerConnected) return;
-        if (sbn != null && GEELY_PKG.equals(sbn.getPackageName()) && sbn.getId() == GEELY_DK_NOTIFY_ID) {
+        if (isOfficialKeyNotification(sbn)) {
             diagnosticCounters.increment("notification_posted");
             lastPostedAtMs = SystemClock.elapsedRealtime();
             lastSeenAtMs = lastPostedAtMs;
@@ -873,7 +981,15 @@ public class KeyNotificationBridgeService extends NotificationListenerService {
     @Override
     public void onNotificationRemoved(StatusBarNotification sbn) {
         if (instance != this || !listenerConnected) return;
-        if (sbn != null && GEELY_PKG.equals(sbn.getPackageName()) && sbn.getId() == GEELY_DK_NOTIFY_ID) {
+        if (isOfficialKeyNotification(sbn)) {
+            String removedPkg = sbn.getPackageName();
+            synchronized (PACKAGE_CONNECTED_MAP) {
+                PACKAGE_CONNECTED_MAP.remove(removedPkg);
+            }
+            if (geelyBleConnected && !activeOfficialPackage.isEmpty()
+                    && !activeOfficialPackage.equals(removedPkg)) {
+                return;
+            }
             diagnosticCounters.increment("notification_removed");
             long token = notificationEpoch.remove(sbn.getKey(), sbn.getPostTime());
             if (token < 0L) {
@@ -902,13 +1018,22 @@ public class KeyNotificationBridgeService extends NotificationListenerService {
         try {
             StatusBarNotification[] active = getActiveNotifications();
             if (active == null) return;
-            boolean found = false;
+            List<StatusBarNotification> matched = new ArrayList<>();
+            StatusBarNotification preferred = null;
             for (StatusBarNotification sbn : active) {
-                if (sbn != null && GEELY_PKG.equals(sbn.getPackageName()) && sbn.getId() == GEELY_DK_NOTIFY_ID) {
-                    found = true;
-                    lastSeenAtMs = SystemClock.elapsedRealtime();
-                    parseGeelyNotification(sbn);
+                if (!isOfficialKeyNotification(sbn)) continue;
+                if (!activeOfficialPackage.isEmpty()
+                        && activeOfficialPackage.equals(sbn.getPackageName())) {
+                    preferred = sbn;
+                } else {
+                    matched.add(sbn);
                 }
+            }
+            if (preferred != null) matched.add(preferred);
+            boolean found = !matched.isEmpty();
+            for (StatusBarNotification sbn : matched) {
+                lastSeenAtMs = SystemClock.elapsedRealtime();
+                parseGeelyNotification(sbn);
             }
             if (!found) {
                 notificationEpoch.removeCurrent();
@@ -928,6 +1053,10 @@ public class KeyNotificationBridgeService extends NotificationListenerService {
         boolean changed = geelyNotificationPresent || geelyBleConnected || hasControlPendingIntents();
         geelyNotificationPresent = false;
         geelyBleConnected = false;
+        activeOfficialPackage = "";
+        synchronized (PACKAGE_CONNECTED_MAP) {
+            PACKAGE_CONNECTED_MAP.clear();
+        }
         textConnectionHint = null;
         lastObservedLockHint = "";
         lastObservedLockHintAtMs = 0L;
@@ -975,7 +1104,7 @@ public class KeyNotificationBridgeService extends NotificationListenerService {
         if (isGroupSummary && notif.contentView == null && notif.bigContentView == null) {
             return;
         }
-        if (sbn.getId() != GEELY_DK_NOTIFY_ID && notif.contentView == null && notif.bigContentView == null) {
+        if (notif.contentView == null && notif.bigContentView == null) {
             return;
         }
 
@@ -1010,17 +1139,23 @@ public class KeyNotificationBridgeService extends NotificationListenerService {
         }
 
         // 整份通知已在主线程串行校验，RemoteViews.apply 与按钮点击不会交叉更新。
-        inflateAndExtractFromRemoteViews(rv);
+        inflateAndExtractFromRemoteViews(rv, sbn.getPackageName());
     }
 
-    private Context getOrCreateGeelyContext() {
-        if (geelyPkgContext == null) {
+    private Context getOrCreateOfficialContext(String officialPkg) {
+        String pkg = officialPkg == null || officialPkg.isEmpty()
+                ? OfficialBrandPolicy.PKG_CONSUMER : officialPkg;
+        synchronized (pkgContextCache) {
+            Context cached = pkgContextCache.get(pkg);
+            if (cached != null) return cached;
             try {
-                geelyPkgContext = createPackageContext(GEELY_PKG, Context.CONTEXT_IGNORE_SECURITY);
+                Context created = createPackageContext(pkg, Context.CONTEXT_IGNORE_SECURITY);
+                pkgContextCache.put(pkg, created);
+                return created;
             } catch (Throwable ignored) {
+                return this;
             }
         }
-        return geelyPkgContext != null ? geelyPkgContext : this;
     }
 
     /**
@@ -1030,17 +1165,21 @@ public class KeyNotificationBridgeService extends NotificationListenerService {
      * 2. The inflated '解锁' (0x7f0a10cb) and '上锁' (0x7f0a10c7) button Views + their attached PendingIntents
      * 仅采用本轮可见状态，状态改变时通知主服务，不在这里自动执行车控。
      */
-    private void inflateAndExtractFromRemoteViews(RemoteViews rv) {
+    private void inflateAndExtractFromRemoteViews(RemoteViews rv, String officialPkg) {
+        String pkg = officialPkg == null ? "" : officialPkg;
+        OfficialNotifIds ids = resolveOfficialViewIdsFor(this, pkg);
         String previousDiag = lastButtonCaptureDiag;
         long parseStarted = SystemClock.elapsedRealtime();
         String parsePath = "PUBLIC";
         Boolean connVisible = null;
-        boolean foundUnlockBtn = false;
-        boolean foundLockBtn = false;
+        PendingIntent parsedUnlockPi = null;
+        PendingIntent parsedLockPi = null;
+        View parsedUnlockView = null;
+        View parsedLockView = null;
 
         // Path 1: Official public RemoteViews.apply() inflation (Works on Android 14/15/16 without hidden API restrictions!)
         try {
-            Context inflateCtx = getOrCreateGeelyContext();
+            Context inflateCtx = getOrCreateOfficialContext(pkg);
             FrameLayout container = new FrameLayout(inflateCtx);
             View root = null;
             try {
@@ -1050,9 +1189,9 @@ public class KeyNotificationBridgeService extends NotificationListenerService {
             }
 
             if (root != null) {
-                View connView = root.findViewById(ID_NOTIF_TV_STATUS_CONN);
-                View lockUnlockLayout = root.findViewById(ID_NOTIF_LAYOUT_LOCK_UNLOCK);
-                View disconnView = root.findViewById(ID_NOTIF_TV_STATUS_DISCONN);
+                View connView = root.findViewById(ids.tvStatusConn);
+                View lockUnlockLayout = root.findViewById(ids.layoutLockUnlock);
+                View disconnView = root.findViewById(ids.tvStatusDisconn);
 
                 if (isVisibleInTree(connView)) {
                     connVisible = true;
@@ -1062,10 +1201,9 @@ public class KeyNotificationBridgeService extends NotificationListenerService {
                     connVisible = false;
                 }
 
-                View unlockView = root.findViewById(ID_NOTIF_TV_UNLOCK);
-                View lockView = root.findViewById(ID_NOTIF_TV_LOCK);
+                View unlockView = root.findViewById(ids.tvUnlock);
+                View lockView = root.findViewById(ids.tvLock);
 
-                // Fallback: traverse tree by text ("解锁" / "上锁" / "已连接" / "未连接") in case resource IDs shift across Geely versions
                 View[] discoveredByText = new View[2]; // [0]=unlock, [1]=lock
                 Boolean[] connByText = new Boolean[1];
                 traverseInflatedTree(root, discoveredByText, connByText);
@@ -1076,38 +1214,16 @@ public class KeyNotificationBridgeService extends NotificationListenerService {
                     connVisible = connByText[0];
                 }
 
-                // Extract PendingIntent or OnClickListener from unlockView & lockView
-                // IMPORTANT: DkRemoteView.buildRemoteView only calls setOnClickPendingIntent when isConnect == true!
-                // When isConnect == false, unlockView.hasOnClickListeners() is false, so we MUST NOT overwrite
-                // a previously captured cachedUnlockPi / cachedUnlockView with an unclickable view!
                 if (unlockView != null) {
                     PendingIntent pi = extractPendingIntentFromInflatedView(unlockView);
-                    if (pi != null) {
-                        cachedUnlockPi = pi;
-                        lastKnownUnlockPi = pi;
-                        persistPendingIntent(KEY_UNLOCK_PI, pi);
-                        foundUnlockBtn = true;
-                    }
-                    if (unlockView.hasOnClickListeners() || pi != null) {
-                        cachedUnlockView = unlockView;
-                        lastKnownUnlockView = unlockView;
-                        foundUnlockBtn = true;
-                    }
+                    if (pi != null) parsedUnlockPi = pi;
+                    if (unlockView.hasOnClickListeners() || pi != null) parsedUnlockView = unlockView;
                 }
 
                 if (lockView != null) {
                     PendingIntent pi = extractPendingIntentFromInflatedView(lockView);
-                    if (pi != null) {
-                        cachedLockPi = pi;
-                        lastKnownLockPi = pi;
-                        persistPendingIntent(KEY_LOCK_PI, pi);
-                        foundLockBtn = true;
-                    }
-                    if (lockView.hasOnClickListeners() || pi != null) {
-                        cachedLockView = lockView;
-                        lastKnownLockView = lockView;
-                        foundLockBtn = true;
-                    }
+                    if (pi != null) parsedLockPi = pi;
+                    if (lockView.hasOnClickListeners() || pi != null) parsedLockView = lockView;
                 }
             }
         } catch (Throwable t) {
@@ -1127,41 +1243,69 @@ public class KeyNotificationBridgeService extends NotificationListenerService {
                     if (action == null) continue;
                     String className = action.getClass().getName();
                     int viewId = extractViewId(action);
-                    // mActions 同时包含隐藏文案，不能把隐藏的“未连接/行驶中”当作当前状态。
 
-                    if (viewId == ID_NOTIF_TV_STATUS_CONN || viewId == ID_NOTIF_LAYOUT_LOCK_UNLOCK) {
+                    if (viewId == ids.tvStatusConn || viewId == ids.layoutLockUnlock) {
                         Integer vis = extractVisibilityValue(action);
                         if (vis != null && connVisible == null) {
                             connVisible = (vis == View.VISIBLE);
                         }
-                    } else if (viewId == ID_NOTIF_TV_STATUS_DISCONN) {
+                    } else if (viewId == ids.tvStatusDisconn) {
                         Integer vis = extractVisibilityValue(action);
                         if (vis != null && vis == View.VISIBLE && connVisible == null) {
                             connVisible = false;
                         }
                     }
 
-                    if (viewId == ID_NOTIF_TV_LOCK || viewId == ID_NOTIF_TV_UNLOCK
+                    if (viewId == ids.tvLock || viewId == ids.tvUnlock
                             || className.contains("SetOnClickResponse") || className.contains("SetOnClickPendingIntent")) {
                         PendingIntent pi = extractPendingIntentFromAction(action);
                         if (pi != null) {
-                            if (viewId == ID_NOTIF_TV_LOCK) {
-                                cachedLockPi = pi;
-                                lastKnownLockPi = pi;
-                                persistPendingIntent(KEY_LOCK_PI, pi);
-                                foundLockBtn = true;
-                            } else if (viewId == ID_NOTIF_TV_UNLOCK) {
-                                cachedUnlockPi = pi;
-                                lastKnownUnlockPi = pi;
-                                persistPendingIntent(KEY_UNLOCK_PI, pi);
-                                foundUnlockBtn = true;
-                            }
+                            if (viewId == ids.tvLock) parsedLockPi = pi;
+                            else if (viewId == ids.tvUnlock) parsedUnlockPi = pi;
                         }
                     }
                 }
             }
         } catch (Throwable ignored) {
             diagnosticCounters.increment("notification_reflection_unavailable");
+        }
+
+        if (connVisible == null && textConnectionHint != null) {
+            connVisible = textConnectionHint;
+        }
+        boolean thisConnected = Boolean.TRUE.equals(connVisible);
+        synchronized (PACKAGE_CONNECTED_MAP) {
+            PACKAGE_CONNECTED_MAP.put(pkg, thisConnected);
+        }
+        if (geelyBleConnected && !thisConnected && !activeOfficialPackage.isEmpty()
+                && !activeOfficialPackage.equals(pkg)) {
+            // 双官方客户端并存时，另一家后台常驻的“未连接”通知不得覆盖当前已连接车主的通知状态。
+            return;
+        }
+
+        if (thisConnected || activeOfficialPackage.isEmpty() || activeOfficialPackage.equals(pkg)) {
+            activeOfficialPackage = pkg;
+        }
+
+        boolean foundUnlockBtn = parsedUnlockPi != null || parsedUnlockView != null;
+        boolean foundLockBtn = parsedLockPi != null || parsedLockView != null;
+        if (parsedUnlockPi != null) {
+            cachedUnlockPi = parsedUnlockPi;
+            lastKnownUnlockPi = parsedUnlockPi;
+            persistPendingIntent(KEY_UNLOCK_PI, parsedUnlockPi);
+        }
+        if (parsedUnlockView != null) {
+            cachedUnlockView = parsedUnlockView;
+            lastKnownUnlockView = parsedUnlockView;
+        }
+        if (parsedLockPi != null) {
+            cachedLockPi = parsedLockPi;
+            lastKnownLockPi = parsedLockPi;
+            persistPendingIntent(KEY_LOCK_PI, parsedLockPi);
+        }
+        if (parsedLockView != null) {
+            cachedLockView = parsedLockView;
+            lastKnownLockView = parsedLockView;
         }
 
         if (foundUnlockBtn) {
@@ -1178,10 +1322,7 @@ public class KeyNotificationBridgeService extends NotificationListenerService {
         }
 
         boolean prevConnected = geelyBleConnected;
-        if (connVisible == null && textConnectionHint != null) {
-            connVisible = textConnectionHint;
-        }
-        geelyBleConnected = Boolean.TRUE.equals(connVisible);
+        geelyBleConnected = thisConnected;
         // 未连接时银河通知里的按钮不可点；清掉上一轮连接留下的 PendingIntent，
         // 让 triggerUnlock/triggerLock 走“先排队、连接后立刻点击”的路径，
         // 避免把解锁指令提前发给尚未完成 V2 鉴权的车机。

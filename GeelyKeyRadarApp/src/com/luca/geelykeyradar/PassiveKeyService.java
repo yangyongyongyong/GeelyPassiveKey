@@ -113,6 +113,8 @@ public class PassiveKeyService extends Service implements SensorEventListener {
     private final Runnable compatibilityCaptureTimeout = () -> finishCompatibilityCapture("duration_elapsed");
 
     private VehicleIdentityStore identityStore;
+    private volatile VehicleGarage garage = VehicleGarage.empty(OfficialBrandPolicy.Brand.AUTO);
+    private volatile VehicleProfile activeProfile;
     private volatile VehicleIdentity identity;
     private volatile PassiveKeyLogic logic = new PassiveKeyLogic();
     private volatile RssiFilter rssiFilter = new RssiFilter();
@@ -307,6 +309,16 @@ public class PassiveKeyService extends Service implements SensorEventListener {
         public String learningSource = "";
         public String manualControlMessage = "";
         public String lastControlSource = "NONE";
+        public OfficialBrandPolicy.Brand brandMode = OfficialBrandPolicy.Brand.AUTO;
+        public OfficialBrandPolicy.Brand activeBrand = OfficialBrandPolicy.Brand.AUTO;
+        public String activeOfficialPkg = "";
+        public String activeProfileId = "";
+        public String activeProfileTitle = "";
+        public int garageCount;
+        public int garageEnabledCount;
+        public boolean multiCarAutoMode;
+        public String pinnedProfileId = "";
+        public String learningProfileId = "";
     }
 
     /** 一次车控尝试只返回一个已发送 token 源和结果。 */
@@ -352,7 +364,7 @@ public class PassiveKeyService extends Service implements SensorEventListener {
         }
 
         identityStore = new VehicleIdentityStore(this);
-        identity = identityStore.load();
+        syncGarageFromStore(false);
         serviceEnabled = identityStore.isServiceEnabled();
         blockWhenCharging = identityStore.isBlockWhenChargingEnabled();
         autoUnlock = identityStore.isAutoUnlockEnabled();
@@ -385,7 +397,7 @@ public class PassiveKeyService extends Service implements SensorEventListener {
         if (serviceEnabled) {
             WidgetTokenBridge.start(this);
             ServiceWatchdogReceiver.schedule(this);
-            GeelyBridge.bindKeepAlive(this);
+            GeelyBridge.bindKeepAlive(this, garage.brandMode);
             KeyNotificationBridgeService.ensureRebound(this);
             UpdateManager.maybeAutoCheck(this);
             startBleScan();
@@ -400,9 +412,9 @@ public class PassiveKeyService extends Service implements SensorEventListener {
                 "极简无感钥匙启动 (总开关=%s | 解锁≥%.0fdBm | 上锁≤%.0fdBm / %.1fs)",
                 serviceEnabled ? "开" : "关", unlockDbm, lockDbm, lockDwellMs / 1000.0f));
         if (identity != null) {
-            appendLog("已加载本车身份: " + identityDiagnostic());
+            appendLog("已加载车辆档案(" + garage.activeProfiles().size() + "台启用): " + identityDiagnostic());
         } else {
-            appendLog("本车身份未学习：先靠近车辆，让银河 App 连接一次，本应用会自动记住");
+            appendLog("车辆身份未学习：先靠近车辆，让官方 App 连接一次，本应用会自动记住");
         }
         DiagnosticLog.event("Service", "INITIAL_STATE", getDiagnosticSnapshot());
     }
@@ -539,8 +551,23 @@ public class PassiveKeyService extends Service implements SensorEventListener {
         status.lockDwellSamples = logic.getLockDwellSamples();
         status.lockDwellElapsedMs = lockDwellStart == 0L ? -1L : Math.max(0L, now - lockDwellStart);
         status.lockDwellMs = lockDwellMs;
-        status.vehicleName = identity != null ? identity.displayName() : "";
+        status.vehicleName = activeProfile != null ? activeProfile.displayTitle()
+                : (identity != null ? identity.displayName() : "");
         status.vehicleAddress = identity != null ? identity.address : "";
+        status.brandMode = garage.brandMode;
+        OfficialBrandPolicy.Brand carBrand = activeProfile != null
+                ? activeProfile.brand : OfficialBrandPolicy.Brand.AUTO;
+        status.activeBrand = OfficialTarget.resolveBrand(this, garage.brandMode, carBrand);
+        String liveNotifPkg = KeyNotificationBridgeService.getActiveOfficialPackage();
+        status.activeOfficialPkg = OfficialBrandPolicy.isOfficialPackage(liveNotifPkg)
+                ? liveNotifPkg : OfficialBrandPolicy.packageForBrand(status.activeBrand);
+        status.activeProfileId = activeProfile != null ? activeProfile.id : "";
+        status.activeProfileTitle = activeProfile != null ? activeProfile.displayTitle() : "";
+        status.garageCount = garage.profiles.size();
+        status.garageEnabledCount = garage.enabledCount();
+        status.multiCarAutoMode = garage.isMultiCarAutoMode();
+        status.pinnedProfileId = garage.pinnedProfileId;
+        status.learningProfileId = garage.learningProfileId;
         status.zone = !serviceEnabled ? "无感进出服务已关闭"
                 : (isChargingBlocked() ? "已插充电线 · 禁止解闭锁"
                 : (signalFresh ? lastZone : "不在车辆附近 (无信号)"));
@@ -767,7 +794,11 @@ public class PassiveKeyService extends Service implements SensorEventListener {
         if (isDriving(now)) return "车辆行驶中，禁止操作车锁";
         if (!hasBluetoothPermission()) return "请先授予蓝牙权限";
         if (bluetoothAdapter == null || !bluetoothAdapter.isEnabled()) return "请先开启手机蓝牙";
-        if (!GeelyBridge.isGeelyInstalled(this)) return "请先安装银河 App";
+        OfficialBrandPolicy.Brand manualCarBrand = activeProfile != null
+                ? activeProfile.brand : OfficialBrandPolicy.Brand.AUTO;
+        if (!GeelyBridge.isTargetInstalled(this, garage.brandMode, manualCarBrand)) {
+            return "请先安装" + OfficialTarget.displayName(this, garage.brandMode, manualCarBrand);
+        }
         WidgetTokenPolicy.Route route = isOfficialConnected()
                 ? controlRoute(action, now) : WidgetTokenPolicy.Route.NONE;
         if (route != WidgetTokenPolicy.Route.NONE) {
@@ -1005,6 +1036,56 @@ public class PassiveKeyService extends Service implements SensorEventListener {
     /**
      * 允许用户手动填入车架号后 3 位（例如 "123"）辅助锁定本车，或留空完全走自动识别。
      */
+    /** 重新加载车库、品牌与锁定车辆配置；界面切换车型或增删车辆后调用。 */
+    public void reloadGarageConfiguration(boolean resetSession) {
+        syncGarageFromStore(resetSession);
+        if (serviceEnabled) {
+            GeelyBridge.bindKeepAlive(this, garage.brandMode);
+            stopBleScan();
+            startBleScan();
+        }
+        updateNotificationIfNeeded(true);
+    }
+
+    /** 将指定车库档案设为当前待学习新车，放开学习过滤等待官方连接。 */
+    public void startLearningProfile(String profileId) {
+        identityStore.setLearningProfileId(profileId);
+        reloadGarageConfiguration(true);
+        maybeLearnVehicle(SystemClock.elapsedRealtime());
+    }
+
+    private void syncGarageFromStore(boolean resetSession) {
+        garage = identityStore.loadGarage();
+        VehicleProfile target = garage.findById(garage.learningProfileId);
+        if (target == null) target = garage.findById(garage.pinnedProfileId);
+        if (target == null && activeProfile != null) target = garage.findById(activeProfile.id);
+        if (target == null && !garage.activeProfiles().isEmpty()) target = garage.activeProfiles().get(0);
+        activeProfile = target;
+        identity = activeProfile != null ? activeProfile.identity : null;
+        OfficialBrandPolicy.Brand filterBrand = OfficialBrandPolicy.Brand.AUTO;
+        if ((!garage.pinnedProfileId.isEmpty() || !garage.learningProfileId.isEmpty())
+                && activeProfile != null && activeProfile.brand != OfficialBrandPolicy.Brand.AUTO) {
+            filterBrand = activeProfile.brand;
+        } else if (garage.brandMode != OfficialBrandPolicy.Brand.AUTO) {
+            filterBrand = garage.brandMode;
+        }
+        KeyNotificationBridgeService.setFilterBrand(this, filterBrand);
+        if (resetSession) {
+            cancelPendingControl("车库配置变更");
+            clearGattAuthObservation("garage_changed", false);
+            closeGatt("车库配置变更");
+            currentAd = null;
+            lastObservedCarDevice = null;
+            lastObservedBleMac = "";
+            targetSelector.clear();
+            clearWakeState();
+            activeTargetAddress = "";
+            logic.reset();
+            rssiFilter = new RssiFilter();
+            lastSampleAtMs = 0L;
+        }
+    }
+
     public void bindByVinSuffix(String vinTail3Input) {
         if (vinTail3Input == null) return;
         String digits = vinTail3Input.replaceAll("[^0-9A-Za-z]", "").trim().toUpperCase(Locale.ROOT);
@@ -1040,7 +1121,13 @@ public class PassiveKeyService extends Service implements SensorEventListener {
         identity = new VehicleIdentity(addr, name, tail2, tail3,
                 sameHint ? identity.mfgSignature : "",
                 sameHint ? identity.manufacturerId : -1, System.currentTimeMillis());
-        identityStore.save(identity, VehicleLearningState.MANUAL);
+        if (activeProfile == null) {
+            activeProfile = new VehicleProfile(identityStore.nextProfileId(), name,
+                    garage.brandMode, "", identity, VehicleLearningState.MANUAL, true);
+        } else {
+            activeProfile = activeProfile.withIdentity(identity, VehicleLearningState.MANUAL);
+        }
+        garage = identityStore.upsertProfile(activeProfile, false, false);
         waitForDisconnectToLearn = false;
         appendLog("已设置本车匹配特征（不代表已获取地址）: " + identityDiagnostic());
         stopBleScan();
@@ -1055,7 +1142,12 @@ public class PassiveKeyService extends Service implements SensorEventListener {
         cancelPendingControl("重新学习本车");
         KeyNotificationBridgeService.markGattAuthReady(false);
         clearGattAuthObservation("reset_learning", false);
-        identityStore.clear();
+        if (activeProfile != null) {
+            activeProfile = activeProfile.withIdentity(null, VehicleLearningState.UNKNOWN);
+            garage = identityStore.upsertProfile(activeProfile, false, true);
+        } else {
+            identityStore.clear();
+        }
         identity = null;
         currentAd = null;
         lastObservedCarDevice = null;
@@ -1072,7 +1164,12 @@ public class PassiveKeyService extends Service implements SensorEventListener {
         if (VehicleLearningState.canLearnConnected(hasBluetoothPermission(), connectedNow,
                 waitForDisconnectToLearn, connectedEvidence != null)) {
             identity = connectedEvidence;
-            identityStore.save(identity, VehicleLearningState.CONNECTED);
+            if (activeProfile != null) {
+                activeProfile = activeProfile.withIdentity(identity, VehicleLearningState.CONNECTED);
+                garage = identityStore.upsertProfile(activeProfile, false, false);
+            } else {
+                identityStore.save(identity, VehicleLearningState.CONNECTED);
+            }
             waitForDisconnectToLearn = false;
             lastAction = "已从当前真实蓝牙连接重新学习本车";
         } else {
@@ -1148,7 +1245,7 @@ public class PassiveKeyService extends Service implements SensorEventListener {
                 handler.postDelayed(restartScanRunnable, delay);
                 return;
             }
-            VehicleScanPolicy.Plan plan = VehicleScanPolicy.build(identity);
+            VehicleScanPolicy.Plan plan = buildDesiredScanPlan();
             try {
                 bleScanner.stopScan(scanCallback);
             } catch (Throwable ignored) {
@@ -1213,7 +1310,7 @@ public class PassiveKeyService extends Service implements SensorEventListener {
         /** 合并身份补全产生的重配置，等待启动预算时保留旧扫描，不制造扫描空窗；兼容抓包期间禁止重配置。 */
         @Override
         public void run() {
-            VehicleScanPolicy.Plan desired = VehicleScanPolicy.build(identity);
+            VehicleScanPolicy.Plan desired = buildDesiredScanPlan();
             if (!VehicleScanPolicy.shouldRefreshScanFilters(
                     running, serviceEnabled, isScanning,
                     compatibilityCaptureSession != null, desired.key, activeScanPlanKey)) {
@@ -1232,8 +1329,12 @@ public class PassiveKeyService extends Service implements SensorEventListener {
     };
 
     /** 仅在实际过滤内容变化且未处于兼容原始抓包时请求重建，不在每个广播回调中反复stop/start。 */
+    private VehicleScanPolicy.Plan buildDesiredScanPlan() {
+        return garage != null ? garage.buildScanPlan() : VehicleScanPolicy.build(identity);
+    }
+
     private void requestScanFilterRefresh() {
-        VehicleScanPolicy.Plan desired = VehicleScanPolicy.build(identity);
+        VehicleScanPolicy.Plan desired = buildDesiredScanPlan();
         if (!VehicleScanPolicy.shouldRefreshScanFilters(
                 running, serviceEnabled, isScanning,
                 compatibilityCaptureSession != null, desired.key, activeScanPlanKey)) {
@@ -1308,7 +1409,27 @@ public class PassiveKeyService extends Service implements SensorEventListener {
                 diagnostics.increment("scan_duplicate");
                 return;
             }
-            VehicleIdentity.Match match = identity == null ? VehicleIdentity.Match.HINT : identity.match(ad);
+            VehicleIdentity.Match match;
+            if (!geelyConnected && wakeGate.activeAddress().isEmpty()
+                    && garage != null && !garage.isExplicitLearning()
+                    && !garage.activeProfiles().isEmpty()) {
+                VehicleGarage.MatchResult matched = garage.matchBest(ad);
+                if (matched == null) {
+                    match = VehicleIdentity.Match.NONE;
+                } else {
+                    if (activeProfile == null || !matched.profile.id.equals(activeProfile.id)) {
+                        activeProfile = matched.profile;
+                        identity = matched.profile.identity;
+                        resetMeasurementTarget(identity != null ? identity.address : "", now);
+                        DiagnosticLog.event("Garage", "PROFILE_SWITCH",
+                                "profile_id=" + activeProfile.id + " brand=" + activeProfile.brand
+                                        + " match=" + matched.match);
+                    }
+                    match = matched.match;
+                }
+            } else {
+                match = identity == null ? VehicleIdentity.Match.HINT : identity.match(ad);
+            }
             if (match == VehicleIdentity.Match.NONE || match == VehicleIdentity.Match.CONFLICT) {
                 diagnostics.increment("scan_other_vehicle");
                 recordScanMatch(ad, match.name(), now);
@@ -1414,7 +1535,12 @@ public class PassiveKeyService extends Service implements SensorEventListener {
         VehicleIdentity merged = previous.mergeWith(ad);
         if (merged == previous) return;
         identity = merged;
-        identityStore.save(identity);
+        if (activeProfile != null) {
+            activeProfile = activeProfile.withIdentity(identity, activeProfile.learningSource);
+            garage = identityStore.upsertProfile(activeProfile, false, false);
+        } else {
+            identityStore.save(identity);
+        }
         DiagnosticLog.event("Learning", "IDENTITY_UPDATED", "reason=" + match
                 + " old_addr_id=" + DiagnosticLog.fingerprint(previous.address) + " " + identityDiagnostic());
         appendLog("已更新本车蓝牙特征: " + identityDiagnostic());
@@ -1527,13 +1653,15 @@ public class PassiveKeyService extends Service implements SensorEventListener {
 
     /** 所有预连接共用单目标预算和按地址ACL保护；提前连接与可信测距严格分开。 */
     private void maybeWakeGeely(GeelyAdvertisement ad, long now, boolean advertisedName) {
-        if (!GeelyBridge.isGeelyInstalled(this)) {
+        OfficialBrandPolicy.Brand carBrand = activeProfile != null
+                ? activeProfile.brand : OfficialBrandPolicy.Brand.AUTO;
+        if (!GeelyBridge.isTargetInstalled(this, garage.brandMode, carBrand)) {
             if (InteractiveWakePolicy.shouldLogUnavailable(lastWakeUnavailableLogAtMs, now)) {
                 lastWakeUnavailableLogAtMs = now;
                 DiagnosticLog.event("Bridge", "WAKE_UNAVAILABLE",
                         "official_app_installed=false reason=official_app_missing addr_id="
                                 + (ad == null ? "none" : DiagnosticLog.fingerprint(ad.address)));
-                appendDiagnostic("当前容器未检测到银河 App，已跳过唤醒（鸿蒙跨容器不可互调）");
+                appendDiagnostic("当前容器未检测到官方 App，已跳过唤醒（鸿蒙跨容器不可互调）");
             }
             return;
         }
@@ -1581,9 +1709,10 @@ public class PassiveKeyService extends Service implements SensorEventListener {
         lastWakeAttemptAddress = ad.address;
         lastWakeAttemptAtMs = now;
         lastWakeAttemptAd = ad;
-        GeelyBridge.wakeAndConnect(this, ad.scanResult, ad.carId());
+        OfficialBrandPolicy.Brand usedBrand = GeelyBridge.wakeAndConnect(
+                this, ad.scanResult, ad.carId(), garage.brandMode, carBrand);
         KeyNotificationBridgeService.requestFastRescan(this, KeyNotificationBridgeService.FAST_RESCAN_WINDOW_MS);
-        scheduleWakeFallback(ad, now);
+        scheduleWakeFallback(ad, now, garage.brandMode, carBrand, usedBrand);
         String message = result == VehicleWakeGate.Result.SEND_EARLY_NAME ? "首包完整名提前连接银河 #"
                 : result == VehicleWakeGate.Result.SEND_EARLY_HINT
                         ? (ad.rssi < VehicleWakeGate.NORMAL_CONNECT_MIN_RSSI
@@ -1594,8 +1723,11 @@ public class PassiveKeyService extends Service implements SensorEventListener {
         else appendDiagnostic(message);
     }
 
-    /** 1.2秒仍无同MAC ACL时补发一次兼容action；已有ACL绝不重复唤醒。 */
-    private void scheduleWakeFallback(GeelyAdvertisement ad, long wakeAtMs) {
+    /** 1.2秒仍无同MAC ACL时补发兼容入口或双品牌另一端；已有ACL绝不重复唤醒。 */
+    private void scheduleWakeFallback(GeelyAdvertisement ad, long wakeAtMs,
+                                      OfficialBrandPolicy.Brand userMode,
+                                      OfficialBrandPolicy.Brand vehicleBrand,
+                                      OfficialBrandPolicy.Brand primaryUsed) {
         if (ad == null) return;
         String address = ad.address;
         handler.postDelayed(() -> {
@@ -1607,7 +1739,8 @@ public class PassiveKeyService extends Service implements SensorEventListener {
             if (!running || !serviceEnabled || geelyConnected
                     || !address.equalsIgnoreCase(wakeGate.activeAddress())
                     || aclSeen) return;
-            GeelyBridge.wakeAndConnectFallback(this, ad.scanResult, ad.carId());
+            GeelyBridge.wakeAndConnectFallback(this, ad.scanResult, ad.carId(),
+                    userMode, vehicleBrand, primaryUsed);
             KeyNotificationBridgeService.requestFastRescan(this, KeyNotificationBridgeService.FAST_RESCAN_WINDOW_MS);
         }, WAKE_FALLBACK_MS);
     }
@@ -1720,15 +1853,40 @@ public class PassiveKeyService extends Service implements SensorEventListener {
     private void adoptConnectedIdentity(VehicleIdentity verified, String source, long now) {
         VehicleIdentity previous = identity;
         boolean changed = previous == null || !previous.stableKey().equalsIgnoreCase(verified.stableKey());
+        String livePkg = KeyNotificationBridgeService.getActiveOfficialPackage();
+        OfficialBrandPolicy.Brand connectedBrand = OfficialBrandPolicy.brandForPackage(livePkg);
         if (changed) {
             identity = verified;
-            identityStore.save(identity, source);
+            if (activeProfile == null) {
+                OfficialBrandPolicy.Brand newBrand = connectedBrand != OfficialBrandPolicy.Brand.AUTO
+                        ? connectedBrand : garage.brandMode;
+                activeProfile = new VehicleProfile(identityStore.nextProfileId(), "",
+                        newBrand, "", identity, source, true);
+            } else {
+                OfficialBrandPolicy.Brand nextBrand = activeProfile.brand == OfficialBrandPolicy.Brand.AUTO
+                        && connectedBrand != OfficialBrandPolicy.Brand.AUTO
+                        ? connectedBrand : activeProfile.brand;
+                activeProfile = activeProfile.withBrand(nextBrand).withIdentity(identity, source);
+            }
+            garage = identityStore.upsertProfile(activeProfile, false, false);
             DiagnosticLog.event("Learning", "CONNECTED_IDENTITY", "reason=" + source
+                    + " profile_id=" + activeProfile.id + " brand=" + activeProfile.brand
                     + " old_addr_id=" + DiagnosticLog.fingerprint(previous == null ? "" : previous.address)
                     + " " + identityDiagnostic());
             appendLog("✓ 已从真实蓝牙连接识别本车: " + identityDiagnostic());
-        } else if (!source.equals(identityStore.getLearningSource())) {
-            identityStore.save(identity, source);
+        } else {
+            if (activeProfile != null && activeProfile.brand == OfficialBrandPolicy.Brand.AUTO
+                    && connectedBrand != OfficialBrandPolicy.Brand.AUTO) {
+                activeProfile = activeProfile.withBrand(connectedBrand).withIdentity(identity, source);
+                garage = identityStore.upsertProfile(activeProfile, false, false);
+            } else if (!source.equals(identityStore.getLearningSource())) {
+                if (activeProfile != null) {
+                    activeProfile = activeProfile.withIdentity(identity, source);
+                    garage = identityStore.upsertProfile(activeProfile, false, false);
+                } else {
+                    identityStore.save(identity, source);
+                }
+            }
         }
         waitForDisconnectToLearn = false;
         GeelyAdvertisement wakeEvidence = lastWakeAttemptAd != null
@@ -3031,7 +3189,9 @@ public class PassiveKeyService extends Service implements SensorEventListener {
         boolean aclSeen = wakeGate.hasRecentAclHandshake(ad.address, now);
         long sinceLastAttempt = lastInteractiveWakeAtMs == 0L
                 ? -1L : Math.max(0L, now - lastInteractiveWakeAtMs);
-        boolean officialInstalled = GeelyBridge.isGeelyInstalled(this);
+        OfficialBrandPolicy.Brand carBrand = activeProfile != null
+                ? activeProfile.brand : OfficialBrandPolicy.Brand.AUTO;
+        boolean officialInstalled = GeelyBridge.isTargetInstalled(this, garage.brandMode, carBrand);
         if (!InteractiveWakePolicy.shouldWake(serviceEnabled, officialInstalled, isOfficialConnected(),
                 true, aclSeen, adAge, sinceLastAttempt)) {
             if (!officialInstalled && InteractiveWakePolicy.shouldLogUnavailable(lastWakeUnavailableLogAtMs, now)) {
@@ -3047,9 +3207,10 @@ public class PassiveKeyService extends Service implements SensorEventListener {
                 "reason=interactive addr_id=" + DiagnosticLog.fingerprint(ad.address)
                         + " ad_age_ms=" + adAge + " acl_seen=" + aclSeen
                         + " " + targetSelector.observationDiagnostic(ad, now));
-        GeelyBridge.wakeAndConnect(this, ad.scanResult, ad.carId());
+        OfficialBrandPolicy.Brand usedBrand = GeelyBridge.wakeAndConnect(
+                this, ad.scanResult, ad.carId(), garage.brandMode, carBrand);
         KeyNotificationBridgeService.requestFastRescan(this, KeyNotificationBridgeService.FAST_RESCAN_WINDOW_MS);
-        scheduleWakeFallback(ad, now);
+        scheduleWakeFallback(ad, now, garage.brandMode, carBrand, usedBrand);
     }
 
     private void registerSystemReceiver() {

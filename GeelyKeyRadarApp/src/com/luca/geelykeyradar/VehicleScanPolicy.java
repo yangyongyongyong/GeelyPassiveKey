@@ -70,6 +70,28 @@ final class VehicleScanPolicy {
         }
     }
 
+    /** 多车车库合并过滤：单车直接沿用单车计划；多车合并各车精确规则并去重，仍保持非空窄过滤。 */
+    static Plan buildMulti(List<VehicleIdentity> identities) {
+        if (identities == null || identities.isEmpty()) return build(null);
+        if (identities.size() == 1) return build(identities.get(0));
+        List<Rule> merged = new ArrayList<>();
+        java.util.Set<String> seenKeys = new java.util.LinkedHashSet<>();
+        boolean anyHasAddress = false;
+        for (VehicleIdentity id : identities) {
+            if (id == null) continue;
+            Plan single = build(id);
+            if ("LEARNING".equals(single.mode)) continue;
+            if (VehicleLearningState.hasAddress(id.address)) anyHasAddress = true;
+            for (Rule rule : single.rules) {
+                if (seenKeys.add(rule.key())) {
+                    merged.add(rule);
+                }
+            }
+        }
+        if (merged.isEmpty()) return build(null);
+        return new Plan(anyHasAddress ? "MULTI_TRACKING" : "MULTI_HINT_DISCOVERY", merged);
+    }
+
     /** 可信地址优先，同时保留完整名称与稳定厂商掩码发现轮换地址；不保留裸厂商/UUID宽过滤。 */
     static Plan build(VehicleIdentity identity) {
         List<Rule> rules = new ArrayList<>();

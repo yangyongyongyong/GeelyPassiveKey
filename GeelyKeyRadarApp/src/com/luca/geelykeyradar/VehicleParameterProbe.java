@@ -28,7 +28,7 @@ import java.util.Locale;
 final class VehicleParameterProbe {
     static final String PREFS = "vehicle_param_readonly_prefs";
 
-    private static final String GEELY_PKG = "com.geelygalaxy.customer";
+    // 跟随当前配置/已安装官方端（吉利汽车或银河）动态绑定只读探针。
     private static final String GEELY_DK_SERVICE = "com.geely.snc.digitalkey.base.service.DigitalKeyBgService";
     private static final String ACTION_DK_START = "com.zeekr.snc.service.action.DK_START";
     private static final String DESC_DK_SERVICE = "com.geely.snc.digitalkey.base.dk.IDigitalKeyBleService";
@@ -102,9 +102,10 @@ final class VehicleParameterProbe {
             return;
         }
         setValue(KEY_AIDL_STATUS, "绑定中");
+        String targetPkg = OfficialTarget.resolveConfiguredPackage(context);
         try {
             Intent intent = new Intent(ACTION_DK_START);
-            intent.setComponent(new ComponentName(GEELY_PKG, GEELY_DK_SERVICE));
+            intent.setComponent(new ComponentName(targetPkg, GEELY_DK_SERVICE));
             binding = context.bindService(intent, connection,
                     Context.BIND_AUTO_CREATE | Context.BIND_IMPORTANT);
             if (!binding) {
@@ -121,22 +122,24 @@ final class VehicleParameterProbe {
 
     /** 当前银河Manifest未导出只读服务时立即返回原因，避免每次打开App都抛SecurityException。 */
     private String officialServiceUnavailableReason() {
+        String targetPkg = OfficialTarget.resolveConfiguredPackage(context);
+        String appLabel = OfficialBrandPolicy.PKG_GALAXY.equals(targetPkg) ? "银河" : "吉利汽车";
         try {
             ServiceInfo info = context.getPackageManager().getServiceInfo(
-                    new ComponentName(GEELY_PKG, GEELY_DK_SERVICE), PackageManager.MATCH_DISABLED_COMPONENTS);
+                    new ComponentName(targetPkg, GEELY_DK_SERVICE), PackageManager.MATCH_DISABLED_COMPONENTS);
             if (info != null && !info.exported) {
                 String version = "未知";
                 try {
-                    version = context.getPackageManager().getPackageInfo(GEELY_PKG, 0).versionName;
+                    version = context.getPackageManager().getPackageInfo(targetPkg, 0).versionName;
                 } catch (Throwable ignored) {
                 }
-                return "不可用：银河" + version + "未导出DigitalKeyBgService（只读AIDL被系统限制）";
+                return "不可用：" + appLabel + version + "未导出DigitalKeyBgService（只读AIDL被系统限制）";
             }
             return "";
         } catch (PackageManager.NameNotFoundException missing) {
-            return "不可用：未安装银河App";
+            return "不可用：未安装官方 App（吉利汽车 / 银河）";
         } catch (Throwable error) {
-            return "不可用：无法检查银河AIDL导出状态";
+            return "不可用：无法检查" + appLabel + " AIDL导出状态";
         }
     }
 
